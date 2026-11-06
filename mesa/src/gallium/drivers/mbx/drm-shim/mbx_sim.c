@@ -470,6 +470,21 @@ static int ioctl_pb_dump(int fd, unsigned long request, void *arg)
 	return 0;
 }
 
+/* the emulator's registers, as the driver's ioctl gives the chip's */
+static int ioctl_reg_dump(int fd, unsigned long request, void *arg)
+{
+	struct drm_mbx_reg_dump *d = arg;
+	uint32_t i, v;
+
+	if ((d->offset | d->size) & 3 || d->offset > 0x4000 || d->size > 0x4000 - d->offset)
+		return -EINVAL;
+	for (i = 0; i < d->size; i += 4) {
+		v = mbxemu_reg_read(sim.emu, d->offset + i);
+		memcpy((uint8_t *)(uintptr_t)d->ptr + i, &v, 4);
+	}
+	return 0;
+}
+
 static ioctl_fn_t driver_ioctls[] = {
 	[DRM_MBX_GET_PARAM] = ioctl_get_param,
 	[DRM_MBX_BO_CREATE] = ioctl_bo_create,
@@ -478,6 +493,7 @@ static ioctl_fn_t driver_ioctls[] = {
 	[DRM_MBX_SUBMIT] = ioctl_submit,
 	[DRM_MBX_WAIT_FENCE] = ioctl_wait_fence,
 	[DRM_MBX_PB_DUMP] = ioctl_pb_dump,
+	[DRM_MBX_REG_DUMP] = ioctl_reg_dump,
 };
 
 void drm_shim_driver_init(void)

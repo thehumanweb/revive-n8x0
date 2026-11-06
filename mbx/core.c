@@ -459,7 +459,7 @@ void mbxemu_reg_write(struct mbxemu *e, uint32_t reg, uint32_t v)
 	case R_TA_CTX_STORE:
 		if (v & 1) {
 			ctx_store(e);
-			emu_raise(e, I_TA_CONTEXT);
+			emu_raise(e, I_TA_CONTEXT | I_B0);
 		}
 		break;
 	case R_TA_CTX_LOAD:

@@ -62,7 +62,8 @@
 #define R_MMU_TLB_PAGE	0x1024
 #define R_MMU_TLB_PHYS	0x1028
 
-/* INT_STATUS bits */
+/* INT_STATUS bits (0 and 3: seen on the N810 with the kernel driver, README assumption 32) */
+#define I_B0		0x1
 #define I_RENDER	0x4
 #define I_ISP		0x8
 #define I_TA_DONE	0x10

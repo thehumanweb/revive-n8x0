@@ -140,6 +140,17 @@ struct drm_mbx_pb_dump {
 	__u32 size;
 };
 
+/*
+ * A debugging aid (root only): size bytes of the MBX's registers from offset (a multiple of 4,
+ * inside the first 16 KB of the window) to the user buffer at ptr, for seeing which registers a
+ * job changes. Reads only.
+ */
+struct drm_mbx_reg_dump {
+	__u64 ptr;
+	__u32 offset;
+	__u32 size;
+};
+
 #define DRM_MBX_GET_PARAM	0x00
 #define DRM_MBX_BO_CREATE	0x01
 #define DRM_MBX_BO_INFO		0x02
@@ -147,6 +158,7 @@ struct drm_mbx_pb_dump {
 #define DRM_MBX_SUBMIT		0x04
 #define DRM_MBX_WAIT_FENCE	0x05
 #define DRM_MBX_PB_DUMP		0x06
+#define DRM_MBX_REG_DUMP	0x07
 
 #define DRM_IOCTL_MBX_GET_PARAM \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_MBX_GET_PARAM, struct drm_mbx_get_param)
@@ -162,6 +174,8 @@ struct drm_mbx_pb_dump {
 	DRM_IOW(DRM_COMMAND_BASE + DRM_MBX_WAIT_FENCE, struct drm_mbx_wait_fence)
 #define DRM_IOCTL_MBX_PB_DUMP \
 	DRM_IOW(DRM_COMMAND_BASE + DRM_MBX_PB_DUMP, struct drm_mbx_pb_dump)
+#define DRM_IOCTL_MBX_REG_DUMP \
+	DRM_IOW(DRM_COMMAND_BASE + DRM_MBX_REG_DUMP, struct drm_mbx_reg_dump)
 
 #if defined(__cplusplus)
 }

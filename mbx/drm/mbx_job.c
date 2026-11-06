@@ -75,8 +75,11 @@ static void mbx_feed(struct mbx_device *m, const u32 *w, u32 n)
 		u32 type = w[i] >> 28, count = w[i] & 0xffff, k;
 		u32 port = type == MBX_CHUNK_TA ? MBX_TA_PORT : MBX_TACTL_PORT;
 
-		for (k = 0; k < count; k++)
+		for (k = 0; k < count; k++) {
+			if (unlikely(mbx_trace))
+				printk(KERN_DEBUG "mbx: %s %08x\n", type == MBX_CHUNK_TA ? "T" : "C", w[i + 1 + k]);
 			writel(w[i + 1 + k], m->regs + port);
+		}
 		i += 1 + count;
 	}
 }
@@ -163,7 +166,11 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_TA_CONTEXT_ID, a->ta_context);
 	mbx_write(m, MBX_REG_TA_START, 1);
 	mbx_feed(m, job->stream, a->stream_words);
+	if (unlikely(mbx_trace))
+		printk(KERN_DEBUG "mbx: S after the stream %08x\n", mbx_read(m, MBX_REG_INT_STATUS));
 	ret = mbx_wait(m, MBX_INT_TA_DONE, ms);
+	if (unlikely(mbx_trace))
+		printk(KERN_DEBUG "mbx: S after TA_DONE %08x\n", mbx_read(m, MBX_REG_INT_STATUS));
 	if (ret)
 		goto reset;
 
@@ -184,7 +191,11 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_R_6DC, a->r_6dc);
 	mbx_write(m, MBX_REG_R_HW_CONTEXT, a->ta_context);
 	mbx_write(m, MBX_REG_R_KICK, 1);
+	if (unlikely(mbx_trace))
+		printk(KERN_DEBUG "mbx: S after the kick %08x\n", mbx_read(m, MBX_REG_INT_STATUS));
 	ret = mbx_wait(m, MBX_INT_RENDER, ms);
+	if (unlikely(mbx_trace))
+		printk(KERN_DEBUG "mbx: S after RENDER %08x\n", mbx_read(m, MBX_REG_INT_STATUS));
 	if (ret)
 		goto reset;
 	mutex_unlock(&m->job_lock);

@@ -472,3 +472,11 @@ circuit.
     device, no counterpart here: rendering into an oversized buffer came out black; stream-out's
     second place (Y) is not predictable (assumption 23); the depth of a partial render's lost
     macro tile.
+32. **Interrupt bits 0 and 3** (seen on an N810 with the kernel driver, through `INT_STATUS` snapshots in
+    `docs/n810-trace.txt`; the meanings are not known). A render's completion shows `INT_STATUS`
+    `0x4d`: bit 2 (RENDER) and bit 6 (EVM_DALLOC), as modelled, and also bit 3 (the ISP) and bit 0;
+    a context store (`0x818` = 1) shows bits 8 (TA_CONTEXT) and 0. The model raises them so; nothing
+    here uses them (a driver that enables neither sees only the others). The chip also writes
+    `0xcc0`-`0xce4` after a job: `0xcc0`..`0xcd8` the same in every job
+    (`0c1033c2 29476053 d9f7855c badff4e3 6f3bdd1e 08a8822a 00000001`), `0xce4` different each
+    job (`d631b1e3`, `754d38ee`: a signature or counter); the model has only the counter at `0xcc4`.

@@ -1672,5 +1672,5 @@ void render_kick(struct mbxemu *e)
 		if (rc.s == ta_scene(e) || !rc.s->used)
 			e->scene_state = -1;
 	}
-	emu_raise(e, I_RENDER | I_EVM_DALLOC);
+	emu_raise(e, I_RENDER | I_EVM_DALLOC | I_ISP | I_B0);
 }

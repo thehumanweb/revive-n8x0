@@ -8,7 +8,9 @@
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/mod_devicetable.h>
+#include <linux/capability.h>
 #include <linux/module.h>
+#include <linux/uaccess.h>
 #include <linux/platform_device.h>
 
 #include <drm/drm_drv.h>
@@ -83,6 +85,9 @@ static irqreturn_t mbx_irq(int irq, void *data)
 	struct mbx_device *m = data;
 	u32 st = mbx_read(m, MBX_REG_INT_STATUS) & mbx_read(m, MBX_REG_INT_ENABLE) & MBX_INT_MASK;
 
+	if (unlikely(mbx_trace))
+		printk(KERN_DEBUG "mbx: I status %08x enable %08x handled %08x\n", mbx_read(m, MBX_REG_INT_STATUS),
+		       mbx_read(m, MBX_REG_INT_ENABLE), st);
 	if (!st)
 		return IRQ_NONE;
 	mbx_write(m, MBX_REG_INT_CLEAR, st);
@@ -134,6 +139,29 @@ static void mbx_postclose(struct drm_device *drm, struct drm_file *file)
 	kfree(f);
 }
 
+/* DRM_IOCTL_MBX_REG_DUMP: the registers, read, for comparing a job's effect on the chip with the model's */
+static int mbx_ioctl_reg_dump(struct drm_device *dev, void *data, struct drm_file *file)
+{
+	struct mbx_device *m = to_mbx(dev);
+	struct drm_mbx_reg_dump *d = data;
+	u32 i, v;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if ((d->offset | d->size) & 3 || d->offset > 0x4000 || d->size > 0x4000 - d->offset)
+		return -EINVAL;
+	mutex_lock(&m->job_lock);
+	for (i = 0; i < d->size; i += 4) {
+		v = mbx_read(m, d->offset + i);
+		if (copy_to_user(u64_to_user_ptr(d->ptr) + i, &v, 4)) {
+			mutex_unlock(&m->job_lock);
+			return -EFAULT;
+		}
+	}
+	mutex_unlock(&m->job_lock);
+	return 0;
+}
+
 static const struct drm_ioctl_desc mbx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(MBX_GET_PARAM, mbx_ioctl_get_param, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MBX_BO_CREATE, mbx_ioctl_bo_create, DRM_RENDER_ALLOW),
@@ -142,6 +170,7 @@ static const struct drm_ioctl_desc mbx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(MBX_SUBMIT, mbx_ioctl_submit, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MBX_WAIT_FENCE, mbx_ioctl_wait_fence, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MBX_PB_DUMP, mbx_ioctl_pb_dump, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(MBX_REG_DUMP, mbx_ioctl_reg_dump, DRM_RENDER_ALLOW),
 };
 
 DEFINE_DRM_GEM_FOPS(mbx_fops);
@@ -159,6 +188,10 @@ static const struct drm_driver mbx_driver = {
 	.major = 1,
 	.minor = 0,
 };
+
+bool mbx_trace;
+module_param_named(trace, mbx_trace, bool, 0644);
+MODULE_PARM_DESC(trace, "debug: log every register write and TA word to the kernel log (KERN_DEBUG)");
 
 static int mbx_probe(struct platform_device *pdev)
 {

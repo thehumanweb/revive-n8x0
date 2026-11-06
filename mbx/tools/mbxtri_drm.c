@@ -4,7 +4,7 @@
  * DRM_IOCTL_MBX_BO_CREATE/INFO, the same stream (tri_frame.h) in one
  * DRM_IOCTL_MBX_SUBMIT, the picture read back through the buffer's mmap.
  *
- *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-G] [-C r_ctl] [-M r_sampling] [-S state_word]
+ *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-G] [-R prefix] [-C r_ctl] [-M r_sampling] [-S state_word]
  *
  * -D dumps what the job left in the region array, the tail pointers and the
  * background-object buffer (nonzero words), to see where the TA binned the triangle.
@@ -75,6 +75,25 @@ static int open_node(const char *path)
 	return -1;
 }
 
+/* The first 16 KB of registers to prefix.when (-R): which ones a job changes */
+static void reg_dump(int fd, const char *prefix, const char *when)
+{
+	static uint32_t regs[0x4000 / 4];
+	struct drm_mbx_reg_dump d = { .ptr = (uintptr_t)regs, .offset = 0, .size = sizeof(regs) };
+	char name[256];
+	FILE *f;
+
+	if (ioctl(fd, DRM_IOCTL_MBX_REG_DUMP, &d)) {
+		fprintf(stderr, "mbxtri-drm: REG_DUMP: %s\n", strerror(errno));
+		return;
+	}
+	snprintf(name, sizeof(name), "%s.%s", prefix, when);
+	if ((f = fopen(name, "wb"))) {
+		fwrite(regs, 1, sizeof(regs), f);
+		fclose(f);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	const char *out = "mbxtri-drm.ppm", *dev = NULL;
@@ -85,10 +104,11 @@ int main(int argc, char **argv)
 	int o, fd, i, x, y, lit = 0, ret, dump = 0;
 	const char *pbfile = NULL;
 	int empty = 0, gradient = 0;
+	const char *regprefix = NULL;
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -96,6 +116,7 @@ int main(int argc, char **argv)
 		else if (o == 'P') pbfile = optarg;
 		else if (o == 'E') empty = 1;
 		else if (o == 'G') gradient = 1;
+		else if (o == 'R') regprefix = optarg;
 		else if (o == 'C') r_ctl = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'M') r_samp = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'S') tri_state_word = (uint32_t)strtoul(optarg, NULL, 0);
@@ -138,10 +159,14 @@ int main(int argc, char **argv)
 	s.r_addr = surf.va;
 	s.r_stride = TRI_W;			/* words */
 	s.r_6dc = 0x3f800001;			/* clear depth 1.0, as GLES writes it (0 on the chip is not 1.0) */
+	if (regprefix)
+		reg_dump(fd, regprefix, "before");
 	if (ioctl(fd, DRM_IOCTL_MBX_SUBMIT, &s)) {
 		fprintf(stderr, "mbxtri-drm: submit: %s\n", strerror(errno));
 		return 1;
 	}
+	if (regprefix)
+		reg_dump(fd, regprefix, "after");
 	if (pbfile) {
 		/* 64 bytes of the free list's table, then the first 8 pages of the parameter buffer */
 		static uint8_t buf[64 + 8 * 4096];
