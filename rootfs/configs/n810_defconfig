@@ -26,3 +26,13 @@ BR2_TARGET_ROOTFS_JFFS2_CUSTOM=y
 BR2_TARGET_ROOTFS_JFFS2_CUSTOM_EBSIZE=0x20000
 BR2_TARGET_ROOTFS_JFFS2_NOCLEANMARKER=y
 BR2_TARGET_ROOTFS_JFFS2_PAGESIZE=0x800
+# Mesa with the mbx gallium driver (the source is mesa/ in this repo, prepared by
+# mesa/scripts/prepare-mesa.sh and used through local.mk). softpipe is the base
+# driver the package insists on and a CPU reference; mbx is added by external.mk.
+BR2_PACKAGE_MESA3D=y
+BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SOFTPIPE=y
+BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+BR2_PACKAGE_MESA3D_OPENGL_ES=y
+BR2_PACKAGE_MESA3D_GBM=y
+BR2_PACKAGE_OVERRIDE_FILE="$(BR2_EXTERNAL_N810_PATH)/local.mk"
+BR2_PACKAGE_MBX_DEMO=y

@@ -1,0 +1,11 @@
+config BR2_PACKAGE_MBX_DEMO
+	bool "mbx-demo"
+	depends on BR2_PACKAGE_MESA3D_OPENGL_EGL
+	depends on BR2_PACKAGE_MESA3D_OPENGL_ES
+	depends on BR2_PACKAGE_MESA3D_GBM
+	select BR2_PACKAGE_LIBDRM
+	help
+	  The mbx test programs that need Mesa: gbm_tri (an animated
+	  triangle through EGL on GBM and KMS) and gles2_tri (the
+	  offscreen triangle, written to a PPM). Sources are
+	  mesa/tests in the n810 tree.

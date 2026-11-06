@@ -21,11 +21,10 @@ a device.
 | M1: kernel driver | Mostly done: probe and power-up, IRQ, per-file MBX address spaces with page tables, shmem GEM buffers and PRIME import code, a blocking submit that feeds the TA stream by CPU PIO. Missing: asynchronous submit with fences, DMA feeding, parameter-buffer and free-list setup, partial render on overflow, runtime PM. |
 | M2: triangle without Mesa | Done in QEMU: the host `mbxtri` and the guest `mbxtri-drm` (through the kernel driver) draw byte-identical pictures. Not done: showing it on the panel. |
 | M3: Gallium driver | In progress. A GLES2 triangle (EGL, an FBO, GLSL with a uniform matrix and a varying colour) renders on the host sim and is byte-identical to the emulator-only picture at four angles. Done: the vertex compiler (NIR to VGP, scalar), the fragment matcher for varying and constant colour, the context, the sim. Missing: richer fragment shaders (textures, fog, blending, alpha test), scissor, scanout through kmsro, the CPU fallback, uniforms in constant buffers beyond what the matcher handles, the shaders' trigonometry. |
-| M4: animated triangle in the guest | Not started (needs Mesa cross-built through Buildroot, EGL/GBM, omapdrm flips). |
+| M4: animated triangle in the guest | In progress. Mesa with the mbx driver is cross-built for the guest through Buildroot, and the offscreen GLES2 triangle (`gles2_tri`) draws in the QEMU guest through the real kernel driver (1144 of 4096 pixels). The display program `gbm_tri` (EGL on GBM, KMS mode set, page flips on omapdrm) gets as far as a GBM/EGL display and the compiled program, then crashes in the first draw; being debugged. |
 | M5: real N810 | Not started. See section 4 for what is unverified. |
 
-Everything built here ran on the emulator only; the one hardware fact so far is the user's N810 probe in section 4. Commits are on `main`; the last
-push was `d0b2ea1`, later commits are local until pushed.
+Everything built here ran on the emulator only (QEMU's n810 with the model, or the model on the host); the one hardware fact so far is the user's N810 probe in section 4. Commits are on `main`; pushed up to `6e8e5dd`, later commits are local until pushed.
 
 Sources: this file's own log (section 6); `git log`; the plan and decisions:
 user.
@@ -85,7 +84,8 @@ timeout once killed `make` mid-write and left corrupt objects):
   the docker build in `NOTES.md` (Rebuild) into `build/qemu-src/build/`.
 - Kernel: `kernel/scripts/prepare-6.18.sh`, `kernel/scripts/build-6.18.sh`;
   module only: `kernel/scripts/build-mbx-module.sh`.
-- Rootfs (modules, tools, image): `rootfs/scripts/build-rootfs.sh`.
+- Rootfs (modules, tools, Mesa with mbx, the demos, image): `rootfs/scripts/build-rootfs.sh`
+  (prepares and copies Mesa, then Buildroot builds it from `rootfs/build/mesa-src`; a Mesa-only change rebuilds in minutes).
 - Boot: `scripts/run-qemu.sh` (console on tcp 5577, user `root`, no
   password). The guest login and test run are not scripted in the repo yet.
 - Host test programs: `make -C mbx mbxtri test`.
@@ -146,6 +146,7 @@ Not checked, or only the model's word for it:
   relies on the model reading the target's own pixels when no background
   object is set (README assumption 6).
 - PRIME import of omapdrm scanout buffers and the kmsro path: written, never run.
+- In the QEMU guest (ARM, the real kernel driver, Mesa cross-built by Buildroot), `gles2_tri` draws the same triangle (1144 of 4096 pixels; the PPM has not been compared byte for byte with the host's yet).
 - Mesa draws beyond that one shape: only varying and constant colour fragment shaders are matched; indexed draws, strips, fans, other vertex formats, blending and textures have not been run.
 
 Sources: `mbx/README.md` (assumptions 4, 5, 6, 7, 8, 13, 23 and "Known gaps");
@@ -441,3 +442,14 @@ comes from `mbx/*.c` and its README.
   `src/gallium/include/pipe/p_screen.h` (the hook signatures);
   `src/gallium/drivers/vc4/vc4_screen.c` (the modifier query shape);
   `src/gallium/winsys/kmsro/drm/kmsro_drm_winsys.c` (why `renderonly_create_kms_dumb_buffer_for_resource`).
+
+### 2026-11-06: Mesa and the demos in the guest
+
+- `rootfs/` now builds Mesa for the guest: the defconfig selects `BR2_PACKAGE_MESA3D` with EGL, GLES and GBM and softpipe as the base driver Buildroot insists on (also a CPU reference); `external.mk` appends `mbx` to the package's driver list; `local.mk` points `MESA3D_OVERRIDE_SRCDIR` at our prepared tree (copied to `rootfs/build/mesa-src` because the build container sees only `rootfs/`); `package/mbx-demo` builds `gbm_tri` and `gles2_tri` from `mesa/tests`. `build-rootfs.sh` runs `prepare-mesa.sh`, copies the sources, and clears the override packages' stamps so each run re-syncs and rebuilds incrementally.
+- Four build failures on the way, all in the glue: the container could not see the Mesa tree (path outside `rootfs/`); Buildroot's `mesa3d.mk` passes `-Dgallium-vc4-neon` on ARM without NEON, which Mesa 26.1.8 no longer defines (patch `0003` accepts and ignores it); Buildroot did not re-sync an override tree whose stamp existed (stamps are cleared now); then it built.
+- **First guest run** (`dmesg`: `mbx` probes, `/dev/dri/card0` and `card1` and `renderD128`/`renderD129`):
+  - `gles2_tri` (surfaceless EGL, offscreen): EGL lists pbuffer configs, `GL_RENDERER PowerVR MBX`, the program compiles to 31 instructions, one flush, and `1144 of 4096 pixels drawn`. The whole stack runs on the target OS.
+  - `gbm_tri` (card0, omapdrm, through kmsro): the screen is created, EGL lists window configs for XRGB8888 and RGB565, 800x480, `GL_RENDERER PowerVR MBX`, the program is compiled, then a segmentation fault in the first draw, before the first flush. Debug lines for the scanout resource and the draw phases are being added to locate it.
+  - dmesg also shows the panel's existing `RFBI: FRAMEDONE not received for 250ms` / "no tearing effect signal" notes when the display is first used; the QEMU panel model, not this work.
+- Sources: Buildroot 2026.08.1 `package/mesa3d/{Config.in,mesa3d.mk}` (the option symbols, `MESA3D_GALLIUM_DRIVERS-y`, the vc4-neon line), `package/libdrm`; the build logs `build/rootfs-mesa.out` and `rootfs/build/build-rootfs.log`; the guest output `build/m4.out`; `mesa/tests/gbm_tri.c` follows the usual EGL-on-GBM and KMS flow with libdrm (`drmModeSetCrtc`, `drmModePageFlip`).
+- **A mistake found and fixed here:** the repo's root `.gitignore` had `src/` (for the downloaded source tarballs), which also hid `mesa/src/`, so the Mesa driver's own sources (the screen, context, compiler, resources, winsys and the drm-shim: 21 files) were never committed. The commits up to `6e8e5dd` (pushed) and `0019729` therefore have the patches, scripts, tests and journal but not those sources, although their messages described them. `.gitignore` now has `!/mesa/src/` after `src/` and the files are in this commit.

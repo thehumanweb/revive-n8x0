@@ -1,0 +1,263 @@
+// SPDX-License-Identifier: MIT
+/*
+ * Resources: buffers, and 2D textures and render targets laid out linearly. A
+ * row is padded to a whole number of 16-pixel tiles and the height likewise,
+ * so a render that writes whole tiles stays in the buffer. A depth buffer
+ * takes no memory: the MBX keeps depth on chip for a render.
+ */
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <xf86drm.h>
+
+#include "drm-uapi/drm_fourcc.h"
+
+#include "util/format/u_format.h"
+#include "util/u_inlines.h"
+#include "util/u_math.h"
+#include "util/u_memory.h"
+#include "util/u_transfer.h"
+#include "frontend/winsys_handle.h"
+
+#include "mbx_context.h"
+#include "mbx_resource.h"
+#include "mbx_screen.h"
+
+#define MBX_TILE 16
+
+/* A buffer the display scans out: the KMS device allocates it (omapdrm's dumb buffers are
+ * contiguous, as its DSS needs) and we import it by dma-buf into our address space. */
+static struct pipe_resource *mbx_resource_create_scanout(struct pipe_screen *pscreen,
+							 const struct pipe_resource *templ)
+{
+	struct mbx_screen *screen = mbx_screen(pscreen);
+	struct mbx_resource *rsc = CALLOC_STRUCT(mbx_resource);
+	struct pipe_resource t = *templ;
+	struct winsys_handle handle = { 0 };
+
+	if (!rsc)
+		return NULL;
+	/* a render writes whole tiles */
+	t.width0 = align(templ->width0, MBX_TILE);
+	t.height0 = align(templ->height0, MBX_TILE);
+	t.screen = pscreen;
+	rsc->scanout = renderonly_scanout_for_resource(&t, screen->ro, &handle);
+	if (!rsc->scanout) {
+		FREE(rsc);
+		return NULL;
+	}
+	rsc->base = *templ;
+	rsc->base.screen = pscreen;
+	pipe_reference_init(&rsc->base.reference, 1);
+	rsc->bo = mbx_bo_import(screen, (int)handle.handle);
+	close((int)handle.handle);
+	if (!rsc->bo) {
+		renderonly_scanout_destroy(rsc->scanout, screen->ro);
+		FREE(rsc);
+		return NULL;
+	}
+	rsc->stride = handle.stride;
+	rsc->size = (uint32_t)rsc->bo->size;
+	mbx_dbg("scanout resource %ux%u format %s: stride %u, bo size %llu, va %#x", templ->width0, templ->height0,
+		util_format_name(templ->format), rsc->stride, (unsigned long long)rsc->bo->size, rsc->bo->va);
+	return &rsc->base;
+}
+
+static struct pipe_resource *mbx_resource_create(struct pipe_screen *pscreen,
+						 const struct pipe_resource *templ)
+{
+	struct mbx_screen *screen = mbx_screen(pscreen);
+	struct mbx_resource *rsc;
+	uint64_t size;
+
+	if (screen->ro && (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
+	    templ->target != PIPE_BUFFER && !util_format_is_depth_or_stencil(templ->format))
+		return mbx_resource_create_scanout(pscreen, templ);
+
+	rsc = CALLOC_STRUCT(mbx_resource);
+	if (!rsc)
+		return NULL;
+	rsc->base = *templ;
+	rsc->base.screen = pscreen;
+	pipe_reference_init(&rsc->base.reference, 1);
+
+	if (templ->target == PIPE_BUFFER) {
+		size = templ->width0;
+	} else if (util_format_is_depth_or_stencil(templ->format)) {
+		rsc->on_chip = true;
+		size = 4096;
+	} else {
+		unsigned bpp = util_format_get_blocksize(templ->format);
+
+		rsc->stride = align(templ->width0, MBX_TILE) * bpp;
+		size = (uint64_t)rsc->stride * align(templ->height0, MBX_TILE);
+	}
+	rsc->size = (uint32_t)size;
+	rsc->bo = mbx_bo_create(screen, align64(size ? size : 1, 4096));
+	if (!rsc->bo) {
+		FREE(rsc);
+		return NULL;
+	}
+	return &rsc->base;
+}
+
+static struct pipe_resource *mbx_resource_create_with_modifiers(struct pipe_screen *pscreen,
+								 const struct pipe_resource *templ,
+								 const uint64_t *modifiers, int count)
+{
+	/* linear is all there is */
+	for (int i = 0; i < count; i++)
+		if (modifiers[i] == DRM_FORMAT_MOD_LINEAR || modifiers[i] == DRM_FORMAT_MOD_INVALID)
+			return mbx_resource_create(pscreen, templ);
+	return NULL;
+}
+
+/* A buffer from another device (a window system's, or EGL image import) */
+static struct pipe_resource *mbx_resource_from_handle(struct pipe_screen *pscreen,
+						      const struct pipe_resource *templ,
+						      struct winsys_handle *handle, unsigned usage)
+{
+	struct mbx_screen *screen = mbx_screen(pscreen);
+	struct mbx_resource *rsc;
+
+	if (handle->type != WINSYS_HANDLE_TYPE_FD ||
+	    (handle->modifier != DRM_FORMAT_MOD_LINEAR && handle->modifier != DRM_FORMAT_MOD_INVALID))
+		return NULL;
+	rsc = CALLOC_STRUCT(mbx_resource);
+	if (!rsc)
+		return NULL;
+	rsc->base = *templ;
+	rsc->base.screen = pscreen;
+	pipe_reference_init(&rsc->base.reference, 1);
+	rsc->bo = mbx_bo_import(screen, (int)handle->handle);
+	if (!rsc->bo) {
+		FREE(rsc);
+		return NULL;
+	}
+	rsc->stride = handle->stride;
+	rsc->size = (uint32_t)rsc->bo->size;
+	return &rsc->base;
+}
+
+static bool mbx_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
+				    struct pipe_resource *prsc, struct winsys_handle *handle, unsigned usage)
+{
+	struct mbx_screen *screen = mbx_screen(pscreen);
+	struct mbx_resource *rsc = mbx_resource(prsc);
+
+	handle->modifier = DRM_FORMAT_MOD_LINEAR;
+	if (handle->type == WINSYS_HANDLE_TYPE_KMS && screen->ro && rsc->scanout)
+		return renderonly_get_handle(rsc->scanout, handle);
+	if (handle->type != WINSYS_HANDLE_TYPE_FD && handle->type != WINSYS_HANDLE_TYPE_SHARED)
+		return false;
+	{
+		int fd;
+
+		if (drmPrimeHandleToFD(screen->fd, rsc->bo->handle, DRM_CLOEXEC | DRM_RDWR, &fd))
+			return false;
+		handle->handle = (unsigned)fd;
+	}
+	handle->stride = rsc->stride;
+	handle->offset = 0;
+	return true;
+}
+
+static bool mbx_resource_get_param(struct pipe_screen *pscreen, struct pipe_context *pctx,
+				   struct pipe_resource *prsc, unsigned plane, unsigned layer, unsigned level,
+				   enum pipe_resource_param param, unsigned handle_usage, uint64_t *value)
+{
+	struct mbx_resource *rsc = mbx_resource(prsc);
+
+	switch (param) {
+	case PIPE_RESOURCE_PARAM_STRIDE:
+		*value = rsc->stride;
+		return true;
+	case PIPE_RESOURCE_PARAM_OFFSET:
+		*value = 0;
+		return true;
+	case PIPE_RESOURCE_PARAM_MODIFIER:
+		*value = DRM_FORMAT_MOD_LINEAR;
+		return true;
+	case PIPE_RESOURCE_PARAM_NPLANES:
+		*value = 1;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void mbx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *prsc)
+{
+	struct mbx_resource *rsc = mbx_resource(prsc);
+
+	if (rsc->scanout)
+		renderonly_scanout_destroy(rsc->scanout, mbx_screen(pscreen)->ro);
+	mbx_bo_unref(rsc->bo);
+	FREE(rsc);
+}
+
+/* --- CPU access: the buffers are mapped write-combined, so a map is a pointer --- */
+
+struct mbx_transfer {
+	struct pipe_transfer base;
+};
+
+static void *mbx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned level,
+			      unsigned usage, const struct pipe_box *box, struct pipe_transfer **ptransfer)
+{
+	struct mbx_resource *rsc = mbx_resource(prsc);
+	struct mbx_transfer *trans = CALLOC_STRUCT(mbx_transfer);
+	uint8_t *base;
+
+	if (!trans)
+		return NULL;
+	/* what is recorded against this resource has to be rendered first */
+	mbx_flush_for_resource(mbx_context(pctx), rsc);
+	base = mbx_bo_map(rsc->bo);
+	if (!base) {
+		FREE(trans);
+		return NULL;
+	}
+	pipe_resource_reference(&trans->base.resource, prsc);
+	trans->base.level = level;
+	trans->base.usage = usage;
+	trans->base.box = *box;
+	if (prsc->target == PIPE_BUFFER) {
+		trans->base.stride = 0;
+		trans->base.layer_stride = 0;
+		*ptransfer = &trans->base;
+		return base + box->x;
+	}
+	trans->base.stride = rsc->stride;
+	trans->base.layer_stride = rsc->size;
+	*ptransfer = &trans->base;
+	return base + (uint64_t)box->y * rsc->stride +
+	       (uint64_t)(box->x / util_format_get_blockwidth(prsc->format)) * util_format_get_blocksize(prsc->format);
+}
+
+static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
+{
+	pipe_resource_reference(&ptrans->resource, NULL);
+	FREE(ptrans);
+}
+
+void mbx_resource_screen_init(struct pipe_screen *pscreen)
+{
+	pscreen->resource_create = mbx_resource_create;
+	pscreen->resource_create_with_modifiers = mbx_resource_create_with_modifiers;
+	pscreen->resource_from_handle = mbx_resource_from_handle;
+	pscreen->resource_get_handle = mbx_resource_get_handle;
+	pscreen->resource_get_param = mbx_resource_get_param;
+	pscreen->resource_destroy = mbx_resource_destroy;
+}
+
+void mbx_resource_context_init(struct pipe_context *pctx)
+{
+	pctx->buffer_map = mbx_transfer_map;
+	pctx->texture_map = mbx_transfer_map;
+	pctx->buffer_unmap = mbx_transfer_unmap;
+	pctx->texture_unmap = mbx_transfer_unmap;
+	pctx->transfer_flush_region = u_default_transfer_flush_region;
+	pctx->buffer_subdata = u_default_buffer_subdata;
+	pctx->texture_subdata = u_default_texture_subdata;
+}
