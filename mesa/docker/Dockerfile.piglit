@@ -1,0 +1,10 @@
+# Piglit on the host sim: the n810-mesa image plus what piglit needs (cmake, waffle, numpy, libpng,
+# GL/EGL headers). The EGL and GLES2 libraries at run time are the ones from build/mesa-host-install
+# (LD_LIBRARY_PATH), not the system's.
+FROM n810-mesa:1
+USER root
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      cmake libwaffle-dev waffle-utils python3-numpy libpng-dev libxkbcommon-dev libegl-dev libgles-dev libgl-dev \
+      libdrm-dev libgbm-dev libx11-dev libxcb1-dev libwayland-dev wayland-protocols python3-six \
+    && rm -rf /var/lib/apt/lists/*
+USER build
