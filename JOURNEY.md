@@ -18,7 +18,7 @@ a device.
 | Step | State |
 |---|---|
 | M0: test loop | Done. `scripts/run-qemu.sh` boots the guest; the DT node, config and rootfs wiring are in; the driver probes and reads `CORE_ID` 0x01010003. QEMU is built from this repo. |
-| M1: kernel driver | Mostly done: probe and power-up, IRQ, per-file MBX address spaces with page tables, shmem GEM buffers and PRIME import code, a blocking submit that feeds the TA stream by CPU PIO. Missing: asynchronous submit with fences, DMA feeding, parameter-buffer and free-list setup, partial render on overflow, runtime PM. |
+| M1: kernel driver | Mostly done: probe and power-up, IRQ, per-file MBX address spaces with page tables, shmem GEM buffers and PRIME import code, a blocking submit that feeds the TA stream by CPU PIO, and the parameter buffer with its free list (a 4 MB object at the top of every address space, the list built once after each reset). Missing: asynchronous submit with fences, DMA feeding, partial render on overflow (an overflow is an error for now), runtime PM. |
 | M2: triangle without Mesa | Done in QEMU: the host `mbxtri` and the guest `mbxtri-drm` (through the kernel driver) draw byte-identical pictures. Not done: showing it on the panel. |
 | M3: Gallium driver | In progress. A GLES2 triangle (EGL, an FBO, GLSL with a uniform matrix and a varying colour) renders on the host sim and is byte-identical to the emulator-only picture at four angles. Done: the vertex compiler (NIR to VGP, scalar), the fragment matcher for varying and constant colour, the context, the sim. Missing: richer fragment shaders (textures, fog, blending, alpha test), scissor, scanout through kmsro, the CPU fallback, uniforms in constant buffers beyond what the matcher handles, the shaders' trigonometry. |
 | M4: animated triangle in the guest | **Done in QEMU.** `gbm_tri` (EGL on GBM, KMS on omapdrm through kmsro, GLES2 through the mbx driver, the model rendering) shows the rotating RGB triangle on the guest's 800x480 panel: two screendumps six seconds apart show it at different angles (`docs/gbm_tri-panel-a.png`, `-b.png`). Not yet: a frame rate, vsync behaviour, the real display.
@@ -113,6 +113,11 @@ Checked, on the emulator:
   and two screendumps of the panel show the triangle rotated differently (83,950 pixels differ);
   the background is the clear colour as the panel's RGB565 shows it (24,24,32). No frame rate
   was measured (QEMU's speed says nothing about the device's).
+- `t_pb`: the free list through the MMU as the kernel driver sets it up (9 checks): the list
+  builds, the TA bins into the parameter buffer, the render equals the one without it, 40
+  frames reuse one list (a render gives its pages back), and a two-page list overflows.
+  In the QEMU guest the register trace shows the kernel building the list once and then
+  179 TA starts with no overflow, and `gbm_tri` still animates on the panel.
 - `t_ta`: the model reproduces the hang above (15 checks): a sections word without bit 17
   stops the TA, the FIFO fills to 59, no `TA_COMPLETE` and no render completion, and a TA
   start or a soft reset recovers; with the bit set a frame completes and draws.
@@ -141,10 +146,13 @@ Not checked, or only the model's word for it:
 - **Anything on a real N810 beyond the one observation above.** The emulator is the only
   reference. Bit 0 of `INT_STATUS`, set on the device when the TA hung, is not set by the
   model and its meaning is not known.
-- The parameter buffer and free list: the model's writer is off without a
-  free list; the real chip needs one. `0x85c`'s other bits (the model reads only
-  the tile grid and bit 7); the ISP/TSP state bits the chip needs beyond Gouraud
-  and depth; whether the chip wants more header blocks than the model's minimum.
+- The parameter buffer and free list on the chip: the kernel builds them as the model
+  expects (the table and pages at fixed device addresses, `0x824`-`0x82c`, then `0x838`
+  and a wait for `EVM_DALLOC`), and the model accepts it, but the chip's own protocol,
+  the buffer's size, and what a real overflow looks like are not known. `0x85c`'s other
+  bits (the model reads only the tile grid and bit 7); the ISP/TSP state bits the chip
+  needs beyond Gouraud and depth; whether the chip wants more header blocks than the
+  model's minimum.
 - That the MMU page-table entries are bare physical addresses and that it
   confines the MBX (README assumption 8 and `core.c` are the model's).
 - SDMA to the TA port; VGP stream-out addressing (README assumption 23: a
@@ -482,4 +490,11 @@ comes from `mbx/*.c` and its README.
 - The first attempt to look had a mistake of mine: I read a `tail -40` of the run's output as a hang, when the full output ended with `gbm_tri: 3 frames`. Reading the end of the file settled it.
 - Method: `scripts/panel-shot.sh` starts QEMU with a monitor socket (`run-qemu.sh`'s new `MONITOR`), runs the command in the guest through `scripts/guest.py`, and sends `screendump` to the monitor; `scripts/ppm2png.py` made `docs/gbm_tri-panel-a.png` and `-b.png`.
 - Sources: the screendumps themselves (`docs/`); Mesa 26.1.8 `src/gallium/drivers/lima/lima_resource.c` and `vc4_context.c` for the hooks a render-only GPU must set; the run outputs `build/m4.out`, `build/m5.out`, `build/m6.out` (not committed).
+
+### 2026-11-06: the parameter buffer and its free list in the driver
+
+- The TA bins triangles into pages it takes off a free list; the model (`mbx/pb.c`, `mbx/core.c`) puts page `p` at device address `p << 12` and keeps the list as a table of 16-bit entries in device memory (entry 0: the page last handed out; `0x828` the first page, `0x82c` the last, withheld until a close; `0x838` builds it and raises `EVM_DALLOC`). So the buffer must sit at fixed device addresses in every address space.
+- `mbx/drm`: `mbx_pb.c` creates one shmem object (the table, then 1024 pages: 4 MB) at probe; `mbx_mmu.c` maps it in each file's space at the top (pages 7168 to 8191, the 16 KB table just below at `0x1bfc000`) and limits the buffer allocator to the range below; `mbx_job.c` builds the list once after each reset, through the job's space, and waits for `EVM_DALLOC`. Jobs run one at a time and a render gives its pages back, so one buffer serves every file. The host shim (`mbx_sim.c`) does the same.
+- Not done: an overflow (`TA_OFLOW`) is still an error; a partial render (close, render with depth stored, resume) is next on the kernel side.
+- Sources: `mbx/pb.c` (`page_alloc`, `fl_entry`, `pb_render`, the header comment), `mbx/core.c` (`fl_build`, the register writes), `mbx/README.md` assumptions 22 and 26, `mbx/emu.h` (the register names); the kernel API: `kernel/build/linux-6.18.58` `include/drm/drm_gem_shmem_helper.h`, `drivers/gpu/drm/drm_gem_shmem_helper.c` (`drm_gem_shmem_create`, `drm_gem_shmem_get_pages_sgt`), as for the other buffers; the guest evidence: the emulator's register trace (`MBX_TRACE=1` through `scripts/panel-shot.sh`).
 

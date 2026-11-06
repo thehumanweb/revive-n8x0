@@ -206,8 +206,11 @@ static int mbx_probe(struct platform_device *pdev)
 	if (ret)
 		goto off;
 	mbx_write(m, MBX_REG_INT_ENABLE, MBX_INT_MASTER | MBX_INT_RENDER | MBX_INT_TA_DONE |
-		  MBX_INT_TA_OFLOW | MBX_INT_TA_STREAM);
+		  MBX_INT_TA_OFLOW | MBX_INT_TA_STREAM | MBX_INT_EVM_DALLOC);
 
+	ret = mbx_pb_create(m);
+	if (ret)
+		goto off;
 	ret = drm_dev_register(&m->drm, 0);
 	if (ret)
 		goto off;
@@ -222,6 +225,7 @@ static void mbx_remove(struct platform_device *pdev)
 	struct mbx_device *m = platform_get_drvdata(pdev);
 
 	drm_dev_unplug(&m->drm);
+	mbx_pb_destroy(m);
 	mbx_write(m, MBX_REG_INT_ENABLE, 0);
 	mbx_power_off(m);
 }

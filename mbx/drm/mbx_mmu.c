@@ -13,6 +13,25 @@
 
 #include "mbx_drv.h"
 
+/* The parameter buffer's object (the free list's table, then its pages) at its fixed addresses */
+static int mbx_pb_map(struct mbx_vm *vm, struct mbx_device *m)
+{
+	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(m->pb);
+	struct sg_table *sgt = drm_gem_shmem_get_pages_sgt(shmem);
+	struct sg_dma_page_iter it;
+	u32 pg = MBX_PB_TABLE_VA >> 12, end = (MBX_PB_VA >> 12) + MBX_PB_PAGES;
+
+	if (IS_ERR(sgt))
+		return PTR_ERR(sgt);
+	for_each_sgtable_dma_page(sgt, &it, 0) {
+		if (pg >= end)
+			break;
+		vm->pt[pg >> 10][pg & 1023] = lower_32_bits(sg_page_iter_dma_address(&it));
+		pg++;
+	}
+	return 0;
+}
+
 struct mbx_vm *mbx_vm_create(struct mbx_device *m)
 {
 	struct mbx_vm *vm = kzalloc(sizeof(*vm), GFP_KERNEL);
@@ -23,13 +42,18 @@ struct mbx_vm *mbx_vm_create(struct mbx_device *m)
 	vm->m = m;
 	mutex_init(&vm->lock);
 	INIT_LIST_HEAD(&vm->maps);
-	drm_mm_init(&vm->mm, MBX_VM_START, MBX_VM_SIZE - MBX_VM_START);
+	/* buffers go below the free list's table; the parameter buffer owns the top */
+	drm_mm_init(&vm->mm, MBX_VM_START, MBX_PB_TABLE_VA - MBX_VM_START);
 	for (i = 0; i < MBX_MMU_TABLES; i++) {
 		vm->pt[i] = dma_alloc_coherent(m->dev, MBX_PAGE, &vm->pt_dma[i], GFP_KERNEL);
 		if (!vm->pt[i])
 			goto err;
 		for (j = 0; j < MBX_PAGE / 4; j++)
 			vm->pt[i][j] = lower_32_bits(m->dummy_dma);
+	}
+	if (mbx_pb_map(vm, m)) {
+		i = MBX_MMU_TABLES;
+		goto err;
 	}
 	return vm;
 err:

@@ -4,3 +4,4 @@ mbxtri
 mbxtri-drm
 tests/t_vgp
 tests/t_ta
+tests/t_pb

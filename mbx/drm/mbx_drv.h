@@ -22,6 +22,21 @@
 #define MBX_VM_START		0x10000		/* the first 64 KB stay unmapped */
 #define MBX_PAGE		4096
 
+/*
+ * The parameter buffer: the TA bins its triangles into pages it takes off a
+ * free list the driver builds. Page p is at device address p << 12 and the
+ * list's table is 16-bit entries in device memory, so both live at fixed
+ * addresses: the top of the address space, mapped (the same pages) in every
+ * file's space. One buffer serves all jobs because they run one at a time
+ * and a render gives its pages back.
+ */
+#define MBX_PB_PAGES		1024			/* 4 MB */
+#define MBX_PB_LAST_PAGE	((MBX_VM_SIZE >> 12) - 1)
+#define MBX_PB_FIRST_PAGE	(MBX_PB_LAST_PAGE + 1 - MBX_PB_PAGES)
+#define MBX_PB_TABLE_SIZE	(((MBX_VM_SIZE >> 12)) * 2)	/* an entry for every page number */
+#define MBX_PB_VA		(MBX_PB_FIRST_PAGE << 12)
+#define MBX_PB_TABLE_VA		(MBX_PB_VA - MBX_PB_TABLE_SIZE)
+
 struct mbx_device;
 
 struct mbx_mapping {
@@ -52,6 +67,8 @@ struct mbx_device {
 	int irq;
 	u32 core_id, revision;
 
+	struct drm_gem_object *pb;	/* the free list's table, then the parameter buffer's pages */
+	bool pb_built;		/* the free list is built (not after a reset) */
 	void *dummy;		/* what unmapped pages point at */
 	dma_addr_t dummy_dma;
 
@@ -80,6 +97,9 @@ void mbx_vm_destroy(struct mbx_vm *vm);
 struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj);
 int mbx_vm_unmap(struct mbx_vm *vm, struct drm_gem_object *obj);
 void mbx_vm_activate(struct mbx_vm *vm);	/* with job_lock held */
+int mbx_pb_create(struct mbx_device *m);
+void mbx_pb_destroy(struct mbx_device *m);
+int mbx_pb_build(struct mbx_device *m, unsigned long ms);	/* with the job's space active */
 
 /* mbx_gem.c */
 int mbx_ioctl_bo_create(struct drm_device *dev, void *data, struct drm_file *file);

@@ -35,6 +35,13 @@
 #define MBX_REG_TA_HEIGHT	0x850
 #define MBX_REG_TA_CONFIG	0x85c
 
+/* the parameter buffer's free list (mbx/README.md assumptions 22 and 26): a table of 16-bit
+ * entries in device memory, one a page, page p at device address p << 12 */
+#define MBX_REG_FL_TABLE	0x824
+#define MBX_REG_FL_FIRST	0x828
+#define MBX_REG_FL_LAST		0x82c
+#define MBX_REG_FL_BUILD	0x838
+
 /* the MMU: eight page tables of 1024 bare physical page addresses (32 MB) */
 #define MBX_REG_MMU_TABLE(i)	(0x1000 + 4 * (i))
 #define MBX_MMU_TABLES		8

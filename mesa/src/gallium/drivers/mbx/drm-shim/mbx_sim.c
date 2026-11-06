@@ -63,9 +63,24 @@ bool drm_shim_driver_prefers_first_render_node = true;
 #define I_TA_STREAM	0x200
 #define I_MASTER	0x8000
 
+#define R_FL_TABLE	0x824
+#define R_FL_FIRST	0x828
+#define R_FL_LAST	0x82c
+#define R_FL_BUILD	0x838
+#define I_EVM_DALLOC	0x40
+
 #define VM_START	0x10000u
 #define VM_SIZE		(32u << 20)
 #define PAGE		4096u
+
+/* The parameter buffer, as the kernel driver lays it out (mbx/drm/mbx_drv.h): the free list's
+ * table then 1024 pages at the top of the address space, the same pages in every space */
+#define PB_PAGES	1024u
+#define PB_LAST_PAGE	((VM_SIZE >> 12) - 1)
+#define PB_FIRST_PAGE	(PB_LAST_PAGE + 1 - PB_PAGES)
+#define PB_TABLE_SIZE	((VM_SIZE >> 12) * 2)
+#define PB_VA		(PB_FIRST_PAGE << 12)
+#define PB_TABLE_VA	(PB_VA - PB_TABLE_SIZE)
 
 struct sim_map {
 	struct sim_map *next;
@@ -85,6 +100,8 @@ static struct {
 	struct mbxemu *emu;
 	uint8_t *mem;		/* the shim's memfd: physical memory */
 	struct shim_bo dummy;
+	struct shim_bo pb;	/* the free list's table, then the parameter buffer's pages */
+	bool pb_built;
 	struct sim_fd *fds;
 	mtx_t lock;
 	struct sim_fd *active;
@@ -122,6 +139,7 @@ static void sim_init(void)
 		abort();
 	}
 	drm_shim_bo_init(&sim.dummy, PAGE);
+	drm_shim_bo_init(&sim.pb, PB_TABLE_SIZE + (size_t)PB_PAGES * PAGE);
 	sim.emu = mbxemu_new(&host);
 	if (getenv("MBX_SIM_TRACE"))
 		mbxemu_set_trace(sim.emu, atoi(getenv("MBX_SIM_TRACE")));
@@ -138,7 +156,7 @@ static struct sim_fd *sim_fd_get(int fd)
 			return f;
 	f = calloc(1, sizeof(*f));
 	f->shim_fd = shim_fd;
-	util_vma_heap_init(&f->heap, VM_START, VM_SIZE - VM_START);
+	util_vma_heap_init(&f->heap, VM_START, PB_TABLE_VA - VM_START);
 	for (i = 0; i < 8; i++) {
 		uint32_t *pt;
 
@@ -147,6 +165,12 @@ static struct sim_fd *sim_fd_get(int fd)
 		pt = (uint32_t *)(sim.mem + f->pt[i]->mem_addr);
 		for (j = 0; j < 1024; j++)
 			pt[j] = (uint32_t)sim.dummy.mem_addr;
+	}
+	/* the parameter buffer at its fixed addresses */
+	for (j = 0; j < (int)(PB_TABLE_SIZE / PAGE + PB_PAGES); j++) {
+		uint32_t pg = (PB_TABLE_VA >> 12) + j;
+
+		((uint32_t *)(sim.mem + f->pt[pg >> 10]->mem_addr))[pg & 1023] = (uint32_t)(sim.pb.mem_addr + (uint64_t)j * PAGE);
 	}
 	f->next = sim.fds;
 	sim.fds = f;
@@ -299,6 +323,18 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	rw(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE | I_TA_OFLOW | I_TA_STREAM);
 	rw(R_INT_CLEAR, 0x7fff);
 
+	if (!sim.pb_built) {
+		rw(R_FL_TABLE, PB_TABLE_VA);
+		rw(R_FL_FIRST, PB_FIRST_PAGE);
+		rw(R_FL_LAST, PB_LAST_PAGE);
+		rw(R_FL_BUILD, 1);
+		if (!(mbxemu_reg_read(sim.emu, R_INT_STATUS) & I_EVM_DALLOC)) {
+			ret = -ETIMEDOUT;
+			goto reset;
+		}
+		rw(R_INT_CLEAR, I_EVM_DALLOC);
+		sim.pb_built = true;
+	}
 	rw(R_TA_CONFIG, a->ta_config);
 	rw(R_TA_WIDTH, a->ta_width);
 	rw(R_TA_HEIGHT, a->ta_height);
@@ -343,6 +379,7 @@ reset:
 	mesa_loge("mbx sim: job failed (%d), resetting", ret);
 	rw(R_SOFT_RESET, 0x111);
 	rw(R_SOFT_RESET, 0);
+	sim.pb_built = false;
 out:
 	mtx_unlock(&sim.lock);
 	return ret;

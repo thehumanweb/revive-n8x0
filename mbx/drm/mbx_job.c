@@ -83,6 +83,7 @@ static void mbx_reset_cores(struct mbx_device *m)
 	mbx_write(m, MBX_REG_SOFT_RESET, 0);
 	mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_MASK);
 	m->active_vm = NULL;
+	m->pb_built = false;	/* a reset empties the free list */
 }
 
 int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
@@ -111,6 +112,11 @@ int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
 	spin_unlock_irq(&m->irq_lock);
 	mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_MASK);
 
+	ret = mbx_pb_build(m, ms);
+	if (ret) {
+		dev_err(m->dev, "free list build failed (%d)\n", ret);
+		goto reset;
+	}
 	mbx_write(m, MBX_REG_TA_CONFIG, a->ta_config);
 	mbx_write(m, MBX_REG_TA_WIDTH, a->ta_width);
 	mbx_write(m, MBX_REG_TA_HEIGHT, a->ta_height);
