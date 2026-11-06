@@ -363,7 +363,8 @@ static int t_tex_npot(char *why)
 
 static int t_tex_bilinear(char *why)
 {
-	/* black left half, white right half; at the seam (x = 32) a bilinear sample is mixed, a nearest one is not */
+	/* dark grey left half, light grey right half (not black: the chip does not filter next to a texel whose
+	 * colour is all zero); at the seam (x = 32) a bilinear sample is mixed, a nearest one is not */
 	unsigned char px[8 * 8 * 4];
 	GLuint t;
 	int ok = 1;
@@ -371,7 +372,7 @@ static int t_tex_bilinear(char *why)
 
 	for (int y = 0; y < 8; y++)
 		for (int x = 0; x < 8; x++) {
-			unsigned char c = x >= 4 ? 255 : 0;
+			unsigned char c = x >= 4 ? 224 : 32;
 
 			px[4 * (y * 8 + x)] = px[4 * (y * 8 + x) + 1] = px[4 * (y * 8 + x) + 2] = c;
 			px[4 * (y * 8 + x) + 3] = 255;
@@ -383,7 +384,15 @@ static int t_tex_bilinear(char *why)
 	quad(0, 0, 1, 1, 1, 1, 1);
 	a = probe(31, 32);
 	b = probe(32, 32);
-	if (!(a.c[0] > 20 && a.c[0] < 235) && !(b.c[0] > 20 && b.c[0] < 235)) {
+	if (getenv("FEAT_ROW")) {
+		for (int x = 24; x < 40; x++)
+			fprintf(stderr, "%d ", probe(x, 32).c[0]);
+		fprintf(stderr, "(bilinear row, x = 24..39)\n");
+		for (int y = 0; y < 64; y += 8)
+			fprintf(stderr, "%d ", probe(48, y).c[0]);
+		fprintf(stderr, "(column x = 48)\n");
+	}
+	if (!(a.c[0] > 50 && a.c[0] < 210) && !(b.c[0] > 50 && b.c[0] < 210)) {
 		snprintf(why, 200, "bilinear: (31,32) is %d and (32,32) is %d: no mixed value at the seam", a.c[0], b.c[0]);
 		ok = 0;
 	}
@@ -393,7 +402,7 @@ static int t_tex_bilinear(char *why)
 	quad(0, 0, 1, 1, 1, 1, 1);
 	a = probe(31, 32);
 	b = probe(32, 32);
-	if (ok && (!(a.c[0] < 8) || !(b.c[0] > 247))) {
+	if (ok && (!(a.c[0] < 40) || !(b.c[0] > 216))) {
 		snprintf(why, 200, "nearest: (31,32) is %d and (32,32) is %d: not a sharp seam", a.c[0], b.c[0]);
 		ok = 0;
 	}

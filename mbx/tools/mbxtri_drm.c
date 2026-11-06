@@ -96,7 +96,8 @@ static void reg_dump(int fd, const char *prefix, const char *when)
 
 int main(int argc, char **argv)
 {
-	uint32_t tails_bytes = 65536, tex_b_bits = 0x0e000000;
+	uint32_t tails_bytes = 65536, tex_b_bits = 0x0e000000, tex_pitch = 8, tex_bw = 0, tex_lo = 0xff000000, tex_hi = 0xffffffff, tex_fmt = 6;
+	char *endp;
 	struct bo tex = { 0 };	/* -T: the tail buffer's size (the driver zeroes tails_zero bytes of it) */
 	const char *out = "mbxtri-drm.ppm", *dev = NULL;
 	struct bo surf, regions, tails;
@@ -112,7 +113,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:J:Q:V:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -123,6 +124,9 @@ int main(int argc, char **argv)
 		else if (o == 'W') rawfile = optarg;
 		else if (o == 'N') { tri_tex = 1; tri_tex_mode = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'Y') tri_tex_c = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'V') tex_fmt = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'Q') { tex_bw = 1; tex_lo = (uint32_t)strtoul(optarg, &endp, 0); tex_hi = *endp == ':' ? (uint32_t)strtoul(endp + 1, NULL, 0) : 0xffffffff; }
+		else if (o == 'J') tex_pitch = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'H') tex_b_bits = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'T') tails_bytes = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'A') tri_alpha_word = (uint32_t)strtoul(optarg, NULL, 0);
@@ -158,10 +162,13 @@ int main(int argc, char **argv)
 		}
 		tp = tex.map;
 		for (i = 0; i < 64; i++)
-			tp[i] = quad[(i / 8 >= 4) * 2 + (i % 8 >= 4)];
-		/* clamp both ways, 8 x 8, format 6 (ARGB8888), stride 8 texels (bit 0 of A) */
-		tri_tex_a = 1u << 31 | 1u << 29 | 6u << 14 | 1;
-		tri_tex_b = tex_b_bits | tex.va >> 7;
+			if (tex_fmt == 6)
+				tp[(i / 8) * tex_pitch + i % 8] = tex_bw ? (i % 8 >= 4 ? tex_hi : tex_lo) : quad[(i / 8 >= 4) * 2 + (i % 8 >= 4)];
+			else	/* a 16-bit texel */
+				((uint16_t *)tp)[(i / 8) * tex_pitch + i % 8] = (uint16_t)(i % 8 >= 4 ? tex_hi : tex_lo);
+		/* clamp both ways, 8 x 8, format 6 (ARGB8888), the stride in 8 texels: bit 0 of A and bits 1+ at 18 of B (-J) */
+		tri_tex_a = 1u << 31 | 1u << 29 | tex_fmt << 14 | (tex_pitch / 8 & 1);
+		tri_tex_b = tex_b_bits | (tex_pitch / 8 >> 1) << 18 | tex.va >> 7;
 	}
 	px = surf.map;
 	for (i = 0; i < TRI_W * TRI_H * (dbl ? 2 : 1); i++)

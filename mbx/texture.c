@@ -90,9 +90,13 @@ static uint32_t level_offset(const struct texunit *t, int level)
 
 /* 5 and 6 bits to a byte by replicating the top bits (v << 3 | v >> 2),
  * which matches the N810 better than scaling by 255/31 and rounding */
-static float x5(uint32_t v) { v &= 31; return ((v << 3) | (v >> 2)) / 255.0f; }
-static float x6(uint32_t v) { v &= 63; return ((v << 2) | (v >> 4)) / 255.0f; }
+/* Colour fields are shifted up, not replicated: found during device testing, a white RGB565 texel reads
+ * (248, 252, 248) through the replace combiner, a white ARGB4444 one 240, a white ARGB1555 one 248. (The
+ * earlier choice of replicating the top bits compared two guesses, not the shift.) A 4-bit alpha is scaled. */
+static float x5(uint32_t v) { v &= 31; return (float)(v << 3) / 255.0f; }
+static float x6(uint32_t v) { v &= 63; return (float)(v << 2) / 255.0f; }
 static float x4(uint32_t v) { return (v & 15) / 15.0f; }
+static float x4c(uint32_t v) { return (float)((v & 15) << 4) / 255.0f; }
 static float x8(uint32_t v) { return (v & 255) / 255.0f; }
 
 /*
@@ -276,9 +280,9 @@ void tex_fetch(struct mbxemu *e, const struct texunit *t, int level, int x, int 
 		out[3] = 1;
 		break;
 	case 2:
-		out[0] = x4(v >> 8);
-		out[1] = x4(v >> 4);
-		out[2] = x4(v);
+		out[0] = x4c(v >> 8);
+		out[1] = x4c(v >> 4);
+		out[2] = x4c(v);
 		out[3] = x4(v >> 12);
 		break;
 	case 3:	/* ARGB8332, the 3 and 2 bits replicated */
@@ -335,6 +339,13 @@ static void sample_level(struct mbxemu *e, const struct texunit *t, int level, f
 		tex_fetch(e, t, level, wrap(x0 + 1, w, t->clamp_s), wrap(y0, h, t->clamp_t), c[1]);
 		tex_fetch(e, t, level, wrap(x0, w, t->clamp_s), wrap(y0 + 1, h, t->clamp_t), c[2]);
 		tex_fetch(e, t, level, wrap(x0 + 1, w, t->clamp_s), wrap(y0 + 1, h, t->clamp_t), c[3]);
+		/* found during device testing: when one of the four texels has no colour at all (R, G and B zero,
+		 * whatever its alpha), the chip does not filter: the sample is the first texel (u, v floored) */
+		for (k = 0; k < 4; k++)
+			if (c[k][0] == 0 && c[k][1] == 0 && c[k][2] == 0) {
+				memcpy(out, c[0], sizeof(float) * 4);
+				return;
+			}
 		for (k = 0; k < 4; k++) {
 			int h0 = ((int)(c[0][k] * 255 + 0.5f) * (32 - ax) + (int)(c[1][k] * 255 + 0.5f) * ax) >> 5;
 			int h1 = ((int)(c[2][k] * 255 + 0.5f) * (32 - ax) + (int)(c[3][k] * 255 + 0.5f) * ax) >> 5;

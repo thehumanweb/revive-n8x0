@@ -599,3 +599,13 @@ circuit.
     with the stock replace combiner (`0xd6887610`), with a modulate word (`0x86884610`: texel in A, primary colour in B,
     C = 1 - 1), and with bilinear (bit 31 of B), alone and with a rotation: **the picture is the model's, every pixel**
     (0 of 4096 differ on the unit).
+
+
+39. **Texel arithmetic on the chip** (found during device testing, `mbxtri-drm -N ... -Q lo:hi -V fmt -H`, compared with `mbxtri`
+    pixel by pixel; every case below ends with 0 differing pixels). Colour fields of a 16-bit texel are **shifted up, not
+    replicated**: white RGB565 reads (248, 252, 248), white ARGB4444 240, white ARGB1555 248 (a 4-bit alpha is scaled).
+    **Bilinear filtering is skipped when any of the four texels has R, G and B all zero**, whatever its alpha (ARGB8888
+    `0xff000000`, `0x80000000`, `0x00000000`, 565 `0x0000`, 4444 `0xf000`, 1555 `0x8000`, LA88 with L zero): the sample is the
+    first texel, (u, v) floored after the half-texel shift, so a black-to-white edge is a step where a white-to-grey
+    one is a ramp. A texel of colour 1 in any channel filters normally. Checked: formats 0, 1, 2, 4 and 6, strides 8, 16
+    and 32 texels.

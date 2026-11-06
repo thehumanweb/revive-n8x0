@@ -41,6 +41,13 @@ the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 | `glReadPixels`, `glCopyTexImage`, blits | CPU or the 2D core (`twod.c`: ROPs, blits) | readpixels and plain copies done; the rest not |
 | Compressed textures (PVRTC) | native texel format | not exposed |
 
+## Hardware limits found on the unit (texturing)
+
+- Bilinear filtering is skipped next to a texel whose R, G and B are all zero: a black-to-light edge is a step. The driver does not
+  work around it yet (an option: nudge pure-black texels to colour 1 on upload, exact for ARGB8888 up to 1/255).
+- 16-bit texel colour fields are shifted, not replicated (white 565 is 248, 252, 248).
+- One texture unit is state bits 16-18 = 2; textures are linear power-of-two with a stride (README assumptions 38 and 39).
+
 ## Order of work (each step is measured by the piglit list above, then by dEQP-GLES2 once it is built)
 
 1. **Cheap correctness:** points and lines, scissor (render clip rectangles), honest `MAX_*` limits, the `fragdepth` crash, the colour
