@@ -589,3 +589,13 @@ circuit.
     400x240 and 800x480 draw the model's pixel counts, `gbm_tri` runs 12 frames on the panel's 800x480 target with no
     failed job, and two clients at once give each its own picture. Not needed: a delay between `TA_COMPLETE` and the
     kick, rebuilding the free list per scene, bit 18 of `0x85c`.
+
+38. **Texturing a draw** (found during device testing; `mbxtri-drm -N`, `mbxtri -N`). One texture unit is state word bits 16-18 = **2**
+    (what the stock background object has); 0 is none, 5 two units; 1 draws nothing, and 3, 4, 6 and 7 hang the job
+    (the model flags 1, 3, 6 and 7 as `V_TEXMODE`). The object header names the unit with mask bit 2 and sends texture
+    words A, B and C after the alpha word; the vertex program writes the coordinate to `o3.xy`, the vertex layout names it
+    (a third attribute of two floats). A linear 8 x 8 ARGB8888 texture (word A `0xa0018001`: clamp both ways, format 6,
+    stride 8 texels in bit 0; word B `0x0e000000` | address / 128; stride 8 means field 0 and bit 0 of A) in four quadrants, drawn
+    with the stock replace combiner (`0xd6887610`), with a modulate word (`0x86884610`: texel in A, primary colour in B,
+    C = 1 - 1), and with bilinear (bit 31 of B), alone and with a rotation: **the picture is the model's, every pixel**
+    (0 of 4096 differ on the unit).

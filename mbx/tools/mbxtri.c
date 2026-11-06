@@ -102,11 +102,14 @@ int main(int argc, char **argv)
 	float deg = 0;
 	int o, verbose = 0;
 	uint32_t surf = SURF, regions = REGIONS, tails = TAILS, pb = PB;
-	uint32_t stream[128], words, status;
+	uint32_t stream[128], words, status, tex_b_bits = 0x0e000000;
 	int i, x, y;
 
-	while ((o = getopt(argc, argv, "a:vo:")) != -1) {
+	while ((o = getopt(argc, argv, "a:vo:N:Y:H:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
+		else if (o == 'N') { tri_tex = 1; tri_tex_mode = (uint32_t)strtoul(optarg, NULL, 0); }
+		else if (o == 'Y') tri_tex_c = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'H') tex_b_bits = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'v') verbose = 1;
 		else if (o == 'o') out = optarg;
 		else return 2;
@@ -152,6 +155,16 @@ int main(int argc, char **argv)
 	wr(R_TA_START, 1);
 
 	/* 2. the stream: object header, VGP program and constants, the triangle, the end word */
+	if (tri_tex) {
+		/* the same 8 x 8 ARGB8888 texture as mbxtri-drm -N: four quadrants, linear, clamped */
+		static const uint32_t quad[4] = { 0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffff00 };
+		uint32_t texva = CTX + 0x8000;
+
+		for (i = 0; i < 64; i++)
+			c_wr32(NULL, texva + 4 * i, quad[(i / 8 >= 4) * 2 + (i % 8 >= 4)]);
+		tri_tex_a = 1u << 31 | 1u << 29 | 6u << 14 | 1;
+		tri_tex_b = tex_b_bits | texva >> 7;
+	}
 	words = tri_stream(stream, deg);
 	for (i = 0; i < (int)words;) {
 		uint32_t type = stream[i] >> 28, count = stream[i] & 0xffff, k;

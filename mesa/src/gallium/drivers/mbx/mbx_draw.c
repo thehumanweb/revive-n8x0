@@ -209,7 +209,7 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *prog)
 {
 	struct mbx_job *job = &ctx->job;
-	const float *uniforms = NULL;
+	const float *uniforms = NULL, *fs_uniforms = NULL;
 	unsigned i, nu = prog->nuniform;
 
 	if (job->loaded_prog != prog) {
@@ -230,6 +230,11 @@ static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *
 	else if (ctx->cb[0].buffer)
 		uniforms = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[0].buffer)->bo) +
 					   ctx->cb[0].buffer_offset);
+	if (ctx->cb[1].user_buffer)
+		fs_uniforms = (const float *)((const uint8_t *)ctx->cb[1].user_buffer + ctx->cb[1].buffer_offset);
+	else if (ctx->cb[1].buffer)
+		fs_uniforms = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[1].buffer)->bo) +
+					      ctx->cb[1].buffer_offset);
 	if (getenv("MBX_DEBUG") && atoi(getenv("MBX_DEBUG")) > 1)
 		for (i = 0; i < nu; i++)
 			mbx_dbg("  uniform c%u = %g %g %g %g (buffer %p, user %p, size %u)", i,
@@ -269,6 +274,11 @@ static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *
 						s = 0.0f;
 					}
 					mbx_emit_f(ctx, MBX_CH_TA, s);
+				} else if (prog->nfsu && (int)i >= prog->fsu_base && (int)i < prog->fsu_base + (int)prog->nfsu) {
+					/* a fragment uniform the vertex program multiplies into the colour */
+					unsigned idx = prog->fsu_vec[i - prog->fsu_base] * 4 + c;
+
+					mbx_emit_f(ctx, MBX_CH_TA, fs_uniforms && idx * 4 < ctx->cb[1].buffer_size ? fs_uniforms[idx] : 0.0f);
 				} else if (i < nu) {
 					mbx_emit_f(ctx, MBX_CH_TA, uniforms ? uniforms[i * 4 + c] : 0.0f);
 				} else {

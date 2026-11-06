@@ -19,19 +19,29 @@ enum mbx_fs_kind {
 	MBX_FS_MATCHED,		/* gl_FragColor from one varying's components and constants */
 };
 
+#define MBX_MAX_FSU 4	/* fragment uniform vec4s the vertex program can take */
+
+/* One lane of gl_FragColor: a product of up to one of each factor */
+struct mbx_fs_lane {
+	bool tex;			/* the texel's lane */
+	bool has_var;
+	unsigned var_loc, var_comp;	/* a varying's component: slot, component */
+	bool has_uni;
+	unsigned uni_slot, uni_comp;	/* a fragment uniform's component: vec4 slot, component */
+	unsigned uni_index;		/* its index in mbx_fs_info.fsu_vec */
+	bool has_k;
+	float k;			/* the constants' product */
+};
+
 struct mbx_fs_info {
 	enum mbx_fs_kind kind;
-	unsigned varying;	/* VARYING_SLOT_* of the colour's varying */
-	bool lane_const[4];	/* r, g, b, a: a constant instead of the varying's */
-	float colour[4];	/* those constants */
+	struct mbx_fs_lane lane[4];
 	bool flat;		/* flat shading (declared so, or nothing varies) */
-	/* texturing: gl_FragColor = texture2D(sampler 0, uv), or that times the colour varying (modulate) */
+	/* texturing: unit 0's texel, times the lanes' other factors (modulate) or alone (replace) */
 	bool tex;
 	bool modulate;
-	/* where each lane comes from in the vertex shader's outputs (the linker packs varyings, so a colour and a
-	 * coordinate can share a slot): slot and component */
-	unsigned uv_loc[2], uv_comp[2];
-	unsigned col_loc[4], col_comp[4];	/* modulate: the colour varying's lanes */
+	unsigned uv_loc[2], uv_comp[2];	/* where the coordinate comes from in the vertex shader's outputs */
+	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* the fragment uniform vec4s read */
 };
 
 /*
@@ -52,6 +62,8 @@ struct mbx_vgp_program {
 	uint32_t sections;		/* the sections word this program's draws send */
 	bool scissor;			/* the variant with the scissor as four user clip planes (o5.xyzw) */
 	int scissor_slot;		/* its four planes: uniform slots scissor_slot .. +3 */
+	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* fragment uniform vec4s the program carries as constants */
+	int fsu_base;			/* their first constant slot */
 	bool tex;			/* unit 0 is sampled */
 	uint32_t tex_c;			/* its combiner (texture word C) */
 	int tex_scale_slot;		/* the uniform slot holding the texture's (width / padded width, height / padded height) */

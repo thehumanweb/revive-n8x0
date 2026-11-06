@@ -96,7 +96,8 @@ static void reg_dump(int fd, const char *prefix, const char *when)
 
 int main(int argc, char **argv)
 {
-	uint32_t tails_bytes = 65536;	/* -T: the tail buffer's size (the driver zeroes tails_zero bytes of it) */
+	uint32_t tails_bytes = 65536, tex_b_bits = 0x0e000000;
+	struct bo tex = { 0 };	/* -T: the tail buffer's size (the driver zeroes tails_zero bytes of it) */
 	const char *out = "mbxtri-drm.ppm", *dev = NULL;
 	struct bo surf, regions, tails;
 	struct drm_mbx_submit s;
@@ -111,7 +112,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -120,6 +121,9 @@ int main(int argc, char **argv)
 		else if (o == 'E') empty = 1;
 		else if (o == 'G') gradient = 1;
 		else if (o == 'W') rawfile = optarg;
+		else if (o == 'N') { tri_tex = 1; tri_tex_mode = (uint32_t)strtoul(optarg, NULL, 0); }
+		else if (o == 'Y') tri_tex_c = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'H') tex_b_bits = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'T') tails_bytes = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'A') tri_alpha_word = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'B') tri_clear_alpha = (uint32_t)strtoul(optarg, NULL, 0);
@@ -142,6 +146,22 @@ int main(int argc, char **argv)
 	    (ret = bo_new(fd, &tails, tails_bytes, dump, MBX_BO_INFO_ALIGN_64K))) {
 		fprintf(stderr, "mbxtri-drm: buffers: %s\n", strerror(-ret));
 		return 1;
+	}
+	if (tri_tex) {
+		/* an 8 x 8 ARGB8888 texture, linear, in four quadrants: red and green below, blue and yellow above */
+		static const uint32_t quad[4] = { 0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffff00 };
+		uint32_t *tp;
+
+		if (bo_new(fd, &tex, 4096, 1, 0)) {
+			fprintf(stderr, "mbxtri-drm: texture buffer\n");
+			return 1;
+		}
+		tp = tex.map;
+		for (i = 0; i < 64; i++)
+			tp[i] = quad[(i / 8 >= 4) * 2 + (i % 8 >= 4)];
+		/* clamp both ways, 8 x 8, format 6 (ARGB8888), stride 8 texels (bit 0 of A) */
+		tri_tex_a = 1u << 31 | 1u << 29 | 6u << 14 | 1;
+		tri_tex_b = tex_b_bits | tex.va >> 7;
 	}
 	px = surf.map;
 	for (i = 0; i < TRI_W * TRI_H * (dbl ? 2 : 1); i++)

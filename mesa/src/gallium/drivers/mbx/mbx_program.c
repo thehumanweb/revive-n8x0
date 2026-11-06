@@ -93,7 +93,7 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 		 * stack's own word (the background object's); modulate has the texel in A and the primary colour in B */
 		p->tex = true;
 		p->tex_c = ctx->fs->fs_info.modulate ? 0x86884610 : 0xd6887610;
-		p->st_extra |= 1u << 16;	/* state bits 16-18: one texture unit (the value is the model's: 1-4 mean one unit; not confirmed on the chip) */
+		p->st_extra |= 2u << 16;	/* state bits 16-18: one texture unit is mode 2 (found on the chip: 1 draws nothing, 3, 6, 7 hang) */
 	}
 	p->sections = 0xf0020000 | 0x4 | (scissor ? 0xfu << 20 : 0);	/* user clip planes 0-3 on for the scissor */	/* the VGP section the program is loaded in (bit 2); bit 17 is needed on the chip (observed on an N810), the model ignores it */
 	if (!mbx_compile_vs(ctx->vs->nir, &ctx->fs->fs_info, p)) {

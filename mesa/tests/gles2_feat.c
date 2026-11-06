@@ -31,7 +31,7 @@ static const char *fs_src =
 	"varying vec4 v_color;\n"
 	"void main() { gl_FragColor = v_color; }\n";
 
-static GLuint prog, prog_tex, prog_mod;
+static GLuint prog, prog_tex, prog_mod, prog_uni, prog_vu, prog_tu;
 static int failures;
 
 static const char *tvs_src =
@@ -56,6 +56,22 @@ static const char *tfs_modulate =
 	"varying vec2 v_uv;\n"
 	"varying vec4 v_color;\n"
 	"void main() { gl_FragColor = texture2D(u_tex, v_uv) * v_color; }\n";
+
+static const char *fs_uniform =
+	"precision mediump float;\n"
+	"uniform vec4 u_color;\n"
+	"void main() { gl_FragColor = u_color; }\n";
+static const char *fs_var_uniform =
+	"precision mediump float;\n"
+	"uniform vec4 u_color;\n"
+	"varying vec4 v_color;\n"
+	"void main() { gl_FragColor = v_color * u_color; }\n";
+static const char *fs_tex_uniform =
+	"precision mediump float;\n"
+	"uniform sampler2D u_tex;\n"
+	"uniform vec4 u_color;\n"
+	"varying vec2 v_uv;\n"
+	"void main() { gl_FragColor = texture2D(u_tex, v_uv) * u_color; }\n";
 
 static GLuint compile(GLenum type, const char *src)
 {
@@ -488,7 +504,61 @@ static int t_scissor_clear(char *why)
 	return 1;
 }
 
+static int t_fs_uniform(char *why)
+{
+	int ok;
+
+	begin();
+	glUseProgram(prog_uni);
+	glUniform4f(glGetUniformLocation(prog_uni, "u_color"), 0.0f, 0.5f, 1.0f, 1.0f);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = is(32, 32, 0, 128, 255, why, 200) && is(5, 5, 0, 128, 255, why, 200);
+	/* and again with another value: the constant is a program constant refreshed at the draw */
+	if (ok) {
+		glUniform4f(glGetUniformLocation(prog_uni, "u_color"), 1.0f, 0.25f, 0.0f, 1.0f);
+		quad(0, 0, 1, 1, 1, 1, 1);
+		ok = is(32, 32, 255, 64, 0, why, 200);
+	}
+	glUseProgram(prog);
+	return ok;
+}
+
+static int t_fs_var_uniform(char *why)
+{
+	int ok;
+
+	begin();
+	glUseProgram(prog_vu);
+	glUniform4f(glGetUniformLocation(prog_vu, "u_color"), 0.5f, 1.0f, 0.5f, 1.0f);
+	quad(0, 0, 1, 1, 1.0f, 0.5f, 1.0f);	/* v_color (1, .5, 1) times (.5, 1, .5) */
+	ok = is(32, 32, 128, 128, 128, why, 200);
+	glUseProgram(prog);
+	return ok;
+}
+
+static int t_tex_uniform(char *why)
+{
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok;
+
+	quadrants(px, 8, 8);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tu);
+	glUniform1i(glGetUniformLocation(prog_tu, "u_tex"), 0);
+	glUniform4f(glGetUniformLocation(prog_tu, "u_color"), 0.5f, 0.5f, 0.5f, 1.0f);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = is(16, 16, 128, 0, 0, why, 200) && is(48, 48, 128, 128, 0, why, 200) && is(16, 48, 0, 0, 128, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "fs_uniform", t_fs_uniform },
+	{ "fs_var_uniform", t_fs_var_uniform },
+	{ "tex_uniform", t_tex_uniform },
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "tex_replace", t_tex_replace },
@@ -551,6 +621,9 @@ int main(int argc, char **argv)
 	glLinkProgram(prog);
 	prog_tex = link_tex(tfs_replace);
 	prog_mod = link_tex(tfs_modulate);
+	prog_uni = link_tex(fs_uniform);
+	prog_vu = link_tex(fs_var_uniform);
+	prog_tu = link_tex(fs_tex_uniform);
 	glUseProgram(prog);
 	glViewport(0, 0, W, H);
 

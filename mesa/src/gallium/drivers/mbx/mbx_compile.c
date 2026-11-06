@@ -418,19 +418,33 @@ static bool pass_one(struct cc *c)
 		o->dreg = 7;
 		o->dlane = 1;
 	}
-	for (lane = 0; lane < 4; lane++) {
-		struct vsrc v;
+	if (fs->nfsu) {		/* the fragment uniforms the colour needs, as program constants after the others */
+		int slot = c->max_uniform + 1;
 
-		if (fs->tex && fs->modulate)
-			v = c->outs[fs->col_loc[lane]][fs->col_comp[lane]];
-		else if (fs->tex)
-			v = imm(1.0f);	/* replace: the primary colour is not used */
-		else if (fs->lane_const[lane])
-			v = imm(fs->colour[lane]);
-		else
-			v = c->outs[fs->varying][lane];
+		c->prog->fsu_base = slot;
+		c->prog->nfsu = fs->nfsu;
+		memcpy(c->prog->fsu_vec, fs->fsu_vec, sizeof(fs->fsu_vec));
+		c->max_uniform = slot + (int)fs->nfsu - 1;
+	}
+	for (lane = 0; lane < 4; lane++) {
+		const struct mbx_fs_lane *L = &fs->lane[lane];
+		struct vsrc v = { .kind = V_NONE };
+
+		/* the lane's factors other than the texel, multiplied in the vertex program */
+		if (L->has_var) {
+			v = c->outs[L->var_loc][L->var_comp];
+			if (v.kind == V_NONE)
+				return fail(c, "the vertex shader does not write a varying the fragment shader reads");
+		}
+		if (L->has_uni) {
+			struct vsrc u = { .kind = V_CONST, .idx = c->prog->fsu_base + (int)L->uni_index, .lane = (int)L->uni_comp };
+
+			v = v.kind == V_NONE ? u : op2(c, MBX_VGP_MUL, v, u);
+		}
+		if (L->has_k && (L->k != 1.0f || v.kind == V_NONE))
+			v = v.kind == V_NONE ? imm(L->k) : op2(c, MBX_VGP_MUL, v, imm(L->k));
 		if (v.kind == V_NONE)
-			return fail(c, "the vertex shader does not write a varying the fragment shader reads");
+			v = imm(1.0f);	/* the texel alone */
 		if (v.kind == V_VREG)
 			c->vuse[v.idx]++;
 		write_dest(c, v, D_OUT, 1, bgra[lane]);
@@ -689,18 +703,58 @@ bool mbx_compile_vs(nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp
 /* --- the fragment side --- */
 
 /*
- * What the fixed pipe can do with a fragment shader, so far: gl_FragColor is
- * made of varying components (one varying, in order) and constants. The
- * varying is interpolated by the hardware (Gouraud) unless declared flat, or
- * every component is a constant (then shading is flat and the vertex colour is
- * the constant).
+ * What the fixed pipe can do with a fragment shader: each lane of gl_FragColor is a product of factors, a texel of
+ * unit 0 (the same lane), a varying's component, a fragment uniform's component, a constant. The hardware
+ * interpolates what the vertex shader gives it, so everything but the texel is computed per vertex, in the
+ * vertex program, and reaches the TSP as the primary colour: it is exact because each factor is linear across a
+ * triangle (a varying) or constant (a uniform). The texel then multiplies it (modulate), or is it (replace).
  */
+static bool fs_factors(nir_scalar s, struct mbx_fs_lane *L, nir_tex_instr *tex, unsigned lane)
+{
+	s = nir_scalar_chase_movs(s);
+	if (nir_scalar_is_const(s)) {
+		L->k *= nir_scalar_as_float(s);
+		L->has_k = true;
+		return true;
+	}
+	if (tex && nir_def_instr(s.def) == &tex->instr) {
+		if (s.comp != lane || L->tex)
+			return false;
+		L->tex = true;
+		return true;
+	}
+	if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_input) {
+		nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+
+		if (L->has_var)
+			return false;
+		L->has_var = true;
+		L->var_loc = nir_intrinsic_io_semantics(in).location;
+		L->var_comp = nir_intrinsic_component(in) + s.comp;
+		return true;
+	}
+	if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_uniform) {
+		nir_intrinsic_instr *un = nir_def_as_intrinsic(s.def);
+
+		if (L->has_uni || !nir_src_is_const(un->src[0]))
+			return false;
+		L->has_uni = true;
+		L->uni_slot = nir_intrinsic_base(un) + nir_src_as_uint(un->src[0]);
+		L->uni_comp = s.comp;	/* the load starts at the first component of its vec4 slot */
+		return true;
+	}
+	if (nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_fmul)
+		return fs_factors(nir_scalar_chase_alu_src(s, 0), L, tex, lane) &&
+		       fs_factors(nir_scalar_chase_alu_src(s, 1), L, tex, lane);
+	return false;
+}
+
 void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 {
 	nir_function_impl *impl = nir_shader_get_entrypoint(fs);
 	nir_intrinsic_instr *store = NULL;
 	nir_tex_instr *tex = NULL;
-	bool have_var = false, lane_tex[4] = { false }, lane_mod[4] = { false };
+	unsigned i, j;
 
 	memset(info, 0, sizeof(*info));
 	info->kind = MBX_FS_UNSUPPORTED;
@@ -724,11 +778,11 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		case nir_instr_type_tex: {
 			nir_tex_instr *t = nir_instr_as_tex(instr);
 
-			/* one plain 2D sample of unit 0: the coordinate is checked below */
+			/* one plain 2D sample of unit 0 */
 			if (tex || t->op != nir_texop_tex || t->sampler_dim != GLSL_SAMPLER_DIM_2D || t->is_array ||
 			    t->is_shadow || t->texture_index != 0 || nir_tex_instr_src_index(t, nir_tex_src_coord) < 0)
 				return;
-			for (unsigned i = 0; i < t->num_srcs; i++)
+			for (i = 0; i < t->num_srcs; i++)
 				if (t->src[i].src_type != nir_tex_src_coord)
 					return;	/* a bias, a projector, an offset: not yet */
 			tex = t;
@@ -740,13 +794,11 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 			if (intr->intrinsic == nir_intrinsic_store_output) {
 				unsigned loc = nir_intrinsic_io_semantics(intr).location;
 
-				if (loc != FRAG_RESULT_COLOR && loc != FRAG_RESULT_DATA0)
-					return;
-				if (store)
+				if ((loc != FRAG_RESULT_COLOR && loc != FRAG_RESULT_DATA0) || store)
 					return;
 				store = intr;
-			} else if (intr->intrinsic != nir_intrinsic_load_input) {
-				return;	/* uniforms, textures, derivatives: not yet */
+			} else if (intr->intrinsic != nir_intrinsic_load_input && intr->intrinsic != nir_intrinsic_load_uniform) {
+				return;	/* derivatives and the rest: not yet */
 			}
 			break;
 		}
@@ -772,69 +824,45 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		info->uv_comp[1] = nir_intrinsic_component(iv) + v.comp;
 		info->tex = true;
 	}
-	for (unsigned i = 0; i < 4; i++) {
-		nir_scalar s = nir_scalar_resolved(store->src[0].ssa, i);
+	for (i = 0; i < 4; i++) {
+		struct mbx_fs_lane *L = &info->lane[i];
 
-		if (tex && nir_def_instr(s.def) == &tex->instr && s.comp == i) {
-			lane_tex[i] = true;
+		L->k = 1.0f;
+		if (!fs_factors(nir_scalar_resolved(store->src[0].ssa, i), L, tex, i))
+			return;
+		if ((L->tex != 0) != (info->tex != 0))
+			return;	/* the texel is in every lane or in none: it is one combiner */
+	}
+	/* the fragment uniforms the vertex program needs, each vec4 once */
+	for (i = 0; i < 4; i++) {
+		struct mbx_fs_lane *L = &info->lane[i];
+
+		if (!L->has_uni)
 			continue;
-		}
-		if (tex && nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_fmul) {
-			nir_scalar a = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0));
-			nir_scalar b = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 1));
-
-			if (nir_def_instr(b.def) == &tex->instr) {
-				nir_scalar t = a;
-
-				a = b;
-				b = t;
-			}
-			if (nir_def_instr(a.def) == &tex->instr && a.comp == i && nir_scalar_is_intrinsic(b) &&
-			    nir_scalar_intrinsic_op(b) == nir_intrinsic_load_input) {
-				nir_intrinsic_instr *in = nir_def_as_intrinsic(b.def);
-				unsigned loc = nir_intrinsic_io_semantics(in).location;
-
-				info->col_loc[i] = loc;
-				info->col_comp[i] = nir_intrinsic_component(in) + b.comp;
-				lane_mod[i] = true;
-				continue;
-			}
-			return;
-		}
-		if (nir_scalar_is_const(s)) {
-			info->lane_const[i] = true;
-			info->colour[i] = nir_scalar_as_float(s);
-		} else if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_input) {
-			nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
-			unsigned loc = nir_intrinsic_io_semantics(in).location;
-
-			/* component i of one varying, in order */
-			if (nir_intrinsic_component(in) + s.comp != i || (have_var && loc != info->varying))
+		for (j = 0; j < info->nfsu && info->fsu_vec[j] != L->uni_slot; j++)
+			;
+		if (j == info->nfsu) {
+			if (info->nfsu == MBX_MAX_FSU)
 				return;
-			info->varying = loc;
-			have_var = true;
-		} else {
-			return;
+			info->fsu_vec[info->nfsu++] = L->uni_slot;
 		}
+		L->uni_index = j;
 	}
-	if (tex) {
-		/* every lane the texel, or every lane the texel times the colour varying: the combiner is one word */
-		if (lane_tex[0] && lane_tex[1] && lane_tex[2] && lane_tex[3])
-			info->modulate = false;
-		else if (lane_mod[0] && lane_mod[1] && lane_mod[2] && lane_mod[3])
-			info->modulate = true;
-		else
-			return;
-		info->kind = MBX_FS_MATCHED;
-		info->flat = !info->modulate;
-		return;
-	}
-	info->kind = MBX_FS_MATCHED;
-	if (have_var) {
-		nir_variable *var = nir_find_variable_with_location(fs, nir_var_shader_in, info->varying);
+	/* flat when no lane takes a varying, or the varyings are declared flat */
+	info->flat = true;
+	for (i = 0; i < 4; i++) {
+		struct mbx_fs_lane *L = &info->lane[i];
+		nir_variable *var;
 
-		info->flat = var && var->data.interpolation == INTERP_MODE_FLAT;
-	} else {
-		info->flat = true;
+		if (!L->has_var)
+			continue;
+		var = nir_find_variable_with_location(fs, nir_var_shader_in, L->var_loc);
+		if (!(var && var->data.interpolation == INTERP_MODE_FLAT))
+			info->flat = false;
 	}
+	/* modulate when anything but the texel is a factor, else replace */
+	for (i = 0; i < 4; i++)
+		if (info->lane[i].has_var || info->lane[i].has_uni || (info->lane[i].has_k && info->lane[i].k != 1.0f))
+			info->modulate = true;
+	info->kind = MBX_FS_MATCHED;
 }

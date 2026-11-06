@@ -929,7 +929,14 @@ static void hdr_block(struct mbxemu *e, uint32_t v)
 	int w = e->hdr_word++;
 
 	switch (e->hdr_bit) {
-	case 0: s->st = v; break;
+	case 0:
+		s->st = v;
+		/* found during device testing: one texture unit is mode 2 (what the stock background object has);
+		 * 1 draws nothing, 3, 6 and 7 hang the job, 5 is two units */
+		if ((v >> 16 & 7) == 1 || (v >> 16 & 7) == 3 || (v >> 16 & 7) == 6 || (v >> 16 & 7) == 7)
+			emu_violation(e, V_TEXMODE, "a state word with texture mode bits (16-18) of 1, 3, 6 or 7: the chip "
+				      "draws nothing or hangs (one texture unit is 2, two are 5)");
+		break;
 	case 1: s->at = v; break;
 	case 2: s->tex[0][w] = v; break;
 	case 3: s->tex[1][w] = v; break;

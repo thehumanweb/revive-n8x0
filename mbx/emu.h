@@ -270,6 +270,7 @@ struct pbw {
 #define V_PB_FILL	(1u << 21)	/* the parameter buffer was not filled with 0xf0000000 end words before the build */
 #define V_DEPTH_CLEAR	(1u << 20)	/* the scene has no depth-only clear: the tile's depth starts as NaN */
 #define V_STATE25	(1u << 25)	/* a draw that writes colour with bit 25 of its state word clear: the colour path differs on the chip (ANDed with the target) */
+#define V_TEXMODE	(1u << 26)	/* state bits 16-18 are 1, 3, 6 or 7: on the chip a textured draw with them draws nothing (1) or hangs the job */
 #define V_SOFT		(V_STATE25 | V_TLB | V_MMU_SEQ | V_TILES | V_PB_FILL | V_DEPTH_CLEAR | V_ALIGN_SOFT | V_GRID | V_FMT | V_FL_CHAIN | V_TA_BASE | V_REGS | V_WRITE_OUT)
 
 struct mbxemu {
