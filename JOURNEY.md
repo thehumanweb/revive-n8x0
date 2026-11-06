@@ -21,7 +21,7 @@ a device.
 | M1: kernel driver | Mostly done: probe and power-up, IRQ, per-file MBX address spaces with page tables, shmem GEM buffers and PRIME import code, a blocking submit that feeds the TA stream by CPU PIO. Missing: asynchronous submit with fences, DMA feeding, parameter-buffer and free-list setup, partial render on overflow, runtime PM. |
 | M2: triangle without Mesa | Done in QEMU: the host `mbxtri` and the guest `mbxtri-drm` (through the kernel driver) draw byte-identical pictures. Not done: showing it on the panel. |
 | M3: Gallium driver | In progress. A GLES2 triangle (EGL, an FBO, GLSL with a uniform matrix and a varying colour) renders on the host sim and is byte-identical to the emulator-only picture at four angles. Done: the vertex compiler (NIR to VGP, scalar), the fragment matcher for varying and constant colour, the context, the sim. Missing: richer fragment shaders (textures, fog, blending, alpha test), scissor, scanout through kmsro, the CPU fallback, uniforms in constant buffers beyond what the matcher handles, the shaders' trigonometry. |
-| M4: animated triangle in the guest | In progress. Mesa with the mbx driver is cross-built for the guest through Buildroot, and the offscreen GLES2 triangle (`gles2_tri`) draws in the QEMU guest through the real kernel driver (1144 of 4096 pixels). The display program `gbm_tri` (EGL on GBM, KMS mode set, page flips on omapdrm) gets as far as a GBM/EGL display and the compiled program, then crashes in the first draw; being debugged. |
+| M4: animated triangle in the guest | **Done in QEMU.** `gbm_tri` (EGL on GBM, KMS on omapdrm through kmsro, GLES2 through the mbx driver, the model rendering) shows the rotating RGB triangle on the guest's 800x480 panel: two screendumps six seconds apart show it at different angles (`docs/gbm_tri-panel-a.png`, `-b.png`). Not yet: a frame rate, vsync behaviour, the real display.
 | M5: real N810 | Not started. See section 4 for what is unverified. |
 
 Everything built here ran on the emulator only (QEMU's n810 with the model, or the model on the host); the one hardware fact so far is the user's N810 probe in section 4. Commits are on `main`; pushed up to `6e8e5dd`, later commits are local until pushed.
@@ -87,7 +87,7 @@ timeout once killed `make` mid-write and left corrupt objects):
 - Rootfs (modules, tools, Mesa with mbx, the demos, image): `rootfs/scripts/build-rootfs.sh`
   (prepares and copies Mesa, then Buildroot builds it from `rootfs/build/mesa-src`; a Mesa-only change rebuilds in minutes).
 - Boot: `scripts/run-qemu.sh` (console on tcp 5577, user `root`, no
-  password). The guest login and test run are not scripted in the repo yet.
+  password); `scripts/guest.py PORT CMD...` logs in and runs commands, `scripts/panel-shot.sh OUTDIR "CMD"` runs one in the guest and takes QEMU screendumps of the panel (`scripts/ppm2png.py` makes PNGs).
 - Host test programs: `make -C mbx mbxtri test`.
 - Mesa host build: `docker build -t n810-mesa:1 mesa/docker`;
   `mesa/scripts/prepare-mesa.sh [--sync]`; `mesa/scripts/build-host.sh`
@@ -109,6 +109,10 @@ Checked, on the emulator:
 - The same program on the host drm-shim gives the same picture again.
 - `t_vgp`: 128,034 randomised checks of the encoder against the model's own
   `vgp_exec` (not covered: LIT, EXPP, LOGP).
+- In the QEMU guest, `gbm_tri` runs on the display: the mode set and page flips are accepted
+  and two screendumps of the panel show the triangle rotated differently (83,950 pixels differ);
+  the background is the clear colour as the panel's RGB565 shows it (24,24,32). No frame rate
+  was measured (QEMU's speed says nothing about the device's).
 - `t_ta`: the model reproduces the hang above (15 checks): a sections word without bit 17
   stops the TA, the FIFO fills to 59, no `TA_COMPLETE` and no render completion, and a TA
   start or a soft reset recovers; with the bit set a frame completes and draws.
@@ -168,8 +172,7 @@ Sources: `mbx/README.md` (assumptions 4, 5, 6, 7, 8, 13, 23 and "Known gaps");
    matrix transform is 23 instructions now where four DP4s would do), LIT, trig
    approximations, more than 128 constants (a constant window).
 3. Scissor as user clip planes; points and lines; textures and their formats.
-4. Mesa cross-built through Buildroot, EGL/GBM and omapdrm flips for the animated
-   triangle (M4), then the real device (M5).
+4. The real device (M5): the unverified list above is what to probe first.
 
 Sources: the VGP's constraints: `mbx/vgp.c`, `mbx/ta.c` (`vertex()`), `mbx/lib/mbx_vgp.h`; the instruction count of the
 matrix transform: the disassembly `MBX_DEBUG=2` prints.
@@ -472,3 +475,11 @@ comes from `mbx/*.c` and its README.
   are unchanged (identical at four angles).
 - Sources: the user's probe on the device (reported in the session); the model's own code
   (`mbx/ta.c`, `mbx/core.c`, `mbx/render.c`, `mbx/emu.h`); `mbx/README.md` assumption 30.
+
+### 2026-11-06: the animated triangle on the panel (QEMU)
+
+- After `flush_resource` and `blit` were added (the swap had called a NULL pointer), `gbm_tri` ran three frames cleanly in the guest (mode set, then page flips accepted, no flip-event timeouts), and then indefinitely. With `-n 0 -s 4` running, two QEMU screendumps six seconds apart show the Gouraud triangle at different angles on the 800x480 panel: the whole path (GLSL, NIR, the mbx compiler and context, kmsro's dumb buffer imported by PRIME into the MBX's address space, the kernel driver's submit, the model's render, omapdrm's scanout) works in the guest.
+- The first attempt to look had a mistake of mine: I read a `tail -40` of the run's output as a hang, when the full output ended with `gbm_tri: 3 frames`. Reading the end of the file settled it.
+- Method: `scripts/panel-shot.sh` starts QEMU with a monitor socket (`run-qemu.sh`'s new `MONITOR`), runs the command in the guest through `scripts/guest.py`, and sends `screendump` to the monitor; `scripts/ppm2png.py` made `docs/gbm_tri-panel-a.png` and `-b.png`.
+- Sources: the screendumps themselves (`docs/`); Mesa 26.1.8 `src/gallium/drivers/lima/lima_resource.c` and `vc4_context.c` for the hooks a render-only GPU must set; the run outputs `build/m4.out`, `build/m5.out`, `build/m6.out` (not committed).
+

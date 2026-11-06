@@ -4,6 +4,7 @@
 # Usage: scripts/run-qemu.sh [-k zImage] [-r rootfs.jffs2] [extra qemu args...]
 #   QEMU=path/to/qemu-system-arm (default: build/qemu-src/build/, see qemu/README.md and
 #   NOTES.md "Rebuild" for building it from this repo)  PORT=5577  FLASH=flash.img (rebuilt from the rootfs)
+#   MONITOR=unix:build/mon.sock,server,nowait  gives QEMU a monitor (screendump)
 #   MBX_TRACE=1|2  logs MBX register accesses (2: every TA and 2D word too)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -32,4 +33,4 @@ fi
 exec "$QEMU" -machine n810 -kernel "$KERNEL" -mtdblock "$FLASH" \
 	-append "console=ttyS2,115200 root=/dev/mtdblock4 rootfstype=jffs2 rw" \
 	-display none -serial null -serial null -serial tcp:127.0.0.1:$PORT,server,nowait \
-	-monitor none ${MBX_TRACE:+-global mbx.trace=$MBX_TRACE} "$@"
+	-monitor ${MONITOR:-none} ${MBX_TRACE:+-global mbx.trace=$MBX_TRACE} "$@"
