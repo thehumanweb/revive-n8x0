@@ -24,21 +24,22 @@
 
 /* An address space: 32 MB of 4 KB pages through eight page tables */
 #define MBX_VM_SIZE		(32u << 20)
-#define MBX_VM_START		0x10000		/* the first 64 KB stay unmapped */
+#define MBX_VM_START		0x400000	/* clients' buffers go above 4 MB; the parameter buffer, its table and the contexts are below */
 #define MBX_PAGE		4096
 
 /*
- * The parameter buffer: the TA bins its triangles into pages it takes off a
- * free list the driver builds. Page p is at device address p << 12 and the
- * list's table is 16-bit entries in device memory, so both live at fixed
- * addresses: the top of the address space, mapped (the same pages) in every
- * file's space. One buffer serves all jobs because they run one at a time
- * and a render gives its pages back.
+ * The parameter buffer: the TA bins its triangles into pages it takes off a free list the driver
+ * builds. Page p is at device address p << 12 and the list's table is 16-bit entries in device
+ * memory. A list item's pointer is a word offset from the buffer's base (0x83c): 0x40800500 for
+ * an object at base + 0x1400 (seen on the N810). The buffer, its table and the contexts are
+ * low in the device space, as the stock stack has them, mapped (the same pages) in every
+ * file's space. One buffer serves all jobs because they run one at a time and a render gives
+ * its pages back.
  */
-#define MBX_PB_PAGES		1024			/* 4 MB */
-#define MBX_PB_LAST_PAGE	((MBX_VM_SIZE >> 12) - 1)
-#define MBX_PB_FIRST_PAGE	(MBX_PB_LAST_PAGE + 1 - MBX_PB_PAGES)
-#define MBX_PB_TABLE_SIZE	(((MBX_VM_SIZE >> 12)) * 2)	/* an entry for every page number */
+#define MBX_PB_PAGES		768			/* 3 MB */
+#define MBX_PB_FIRST_PAGE	0x100			/* the buffer at 1 MB: page 0 of it is the background object's */
+#define MBX_PB_LAST_PAGE	(MBX_PB_FIRST_PAGE + MBX_PB_PAGES - 1)	/* 0x3ff */
+#define MBX_PB_TABLE_SIZE	0x4000			/* 16 KB, 16 KB aligned */
 #define MBX_PB_VA		(MBX_PB_FIRST_PAGE << 12)
 #define MBX_PB_TABLE_VA		(MBX_PB_VA - MBX_PB_TABLE_SIZE)
 /*

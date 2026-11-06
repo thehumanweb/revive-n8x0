@@ -24,10 +24,10 @@
 /* the kernel driver's layout (mbx/drm/mbx_drv.h) */
 #define PAGE		4096u
 #define VM_SIZE		(32u << 20)
-#define PB_PAGES	1024u
-#define PB_LAST_PAGE	((VM_SIZE >> 12) - 1)
-#define PB_FIRST_PAGE	(PB_LAST_PAGE + 1 - PB_PAGES)
-#define PB_TABLE_SIZE	((VM_SIZE >> 12) * 2)
+#define PB_PAGES	768u
+#define PB_FIRST_PAGE	0x100u
+#define PB_LAST_PAGE	(PB_FIRST_PAGE + PB_PAGES - 1)
+#define PB_TABLE_SIZE	0x4000u
 #define PB_VA		(PB_FIRST_PAGE << 12)
 #define PB_TABLE_VA	(PB_VA - PB_TABLE_SIZE)
 

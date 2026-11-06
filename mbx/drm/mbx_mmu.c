@@ -53,8 +53,8 @@ struct mbx_vm *mbx_vm_create(struct mbx_device *m)
 	vm->m = m;
 	mutex_init(&vm->lock);
 	INIT_LIST_HEAD(&vm->maps);
-	/* buffers go below the contexts; the parameter buffer owns the top */
-	drm_mm_init(&vm->mm, MBX_VM_START, MBX_CTX_VA - MBX_VM_START);
+	/* clients' buffers go above 4 MB; the parameter buffer, its table and the contexts own the space below */
+	drm_mm_init(&vm->mm, MBX_VM_START, MBX_VM_SIZE - MBX_VM_START);
 	for (i = 0; i < MBX_MMU_TABLES; i++) {
 		vm->pt[i] = dma_alloc_coherent(m->dev, MBX_PAGE, &vm->pt_dma[i], GFP_KERNEL);
 		if (!vm->pt[i])

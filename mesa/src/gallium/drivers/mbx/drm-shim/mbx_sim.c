@@ -70,16 +70,16 @@ bool drm_shim_driver_prefers_first_render_node = true;
 #define R_FL_BUILD	0x838
 #define I_EVM_DALLOC	0x40
 
-#define VM_START	0x10000u
+#define VM_START	0x400000u	/* clients' buffers above 4 MB; the parameter buffer, table, contexts below */
 #define VM_SIZE		(32u << 20)
 #define PAGE		4096u
 
 /* The parameter buffer, as the kernel driver lays it out (mbx/drm/mbx_drv.h): the free list's
  * table then 1024 pages at the top of the address space, the same pages in every space */
-#define PB_PAGES	1024u
-#define PB_LAST_PAGE	((VM_SIZE >> 12) - 1)
-#define PB_FIRST_PAGE	(PB_LAST_PAGE + 1 - PB_PAGES)
-#define PB_TABLE_SIZE	((VM_SIZE >> 12) * 2)
+#define PB_PAGES	768u			/* the buffer, its table and the contexts low in the space, as the stock stack has them */
+#define PB_FIRST_PAGE	0x100u
+#define PB_LAST_PAGE	(PB_FIRST_PAGE + PB_PAGES - 1)
+#define PB_TABLE_SIZE	0x4000u
 #define PB_VA		(PB_FIRST_PAGE << 12)
 #define PB_TABLE_VA	(PB_VA - PB_TABLE_SIZE)
 #define CTX_SIZE	0x8000u			/* the TA and EVM contexts, padded: 16 KB each */
@@ -162,7 +162,7 @@ static struct sim_fd *sim_fd_get(int fd)
 			return f;
 	f = calloc(1, sizeof(*f));
 	f->shim_fd = shim_fd;
-	util_vma_heap_init(&f->heap, VM_START, CTX_VA - VM_START);
+	util_vma_heap_init(&f->heap, VM_START, VM_SIZE - VM_START);
 	for (i = 0; i < 8; i++) {
 		uint32_t *pt;
 

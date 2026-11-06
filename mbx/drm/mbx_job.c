@@ -156,6 +156,7 @@ static int mbx_job_run(struct mbx_job *job)
 	struct mbx_device *m = job->m;
 	struct drm_mbx_submit *a = &job->a;
 	unsigned long ms = job->ms;
+	ktime_t t_ta = 0, t_render = 0;
 	int ret;
 
 	mutex_lock(&m->job_lock);
@@ -183,13 +184,15 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_TA_REGIONS, a->ta_regions);
 	mbx_write(m, MBX_REG_TA_TAILS, a->ta_tails);
 	mbx_write(m, MBX_REG_TA_CONTEXT_ID, a->ta_context);
+	t_ta = ktime_get();
 	mbx_write(m, MBX_REG_TA_START, 1);
 	mbx_feed(m, job->stream, a->stream_words);
 	if (unlikely(mbx_trace))
 		printk(KERN_DEBUG "mbx: S after the stream %08x\n", mbx_read(m, MBX_REG_INT_STATUS));
 	ret = mbx_wait(m, MBX_INT_TA_DONE, ms);
 	if (unlikely(mbx_trace))
-		printk(KERN_DEBUG "mbx: S after TA_DONE %08x\n", mbx_read(m, MBX_REG_INT_STATUS));
+		printk(KERN_DEBUG "mbx: S after TA_DONE %08x (%lld us after the TA start)\n", mbx_read(m, MBX_REG_INT_STATUS),
+		       ktime_to_us(ktime_sub(ktime_get(), t_ta)));
 	if (ret)
 		goto reset;
 
@@ -227,12 +230,14 @@ static int mbx_job_run(struct mbx_job *job)
 		printk(KERN_DEBUG "mbx: R before the kick: 0860 %08x 0614 %08x 0618 %08x 0854 %08x 085c %08x 0610 %08x\n",
 		       mbx_read(m, MBX_REG_TILES), mbx_read(m, 0x614), mbx_read(m, 0x618), mbx_read(m, MBX_REG_TA_854),
 		       mbx_read(m, MBX_REG_TA_CONFIG), mbx_read(m, MBX_REG_R_CTL));
+	t_render = ktime_get();
 	mbx_write(m, MBX_REG_R_KICK, 1);
 	if (unlikely(mbx_trace))
 		printk(KERN_DEBUG "mbx: S after the kick %08x\n", mbx_read(m, MBX_REG_INT_STATUS));
 	ret = mbx_wait(m, MBX_INT_RENDER, ms);
 	if (unlikely(mbx_trace))
-		printk(KERN_DEBUG "mbx: S after RENDER %08x\n", mbx_read(m, MBX_REG_INT_STATUS));
+		printk(KERN_DEBUG "mbx: S after RENDER %08x (%lld us after the kick)\n", mbx_read(m, MBX_REG_INT_STATUS),
+		       ktime_to_us(ktime_sub(ktime_get(), t_render)));
 	if (ret)
 		goto reset;
 	mutex_unlock(&m->job_lock);
