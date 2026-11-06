@@ -423,3 +423,21 @@ comes from `mbx/*.c` and its README.
   `vc4_optimize_nir`, the options block) as the pattern for the NIR pipeline;
   hardware rules and the clip outputs: `mbx/vgp.c`, `mbx/ta.c` (`vertex()`),
   `mbx/README.md` assumptions 13 and 14; the comparison picture: `mbx/mbxtri`.
+
+### 2026-11-06: scanout resources (written, untested)
+
+- `mbx_resource.c` can now make buffers the display scans out: with a renderonly
+  device (kmsro) a resource bound for scanout or display is allocated by the KMS
+  device as a dumb buffer (padded to whole 16-pixel tiles) and imported by dma-buf
+  into the MBX's address space through `BO_INFO`; `resource_get_handle` returns the
+  KMS handle for the display side or a dma-buf fd, `resource_from_handle` imports,
+  `resource_get_param` reports stride, offset and the linear modifier, and the
+  screen answers the dma-buf modifier queries (linear only). The host sim has no
+  display device, so this path first runs in the guest; the host triangle test is
+  unchanged (identical at four angles).
+- Sources: Mesa 26.1.8 `src/gallium/drivers/lima/lima_resource.c`
+  (`lima_resource_create_scanout`, `lima_resource_get_handle`, `lima_resource_get_param`)
+  as the render-only-GPU pattern; `src/gallium/auxiliary/renderonly/renderonly.{h,c}`;
+  `src/gallium/include/pipe/p_screen.h` (the hook signatures);
+  `src/gallium/drivers/vc4/vc4_screen.c` (the modifier query shape);
+  `src/gallium/winsys/kmsro/drm/kmsro_drm_winsys.c` (why `renderonly_create_kms_dumb_buffer_for_resource`).
