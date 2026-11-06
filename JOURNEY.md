@@ -171,3 +171,30 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
 - Next: the draw-state encoders (header blocks and the ISP/TSP state word,
   texture words, blend and depth state) as a library of the same kind, then
   Mesa.
+
+### 2026-11-06: Mesa 26.1.8 builds with an mbx driver (`mesa/`)
+
+- Buildroot 2026.08.1 ships Mesa 26.1.8; `mesa/scripts/prepare-mesa.sh` fetches
+  it (sha256 checked), applies `mesa/patches/` and copies in `mesa/src` and the
+  uapi header. `mesa/docker` builds the host image (`n810-mesa:1`, meson 1.12);
+  `mesa/scripts/build-host.sh` configures and builds Mesa with only the mbx
+  gallium driver, GLES2 and EGL (GBM, surfaceless), no LLVM. It builds and
+  installs (`build/mesa-host-install`), and libgallium carries the driver.
+- Patch 0001 hooks `mbx` into meson (options, default driver lists,
+  `with_gallium_drm`), the DRM pipe loader and `drm_helper`, and both
+  targets (dri, dril). Patch 0002 adds an `mbx` branch to kmsro: the KMS
+  device (omapdrm) allocates the scanout buffer as a dumb buffer (contiguous,
+  as its DSS needs) and the MBX imports it by PRIME into its own address space,
+  which is what `mbx_vm_map` is built for.
+- The driver is a stub so far: a screen with the VGP's limits as caps (256
+  instructions, 192 constants, 14 temporaries, no control flow, two samplers)
+  and a winsys that recognises the render node by `MBX_ABI_VERSION`; the context
+  returns NULL. `MBX_ABI_VERSION` moved into the uapi header so the kernel and
+  Mesa share it.
+- 26.1 differences from older Mesa that matter here: caps are a `pipe_caps`
+  struct filled at screen creation (`u_init_pipe_screen_caps`) and
+  `shader_caps[]`, not `get_param`; uapi headers are in `include/drm-uapi`;
+  `-Dgallium-vdpau` is gone (`-Dvideo-codecs=`).
+- Next: a drm-shim backend (Mesa's `src/drm-shim`) that implements our ioctls on
+  top of `libmbxemu` in-process, so the same DRM winsys code runs on the host;
+  then a real `pipe_context`.

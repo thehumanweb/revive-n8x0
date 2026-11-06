@@ -1,0 +1,183 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] gallium: hook the mbx (PowerVR MBX, OMAP2420) driver into the build and the DRM loaders
+
+mbx lives in mesa/src (copied in by mesa/scripts/prepare-mesa.sh).
+---
+diff -ruN a/meson.build b/meson.build
+--- a/meson.build	2026-11-06 15:53:30.194506999 +0100
++++ b/meson.build	2026-11-06 15:53:30.199507024 +0100
+@@ -178,7 +178,7 @@
+       gallium_drivers = [
+         'v3d', 'vc4', 'freedreno', 'etnaviv', 'nouveau', 'svga',
+         'tegra', 'virgl', 'lima', 'panfrost', 'llvmpipe', 'softpipe', 'iris',
+-        'zink'
++        'zink', 'mbx'
+       ]
+     elif ['mips', 'mips64', 'ppc', 'ppc64', 'riscv32', 'riscv64'].contains(host_machine.cpu_family())
+       gallium_drivers = [
+@@ -204,7 +204,7 @@
+    gallium_drivers = [
+      'r300', 'r600', 'radeonsi', 'crocus', 'v3d', 'vc4', 'freedreno', 'etnaviv', 'i915',
+      'nouveau', 'svga', 'tegra', 'virgl', 'lima', 'panfrost', 'llvmpipe', 'softpipe', 'iris',
+-     'zink', 'd3d12', 'asahi', 'rocket', 'ethosu'
++     'zink', 'd3d12', 'asahi', 'rocket', 'ethosu', 'mbx'
+    ]
+ endif
+ 
+@@ -218,6 +218,7 @@
+ with_gallium_softpipe = gallium_drivers.contains('softpipe')
+ with_gallium_llvmpipe = gallium_drivers.contains('llvmpipe')
+ with_gallium_vc4 = gallium_drivers.contains('vc4')
++with_gallium_mbx = gallium_drivers.contains('mbx')
+ with_gallium_v3d = gallium_drivers.contains('v3d')
+ with_gallium_panfrost = gallium_drivers.contains('panfrost')
+ with_gallium_etnaviv = gallium_drivers.contains('etnaviv')
+@@ -255,6 +256,7 @@
+   with_gallium_etnaviv,
+   with_gallium_freedreno,
+   with_gallium_lima,
++  with_gallium_mbx,
+   with_gallium_panfrost,
+   with_gallium_v3d,
+   with_gallium_vc4,
+diff -ruN a/meson.options b/meson.options
+--- a/meson.options	2026-11-06 15:53:30.194506999 +0100
++++ b/meson.options	2026-11-06 15:53:30.198507019 +0100
+@@ -87,7 +87,7 @@
+   choices : [
+     'all', 'auto',
+     'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
+-    'lima', 'llvmpipe', 'nouveau', 'panfrost', 'r300', 'r600', 'radeonsi',
++    'lima', 'llvmpipe', 'mbx', 'nouveau', 'panfrost', 'r300', 'r600', 'radeonsi',
+     'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
+   ],
+   description : 'List of gallium drivers to build. If this is set to auto ' +
+diff -ruN a/src/gallium/auxiliary/pipe-loader/meson.build b/src/gallium/auxiliary/pipe-loader/meson.build
+--- a/src/gallium/auxiliary/pipe-loader/meson.build	2026-11-06 15:53:30.196507009 +0100
++++ b/src/gallium/auxiliary/pipe-loader/meson.build	2026-11-06 15:53:30.199507024 +0100
+@@ -30,6 +30,9 @@
+ if with_gallium_vc4
+   renderonly_drivers_c_args += '-DGALLIUM_VC4'
+ endif
++if with_gallium_mbx
++  renderonly_drivers_c_args += '-DGALLIUM_MBX'
++endif
+ if with_gallium_freedreno
+   renderonly_drivers_c_args += '-DGALLIUM_FREEDRENO'
+ endif
+diff -ruN a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c
+--- a/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c	2026-11-06 15:53:30.195507004 +0100
++++ b/src/gallium/auxiliary/pipe-loader/pipe_loader_drm.c	2026-11-06 15:53:30.199507024 +0100
+@@ -80,6 +80,7 @@
+    &virtio_gpu_driver_descriptor,
+    &v3d_driver_descriptor,
+    &vc4_driver_descriptor,
++   &mbx_driver_descriptor,
+    &panfrost_driver_descriptor,
+    &panthor_driver_descriptor,
+    &asahi_driver_descriptor,
+@@ -396,6 +397,9 @@
+ #if defined GALLIUM_VC4
+       "vc4",
+ #endif
++#if defined GALLIUM_MBX
++      "mbx",
++#endif
+ #if defined GALLIUM_ZINK
+       "zink",
+ #endif
+diff -ruN a/src/gallium/auxiliary/target-helpers/drm_helper.h b/src/gallium/auxiliary/target-helpers/drm_helper.h
+--- a/src/gallium/auxiliary/target-helpers/drm_helper.h	2026-11-06 15:53:30.196507009 +0100
++++ b/src/gallium/auxiliary/target-helpers/drm_helper.h	2026-11-06 15:53:30.199507024 +0100
+@@ -46,6 +46,7 @@
+ #ifdef GALLIUM_KMSRO_ONLY
+ #undef GALLIUM_V3D
+ #undef GALLIUM_VC4
++#undef GALLIUM_MBX
+ #undef GALLIUM_FREEDRENO
+ #undef GALLIUM_ETNAVIV
+ #undef GALLIUM_PANFROST
+@@ -296,6 +297,22 @@
+ DRM_DRIVER_DESCRIPTOR_STUB(vc4)
+ #endif
+ 
++#ifdef GALLIUM_MBX
++#include "mbx/drm/mbx_drm_public.h"
++
++static struct pipe_screen *
++pipe_mbx_create_screen(int fd, const struct pipe_screen_config *config)
++{
++   struct pipe_screen *screen;
++
++   screen = mbx_drm_screen_create(fd, config);
++   return screen ? debug_screen_wrap(screen) : NULL;
++}
++DRM_DRIVER_DESCRIPTOR(mbx, NULL, 0)
++#else
++DRM_DRIVER_DESCRIPTOR_STUB(mbx)
++#endif
++
+ #ifdef GALLIUM_V3D
+ #include "v3d/drm/v3d_drm_public.h"
+ 
+diff -ruN a/src/gallium/auxiliary/target-helpers/drm_helper_public.h b/src/gallium/auxiliary/target-helpers/drm_helper_public.h
+--- a/src/gallium/auxiliary/target-helpers/drm_helper_public.h	2026-11-06 15:53:30.196507009 +0100
++++ b/src/gallium/auxiliary/target-helpers/drm_helper_public.h	2026-11-06 15:53:30.199507024 +0100
+@@ -17,6 +17,7 @@
+ extern const struct drm_driver_descriptor virtio_gpu_driver_descriptor;
+ extern const struct drm_driver_descriptor v3d_driver_descriptor;
+ extern const struct drm_driver_descriptor vc4_driver_descriptor;
++extern const struct drm_driver_descriptor mbx_driver_descriptor;
+ extern const struct drm_driver_descriptor panfrost_driver_descriptor;
+ extern const struct drm_driver_descriptor panthor_driver_descriptor;
+ extern const struct drm_driver_descriptor asahi_driver_descriptor;
+diff -ruN a/src/gallium/meson.build b/src/gallium/meson.build
+--- a/src/gallium/meson.build	2026-11-06 15:53:30.195507004 +0100
++++ b/src/gallium/meson.build	2026-11-06 15:53:30.199507024 +0100
+@@ -113,6 +113,12 @@
+ else
+   driver_vc4 = declare_dependency()
+ endif
++if with_gallium_mbx
++  subdir('winsys/mbx/drm')
++  subdir('drivers/mbx')
++else
++  driver_mbx = declare_dependency()
++endif
+ if with_gallium_panfrost
+   subdir('winsys/panfrost/drm')
+   subdir('drivers/panfrost')
+diff -ruN a/src/gallium/targets/dri/meson.build b/src/gallium/targets/dri/meson.build
+--- a/src/gallium/targets/dri/meson.build	2026-11-06 15:53:30.197507014 +0100
++++ b/src/gallium/targets/dri/meson.build	2026-11-06 15:53:30.199507024 +0100
+@@ -58,7 +58,7 @@
+   dependencies : [
+     dep_libdrm, dep_llvm, dep_thread, idep_xmlconfig, idep_mesautil,
+     driver_swrast, driver_r300, driver_r600, driver_radeonsi, driver_nouveau,
+-    driver_kmsro, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
++    driver_kmsro, driver_v3d, driver_vc4, driver_mbx, driver_freedreno, driver_etnaviv,
+     driver_tegra, driver_i915, driver_svga, driver_virgl,
+     driver_panfrost, driver_iris, driver_lima, driver_zink, driver_d3d12,
+     driver_asahi, driver_crocus, driver_rocket, driver_ethosu
+diff -ruN a/src/gallium/targets/dril/dril_target.c b/src/gallium/targets/dril/dril_target.c
+--- a/src/gallium/targets/dril/dril_target.c	2026-11-06 15:53:30.197507014 +0100
++++ b/src/gallium/targets/dril/dril_target.c	2026-11-06 15:53:30.200507029 +0100
+@@ -643,6 +643,7 @@
+ DEFINE_LOADER_DRM_ENTRYPOINT(virtio_gpu)
+ DEFINE_LOADER_DRM_ENTRYPOINT(v3d)
+ DEFINE_LOADER_DRM_ENTRYPOINT(vc4)
++DEFINE_LOADER_DRM_ENTRYPOINT(mbx)
+ DEFINE_LOADER_DRM_ENTRYPOINT(panfrost)
+ DEFINE_LOADER_DRM_ENTRYPOINT(panthor)
+ DEFINE_LOADER_DRM_ENTRYPOINT(apple)
+diff -ruN a/src/gallium/targets/dril/meson.build b/src/gallium/targets/dril/meson.build
+--- a/src/gallium/targets/dril/meson.build	2026-11-06 15:53:30.197507014 +0100
++++ b/src/gallium/targets/dril/meson.build	2026-11-06 15:53:30.200507029 +0100
+@@ -108,6 +108,7 @@
+              [with_gallium_swrast and with_gallium_drisw_kms, ['kms_swrast']],
+              [with_gallium_v3d, ['v3d']],
+              [with_gallium_vc4, ['vc4']],
++             [with_gallium_mbx, ['mbx']],
+              [with_gallium_panfrost, ['panfrost', 'panthor']],
+              [with_gallium_etnaviv, ['etnaviv']],
+              [with_gallium_tegra, ['tegra']],

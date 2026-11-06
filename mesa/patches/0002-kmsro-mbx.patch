@@ -1,0 +1,30 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] kmsro: render with the mbx driver, scanout from the KMS device's dumb buffers
+
+---
+diff -ruN a/src/gallium/winsys/kmsro/drm/kmsro_drm_winsys.c b/src/gallium/winsys/kmsro/drm/kmsro_drm_winsys.c
+--- a/src/gallium/winsys/kmsro/drm/kmsro_drm_winsys.c	2026-11-06 15:54:12.709717486 +0100
++++ b/src/gallium/winsys/kmsro/drm/kmsro_drm_winsys.c	2026-11-06 15:54:12.710717491 +0100
+@@ -28,6 +28,7 @@
+ #include "kmsro_drm_public.h"
+ #include "v3d/drm/v3d_drm_public.h"
+ #include "vc4/drm/vc4_drm_public.h"
++#include "mbx/drm/mbx_drm_public.h"
+ #include "etnaviv/drm/etnaviv_drm_public.h"
+ #include "freedreno/drm/freedreno_drm_public.h"
+ #include "panfrost/drm/panfrost_drm_public.h"
+@@ -118,6 +119,14 @@
+          ro->create_for_resource = renderonly_create_kms_dumb_buffer_for_resource;
+          screen = v3d_drm_screen_create_renderonly(ro->gpu_fd, ro, config);
+ #endif
++      } else if (strcmp(render_dev_name, "mbx") == 0) {
++#if defined(GALLIUM_MBX)
++         /* The scanout buffer comes from the KMS device (omapdrm's dumb
++          * buffers are physically contiguous, as its DSS needs) and the MBX
++          * imports it by PRIME into its own address space. */
++         ro->create_for_resource = renderonly_create_kms_dumb_buffer_for_resource;
++         screen = mbx_drm_screen_create_renderonly(ro->gpu_fd, ro, config);
++#endif
+       } else if (strcmp(render_dev_name, "vc4") == 0) {
+ #if defined(GALLIUM_VC4)
+          /* Passes the vc4-allocated BO through to the KMS-only DRM device using

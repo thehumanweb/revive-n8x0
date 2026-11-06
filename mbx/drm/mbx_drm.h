@@ -9,9 +9,12 @@
 extern "C" {
 #endif
 
+/* Bumped on incompatible changes; DRM_MBX_GET_PARAM MBX_PARAM_ABI returns it */
+#define MBX_ABI_VERSION		2
+
 #define MBX_PARAM_CORE_ID	0	/* CORE_ID register, 0x01010003 on the N810 */
 #define MBX_PARAM_REVISION	1
-#define MBX_PARAM_ABI		2	/* bumped on incompatible changes */
+#define MBX_PARAM_ABI		2
 
 struct drm_mbx_get_param {
 	__u32 param;		/* in: MBX_PARAM_* */

@@ -17,8 +17,6 @@
 
 #include "mbx_regs.h"
 
-#define MBX_ABI_VERSION		2
-
 /* An address space: 32 MB of 4 KB pages through eight page tables */
 #define MBX_VM_SIZE		(32u << 20)
 #define MBX_VM_START		0x10000		/* the first 64 KB stay unmapped */
