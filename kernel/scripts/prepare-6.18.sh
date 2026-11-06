@@ -23,6 +23,10 @@ for p in $(ls patches/6.18/*.patch 2>/dev/null | sort); do
 	patch -d $K -p1 -s --no-backup-if-mismatch < $p
 	echo "ok    $p"
 done
+# The MBX DRM driver lives in ../mbx/drm (hooked in by patch 0063)
+mkdir -p $K/drivers/gpu/drm/mbx
+cp ../mbx/drm/Kconfig ../mbx/drm/Makefile ../mbx/drm/*.c ../mbx/drm/mbx_drv.h ../mbx/drm/mbx_regs.h $K/drivers/gpu/drm/mbx/
+cp ../mbx/drm/mbx_drm.h $K/include/uapi/drm/mbx_drm.h
 sed -n 's#^+++ b/\([^	 ]*\).*#\1#p' patches/6.18/*.patch | sort -u > $LIST.new
 sort -u $LIST $LIST.new | while read -r f; do
 	[ -e "$K/$f" ] && touch "$K/$f"

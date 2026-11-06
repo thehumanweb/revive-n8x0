@@ -1,0 +1,31 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] arm: dts: omap2420: add the PowerVR MBX
+
+Registers at 0x50000000, INTC line 21, the GFX interface and 2D/3D
+functional clocks.
+
+Signed-off-by: Carsten Munk <carsten.munk@gmail.com>
+---
+--- a/arch/arm/boot/dts/ti/omap/omap2420.dtsi	2026-11-06 15:02:52.240481906 +0100
++++ b/arch/arm/boot/dts/ti/omap/omap2420.dtsi	2026-11-06 15:03:03.566537136 +0100
+@@ -11,6 +11,20 @@
+ 	compatible = "ti,omap2420", "ti,omap2";
+ 
+ 	ocp {
++		/*
++		 * PowerVR MBX (MBX Lite on the OMAP2420): registers at the
++		 * start, the TA, 2D and TA control slave ports at 0x8000,
++		 * 0xa000 and 0xc000. The GFX power domain has no hwmod; the
++		 * driver powers it and pulses its reset through the PRCM.
++		 */
++		gpu: gpu@50000000 {
++			compatible = "ti,omap2420-mbx";
++			reg = <0x50000000 0x10000>;
++			interrupts = <21>;
++			clocks = <&gfx_ick>, <&gfx_2d_fck>, <&gfx_3d_fck>;
++			clock-names = "ick", "2d_fck", "3d_fck";
++		};
++
+ 		l4: l4@48000000 {
+ 			compatible = "ti,omap2-l4", "simple-bus";
+ 			#address-cells = <1>;

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Load the MBX access driver if the kernel has the hardware.
+# Load the MBX DRM driver if the kernel has the hardware (/dev/dri/renderD*).
 case "$1" in
-	start) modprobe mbxaccess 2>/dev/null || echo "mbxaccess: not loaded" ;;
-	stop) rmmod mbxaccess 2>/dev/null ;;
+	start) modprobe mbx 2>/dev/null || echo "mbx: not loaded" ;;
+	stop) rmmod mbx 2>/dev/null ;;
 esac
 exit 0

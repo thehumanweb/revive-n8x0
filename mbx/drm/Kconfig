@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config DRM_MBX
+	tristate "PowerVR MBX (OMAP2420) render node"
+	depends on DRM && ARCH_OMAP2 && MMU
+	select DRM_GEM_SHMEM_HELPER
+	help
+	  DRM render-only driver for the PowerVR MBX of the OMAP2420 (Nokia
+	  N800/N810): GEM buffers in the MBX's own address spaces, and jobs
+	  made of a TA stream and a render. Display stays with omapdrm.
+	  Userspace is the mbx Gallium driver of Mesa.
+
+	  If M is selected the module is called mbx.

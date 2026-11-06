@@ -1,0 +1,29 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] drm/mbx: hook the PowerVR MBX driver into the DRM Kconfig and Makefile
+
+The driver itself is kept in mbx/drm of the n8x0 tree and copied to
+drivers/gpu/drm/mbx by scripts/prepare-6.18.sh.
+
+Signed-off-by: Carsten Munk <carsten.munk@gmail.com>
+---
+--- a/drivers/gpu/drm/Kconfig	2026-11-06 15:02:52.229481852 +0100
++++ b/drivers/gpu/drm/Kconfig	2026-11-06 15:02:52.243481920 +0100
+@@ -319,6 +319,8 @@
+ 
+ source "drivers/gpu/drm/omapdrm/Kconfig"
+ 
++source "drivers/gpu/drm/mbx/Kconfig"
++
+ source "drivers/gpu/drm/tilcdc/Kconfig"
+ 
+ source "drivers/gpu/drm/qxl/Kconfig"
+--- a/drivers/gpu/drm/Makefile	2026-11-06 15:02:52.232481866 +0100
++++ b/drivers/gpu/drm/Makefile	2026-11-06 15:02:52.244481925 +0100
+@@ -193,6 +193,7 @@
+ obj-$(CONFIG_DRM_ATMEL_HLCDC)	+= atmel-hlcdc/
+ obj-y			+= renesas/
+ obj-y			+= omapdrm/
++obj-$(CONFIG_DRM_MBX)	+= mbx/
+ obj-$(CONFIG_DRM_SUN4I) += sun4i/
+ obj-y			+= tilcdc/
+ obj-$(CONFIG_DRM_QXL) += qxl/

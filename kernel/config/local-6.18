@@ -161,3 +161,6 @@ CONFIG_PANIC_ON_OOPS=y
 # /dev/mtd1): the CAL's factory blocks are there, this unit's wlan-mac and
 # bt-id (n810-wlan-cal reads them, read only; never lock the OTP area)
 CONFIG_MTD_ONENAND_OTP=y
+
+# PowerVR MBX DRM render node (mbx/drm)
+CONFIG_DRM_MBX=m
