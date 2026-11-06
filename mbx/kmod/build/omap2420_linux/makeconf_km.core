@@ -1,0 +1,51 @@
+#
+# Copyright(c) 2008 Imagination Technologies Ltd. All rights reserved.
+# 
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+# 
+# This program is distributed in the hope it will be useful but, except 
+# as otherwise stated in writing, without any warranty; without even the 
+# implied warranty of merchantability or fitness for a particular purpose. 
+# See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+# 
+# The full GNU General Public License is included in this distribution in
+# the file called "COPYING".
+#
+# Contact Information:
+# Imagination Technologies Ltd. <gpl-support@imgtec.com>
+# Home Park Estate, Kings Langley, Herts, WD4 8LZ, UK 
+# 
+#
+# l
+#  --- Revision Logs Removed --- 
+#
+# You need to define the MBX core revision and whether VGP is supported or not
+# (variable 'VGP') in the system makeconf file (system/$(SYSTEM)/makeconf)
+# only.  No other core flags (eg. 'SUPPORT_MBX1') should be set - they are set
+# below in this file as a result of the core revision & VGP setting.
+
+# 'REV51' refers to MBX1 Lite core revision 1.5.1,
+# Similar reason lies behind the MBX1 revs.  The revision is located in the
+# Core Revision register (at offset 0xF10).  The Core ID register (offset
+# 0xF00) indicates whether the core is 'Lite'.  Refer to hwdefs/mbx1defs.h
+
+ifdef MBX1_LITE_REV51 # 
+	SUPPORT_MBX1_LITE = 1
+	CORE +=  -DSUPPORT_MBX1_LITE 		\
+		-DMBX1_LITE_REV51
+							
+ifdef VGP_LITE
+	SUPPORT_VGP_LITE=1
+	CORE += -DSUPPORT_VGP_LITE
+		
+endif
+
+else
+$(error undefined MBX1 or MBX1-Lite revision)
+endif

@@ -44,6 +44,8 @@ cd mbx && make
 
 ## Licences
 
-The emulator (`mbx/`) and the scripts are MIT (SPDX headers). The patches
+The emulator (`mbx/`, except `mbx/kmod/`) and the scripts are MIT (SPDX
+headers). `mbx/kmod/` is Imagination Technologies' MBX kernel driver
+source, GPL-2.0 (see `mbx/kmod/COPYING`; each file keeps its own notice). The patches
 in `qemu/patches/` modify QEMU and are under QEMU's licence, GPL-2.0, as
 is QEMU built with the MBX device in it.

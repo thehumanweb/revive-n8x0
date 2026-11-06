@@ -1,0 +1,953 @@
+#
+# Copyright(c) 2008 Imagination Technologies Ltd. All rights reserved.
+# 
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+# 
+# This program is distributed in the hope it will be useful but, except 
+# as otherwise stated in writing, without any warranty; without even the 
+# implied warranty of merchantability or fitness for a particular purpose. 
+# See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+# 
+# The full GNU General Public License is included in this distribution in
+# the file called "COPYING".
+#
+# Contact Information:
+# Imagination Technologies Ltd. <gpl-support@imgtec.com>
+# Home Park Estate, Kings Langley, Herts, WD4 8LZ, UK 
+# 
+#
+
+# ENV is used in a few other makefiles instead of the literal 'linux', for
+# reasons of portability, presumably.  It's common to all of the linux makeconf
+# files (usually build/*/makeconf.build) so now lives.
+#
+ENV				?= linux
+
+# MODBASE is the name of the current module with any extension removed.
+# MODSUFFIX is the suffix of the current module with the filename base removed.
+#
+MODBASE			= $(basename $(MODULE))
+MODSUFFIX		= $(suffix $(MODULE))
+
+# SILENT=@ causes command text to be omitted during the process.  If you want
+# to see what's really happening then use "make SILENT= ..."
+#
+SILENT			= @
+
+# BUILD=release sets the default release.
+#
+BUILD			?= release
+
+# LIB_SUFFIX=so causes (where possible) the type of library generated to be a 
+# shared library.  This isn't used in many places and isn't referenced here
+# but opengles/ddk/makefile.alt and other places do use it.
+#
+LIB_SUFFIX		?= so
+
+# MAKE_OPT defaults to --no-print-directory to declutter the build output.
+#
+MAKE_OPT		?= --no-print-directory
+
+# COPY determines whether the local result is copied to $(SYSBIN).  By
+# default this is "copy" - the name of the rule to do the copying.  But some
+# places don't do this (e.g. services_um).  Override this by setting it to NULL
+# rather than 'echo'.
+#
+COPY			?= copy
+
+# Compilers and other such tools
+#
+AR  			= $(CROSS_COMPILE)ar
+AS				= $(CROSS_COMPILE)as
+CC				= $(CROSS_COMPILE)gcc
+BUILD_CC		= gcc
+CPP				= $(CROSS_COMPILE)g++
+LD				= $(CROSS_COMPILE)ld
+OBJCOPY 		= $(CROSS_COMPILE)objcopy
+OBJDUMP			= $(CROSS_COMPILE)objdump
+RANLIB			= $(CROSS_COMPILE)ranlib
+STRIP			= $(CROSS_COMPILE)strip
+SIZE			= $(CROSS_COMPILE)size
+
+# Device name that will be used for creating device node with mknod
+MBXACCESS_DEVICE ?= "\"mbx\""
+
+# Minor convenience variables
+#
+DO_MKDIR		= $(SILENT)$(MKDIR) $@
+DO_LN_S			= $(SILENT)$(LN) -s $< $@
+
+
+# Basic entities contributing to the build
+#
+_SOURCES		= $(SOURCES) $(SOURCES.$(BUILD)) $(SOURCES.1)
+OBJS			= $(addprefix $(TMP)/, $(patsubst %.s,%.o,$(patsubst %.cpp,%.o,$(_SOURCES:.c=.o))))
+DEPS			= $(addprefix $(TMP)/, \
+					$(patsubst %.s,%.depend,$(patsubst %.cpp,%.depend,$(_SOURCES:.c=.depend))))
+MODULE_DEPS		+= $(patsubst %,$(SYSBIN)/%,$(LIB_DEPS))
+
+
+# Work out our origins.  Embedded.pj is not supplied to end-users
+# so instead we supply pvrversion.h.  We produce pvrversion.h if
+# if doesn't exist.
+#
+DATE			:= $(shell date)
+EMBEDDED_PJ		= $(PVR_CONSUMER_ROOT)/embedded.pj
+PVRVERSION_H	= $(PVR_CONSUMER_ROOT)/include/pvrversion.h
+PVRVERSION		= $(shell if [ -f $(EMBEDDED_PJ) ]; then \
+						$(GREP) "\$Revision" $(EMBEDDED_PJ) |\
+						$(SED) "s,.* \([0-9.]*\) .*,\1,"; \
+					else \
+						$(GREP) "PVRVERSION_STRING" < $(PVRVERSION_H) | $(SED) "s,.*\"\([0-9.]*\)\".*,\1,"; \
+					fi)
+PVRVERSION_MAJ		= $(shell echo $(PVRVERSION) | cut -d '.' -f1)
+PVRVERSION_MIN		= $(shell echo $(PVRVERSION) | cut -d '.' -f2)
+PVRVERSION_BRANCH	= $(shell echo $(PVRVERSION) | cut -d '.' -f3)
+PVRVERSION_BUILD	= $(shell echo $(PVRVERSION) | cut -d '.' -f4,5,6)
+
+# Useful (important) directories for the build.
+#
+BIN				= bin_$(PVR_BUILD_DIR)_$(BUILD)_$(MODULE)
+TMP 			= tmp_$(PVR_BUILD_DIR)_$(BUILD)_$(MODULE)
+_SYSBIN  		= $(PVR_CONSUMER_ROOT)/binary
+SYSBIN  		= $(_SYSBIN)_$(PVR_BUILD_DIR)_$(BUILD)
+FDO				= $(PVR_CONSUMER_ROOT)/freedesktop
+SYSFDO			= $(SYSBIN)/freedesktop
+SYSFDOBIN		= $(SYSFDO)/bin
+SYSFDOLIB		= $(SYSFDO)/lib
+SYSFDOINCLUDE	= $(SYSFDO)/include
+SYSPKG			= $(SYSBIN)/packages
+SYSPKGBIN		= $(SYSPKG)/bin
+SYSPKGLIB		= $(SYSPKG)/lib
+SYSPKGINCLUDE	= $(SYSPKG)/include
+
+
+# Unix/Linux commands useful to the build process.
+#
+CAT				= /bin/cat
+CP				= /bin/cp
+CHMOD			= /bin/chmod
+DOS2UNIX		= /usr/bin/dos2unix
+ECHO			= -@echo
+FIND			= /usr/bin/find
+GREP			= /bin/grep
+LN				= /bin/ln -s
+MKDIR			= /bin/mkdir -p
+MV				= /bin/mv
+RM				= /bin/rm -f
+SED				= /bin/sed
+M4				= /usr/bin/m4
+TOUCH			= /bin/touch
+PERL			= /usr/bin/perl
+SORT			= /bin/sort
+UNIQ			= /usr/bin/uniq
+
+
+# This macro represents a file in which is placed the date, the name of the
+# compiling user and the build type.  The file is then copied into the final
+# executable for traceability.
+#
+BUILD_DATA		= $(TMP)/build_data.txt
+
+
+# This is the version of OpenGL-ES we're using
+#
+ifdef OPENGLES1_1
+OPENGLES_VERSION	=	1.1
+else
+OPENGLES_VERSION	=	1.0
+endif
+
+# ARFLAGS pretty much doesn't need to be changed.  Replace/update archive.
+#
+ARFLAGS			= rus
+
+# These are needed for linking.
+#
+# LINK_PATH:     this is required for all links to find required libraries.
+#
+# DLINK_PATH_RT: this determines where to look for shared libraries (lib*.so)
+#                when a binary or shared library is loaded
+#
+# DLINK_PATH_CT: this determines where to look for shared libraries at compile
+#                time and is required for the cross-compiling environment.
+#
+LINK_PATH					+= -L$(TOOLCHAIN)/lib -L$(SYSBIN)
+DLINK_PATH_RT				+= /lib /usr/lib
+DLINK_PATH_CT				+= $(TOOLCHAIN)/lib $(SYSBIN)
+
+
+# Defaults for useful things.
+#
+SUPPORT_XWS		?= 1
+XWS_SERVER_ONLY	?= 0
+
+SUPPORT_OPENGL	?= 1
+SUPPORT_OPENVG	?= 0
+
+SUPPORT_BUFFER_CLASS	?= 0
+
+SUPPORT_UNITTESTS	?= 1
+
+DISABLE_TA		?= $(DISABLE_HW)
+DISABLE_RENDER	?= $(DISABLE_HW)
+DISABLE_DAC		?= $(DISABLE_HW)
+
+
+###############################################################################
+#
+#  X window system build settings.
+#
+
+###############################################################################
+#
+# NOTE: X11ROOT sets the location used to find libX11.so which is a
+# dependancy of libpvr2d if SUPPORT_XWS is used.
+#
+# It doesn't affect the install location for Xmbx or any other
+# freedesktop packages that we build
+# 
+# The seperation lets you simply build the DDK against other X libraries
+# if they are available in your $(DISCIMAGE) which may save you some time.
+#
+# The default install location for Xmbx etc is set in freedesktop/makefile
+# per target overrides can be set in 
+# build/TARGET/fdo_meta/FDO_SOURCE_ID/makefile.fdo
+# 
+# per target X11ROOT's can be set in build/TARGET/makeconf.build
+# Note: it is relative to the root of DISCIMAGE which should be set.
+#
+X11ROOT                 ?= /usr/X11R6
+
+###############################################################################
+#
+# If a developer has not set $(DISCIMAGE) yet then we don't want to try
+# building against system X libraries/headers.
+#
+ifdef DISCIMAGE
+SYS_INCLUDES.$(SUPPORT_XWS)		+= -I$(SYSFDOINCLUDE) -I$(DISCIMAGE)$(X11ROOT)/include
+LINK_PATH.$(SUPPORT_XWS)		+= -L$(SYSFDOLIB) -L$(DISCIMAGE)$(X11ROOT)/lib
+DLINK_PATH_CT.$(SUPPORT_XWS)	        += $(SYSFDOLIB) $(X11ROOT)/lib
+else
+SYS_INCLUDES.$(SUPPORT_XWS)		+= -I$(SYSFDOINCLUDE)
+LINK_PATH.$(SUPPORT_XWS)		+= -L$(SYSFDOLIB)
+endif
+
+DLINK_PATH_RT.$(SUPPORT_XWS)	        += $(X11ROOT)/lib
+
+
+# Automatically define C compiler macros for features possible (or not) in use.
+# This saves makeconf.build and makefile.alt files having to sort this out in
+# multiple places in the build system.
+#
+# How does this work?  An example
+#	If SUPPORT_XWS is undefined: -DSUPPORT_XWS is added to $(SYS_CFLAGS.)
+#	If SUPPORT_XWS is 0: -DSUPPORT_XWS is added to $(SYS_CFLAGS.0)
+#	If SUPPORT_XWS is 1: -DSUPPORT_XWS is added to $(SYS_CFLAGS.1)
+#
+# Later on,  $(SYS_CFLAGS.1) and $(SYS_CFLAGS) are added in to $(ALL_CFLAGS); 
+# SYS_CFLAGS.0 is ignored
+#
+
+ifeq ($(PASSTHROUGH_BUILD), 1)
+DYNAMIC_VERTEX_CODE_GEN = 0
+endif
+
+
+# if OPENGLES1_1 not set, create a 1_0 build
+OPENGLES1_1 ?= 0
+
+# Automatically pull in OPEGLES1_1 requirements
+# (But allow easy exclusion of features if 
+# e.g. USER_CLIPPLANES = 0 in makeconf.build)
+ifeq ($(OPENGLES1_1), 1)
+    ifneq ($(TEXENVCOMBINE), 0)
+        TEXENVCOMBINE = 1
+    endif
+    ifneq ($(TEXENVDOT3), 0)
+        TEXENVDOT3 = 1
+    endif
+    ifneq ($(SINGLE_PRECISION), 0)
+        SINGLE_PRECISION = 1
+endif
+    ifneq ($(USER_CLIPPLANES), 0)
+        USER_CLIPPLANES = 1
+    endif
+endif
+
+# We use this case to imply OPENGLES1_0
+# so we explicitly disable 1_1 features
+ifeq ($(OPENGLES1_1), 0)
+	#TEXENVCOMBINE = 0 #FIXME breaks build
+	#TEXENVDOT3 = 0 #FIXME untested
+	#SINGLE_PRECISION = 0 #FIXME untested
+	USER_CLIPPLANES = 0
+	MATRIX_PALETTE = 0
+endif
+
+PRN_ENABLE		= 1
+
+SYS_CFLAGS.$(SUPPORT_XWS)					+= -DSUPPORT_XWS
+SYS_CFLAGS.$(DISABLE_TA)					+= -DDISABLE_TA
+SYS_CFLAGS.$(DISABLE_RENDER)				+= -DDISABLE_RENDER
+SYS_CFLAGS.$(DISABLE_DAC)					+= -DDISABLE_DAC
+SYS_CFLAGS.$(INCREMENTING_SPWRITES)			+= -DINCREMENTING_SPWRITES
+SYS_CFLAGS									+= -DUSE_TERMINATE_WORD
+SYS_CFLAGS.$(USE_TERMINATE_PORT)			+= -UUSE_TERMINATE_WORD
+SYS_CFLAGS.$(OPENGLES1_1)					+= -DOPENGLES1_1
+SYS_CFLAGS.$(PDUMP2)						+= -DPDUMP2
+SYS_CFLAGS.$(SUPPORT_POWER_MANAGEMENT)		+= -DSUPPORT_POWER_MANAGEMENT
+SYS_CFLAGS.$(PASSTHROUGH_BUILD)				+= -DPASSTHROUGH_BUILD
+SYS_CFLAGS.$(EXTENDED_COLOR_MATERIAL)		+= -DEXTENDED_COLOR_MATERIAL
+SYS_CFLAGS.$(SUPPORT_BUFFER_CLASS)			+= -DSUPPORT_BUFFER_CLASS
+SYS_CFLAGS.$(PVRTC)							+= -DPVRTC
+SYS_CFLAGS.$(ENHANCED_FF_TEXTURE)			+= -DENHANCED_FF_TEXTURE
+SYS_CFLAGS.$(SINGLE_PRECISION)				+= -DSINGLE_PRECISION
+SYS_CFLAGS.$(USER_CLIPPLANES)				+= -DUSER_CLIPPLANES
+SYS_CFLAGS.$(TEXENVCOMBINE)					+= -DTEXENVCOMBINE
+SYS_CFLAGS.$(TEXENVDOT3)					+= -DTEXENVDOT3
+SYS_CFLAGS.$(QUERY_MATRIX)					+= -DQUERY_MATRIX
+SYS_CFLAGS.$(VERTEX_PROGRAM)				+= -DVERTEX_PROGRAM
+SYS_CFLAGS.$(TEXTURE_STREAM)				+= -DTEXTURE_STREAM
+SYS_CFLAGS.$(MATRIX_PALETTE)				+= -DMATRIX_PALETTE
+SYS_CFLAGS.$(RENDER_TO_TEXTURE)				+= -DRENDER_TO_TEXTURE
+SYS_CFLAGS.$(DRAW_TEXTURE)					+= -DDRAW_TEXTURE
+SYS_CFLAGS.$(ENABLE_VGP_MATRICES)			+= -DENABLE_VGP_MATRICES
+SYS_CFLAGS.$(SUPPORT_DYNAMIC_PBRESIZE)		+= -DSUPPORT_DYNAMIC_PBRESIZE
+SYS_CFLAGS.$(USE_FBDEV)						+= -DUSE_FBDEV
+SYS_CFLAGS.$(USE_FBDEV)						+= -DFBDEV_NAME="\"$(FBDEV_NAME)\""
+SYS_CFLAGS.$(READ_FORMAT)					+= -DREAD_FORMAT
+SYS_CFLAGS.$(SUPPORT_MBX_1_5_FEATURES)		+= -DSUPPORT_MBX_1_5_FEATURES
+SYS_CFLAGS.$(TEXTURE_FORMAT_8888)			+= -DTEXTURE_FORMAT_8888
+SYS_CFLAGS.$(SUPPORT_DYNAMIC_3DCLOCKGATING) += -DSUPPORT_DYNAMIC_3DCLOCKGATING
+SYS_CFLAGS.$(REENTRANCY_PROTECTION)			+= -DREENTRANCY_PROTECTION
+SYS_CFLAGS.$(SCHEDULER_CONTROL_SUPPORT) 	+= -DSCHEDULER_CONTROL_SUPPORT
+SYS_CFLAGS.$(USE_IMG_POWER_DOMAIN_FUNCTION) += -DUSE_IMG_POWER_DOMAIN_FUNCTION
+SYS_CFLAGS.$(MULTI_DRAW_ARRAYS)				+= -DMULTI_DRAW_ARRAYS
+SYS_CFLAGS.$(DYNAMIC_VERTEX_CODE_GEN)		+= -DDYNAMIC_VERTEX_CODE_GEN
+SYS_CFLAGS.$(SUPPORT_ARM_VFP)				+= -DSUPPORT_ARM_VFP
+SYS_CFLAGS.$(EGL1_1)						+= -DEGL1_1
+SYS_CFLAGS.$(EGL1_2)						+= -DEGL1_2
+SYS_CFLAGS.$(FAST_TWIDDLE_16BPP)			+= -DFAST_TWIDDLE_16BPP
+SYS_CFLAGS.$(FAST_TWIDDLE_32BPP)			+= -DFAST_TWIDDLE_32BPP
+SYS_CFLAGS.$(SUPPORT_OPENGL)				+= -DSUPPORT_OPENGL
+SYS_CFLAGS.$(SUPPORT_OPENVG)				+= -DSUPPORT_OPENVG
+SYS_CFLAGS.$(ARM_OPTIMISED_VFP) 			+= -DARM_OPTIMISED_VFP
+SYS_CFLAGS.$(SCENE_MEMORY_METRICS)			+= -DSCENE_MEMORY_METRICS
+SYS_CFLAGS.$(DVCG_FIFO_DEBUG_TEST)			+= -DDVCG_FIFO_DEBUG_TEST
+SYS_CFLAGS.$(SUPPORT_HW_RECOVERY)			+= -DSUPPORT_HW_RECOVERY
+SYS_CFLAGS.$(ARM_UNALIGNED_ACCESS)			+= -DARM_UNALIGNED_ACCESS
+SYS_CFLAGS.$(SUPPORT_PRE_MBX15_COLOR_MASK)	+= -DSUPPORT_PRE_MBX15_COLOR_MASK
+SYS_CFLAGS.$(KBUILD)						+= -DKBUILD
+SYS_CFLAGS.$(UBUILD)						+= -DUBUILD
+SYS_CFLAGS.$(MBX_GPL)						+= -DMBX_GPL
+SYS_CFLAGS.$(UPCONVERT_SINGLE_CHANNEL_TEXTURES)	+= -DUPCONVERT_SINGLE_CHANNEL_TEXTURES
+SYS_CFLAGS.$(SUPPORT_YUV420_PLANAR_STREAM)	+= -DSUPPORT_YUV420_PLANAR_STREAM
+SYS_CFLAGS.$(CAMERA_BUFFER_USE_YUV420)		+= -DCAMERA_BUFFER_USE_YUV420
+SYS_CFLAGS.$(CONFIG_PCI_INIT)				+= -DCONFIG_PCI_INIT
+SYS_CFLAGS.$(USE_HOST_EVENTS)				+= -DUSE_HOST_EVENTS
+SYS_CFLAGS.$(DEBUG_FUNCTION_TRACE)			+= -DDEBUG_FUNCTION_TRACE
+SYS_CFLAGS.$(FULL_DEBUG)					+= -DFULL_DEBUG
+SYS_CFLAGS.$(SUPPORT_GPO_CLOCKGATING)		+= -DSUPPORT_GPO_CLOCKGATING
+SYS_CFLAGS.$(PRN_ENABLE)					+= -DPRN_ENABLE=defined
+SYS_CFLAGS.$(CLCD_USE_SHARED_IRQ)			+= -DCLCD_USE_SHARED_IRQ
+SYS_CFLAGS.$(ENABLE_DUMP_MEM)				+= -DENABLE_DUMP_MEM
+
+# System include directories.
+#
+# To avoid warnings about errors in the linux headers, we need -isystem
+# $(KERNELDIR) (instead of -I...) which makes gcc consider the kernel headers
+# as 'system' files and hence suppress warnings associated with them.
+#
+SYS_INCLUDES	=	-I$(PVR_CONSUMER_ROOT)/includeext \
+					-isystem $(KERNELDIR)/include
+
+
+# File-type dependent build flags.
+#
+# .ko files:
+# -nostdinc stops the compiler looking in normal places for includes, but this
+# is loosened partially be '-iwithprefix include' which says to look in the
+# 'include' directory of the compiler install tree.  Generally we want
+# includes picked up from the kernel not the host system.
+#
+ifdef HAVE_KBUILD_BASENAME
+CFLAGS_.ko	= -DMODULE \
+					-D__KERNEL__ \
+					-DPVR_KERNEL \
+					-D"KBUILD_STR(s)=\#s" \
+					-D"KBUILD_BASENAME=KBUILD_STR($(MODBASE))" \
+					-D"KBUILD_MODNAME=KBUILD_STR($(MODBASE))" \
+					-D"MBXACCESS_DEVICE=$(MBXACCESS_DEVICE)" \
+					$(KARCH_CFLAGS) $(KARCH_CFLAGS.1) \
+					-nostdinc \
+					-iwithprefix include \
+					-fno-common \
+					-Wstrict-prototypes
+else
+CFLAGS_.ko	= -DMODULE \
+					-D__KERNEL__ \
+					-DPVR_KERNEL \
+					-D"KBUILD_MODNAME=$(MODBASE)" \
+					$(KARCH_CFLAGS) $(KARCH_CFLAGS.1) \
+					-nostdinc \
+					-D"MBXACCESS_DEVICE=$(MBXACCESS_DEVICE)" \
+					-iwithprefix include \
+					-fno-common \
+					-Wstrict-prototypes
+endif
+
+# All files: we add ARCH_CFLAGS in here and not in ALL_CFLAGS so that we can
+# specify different optimisation flags for the kernel than for normal user-
+# land object code.
+#
+# .so files:
+# -fPIC causes generation of position-independent code.  -DPIC merely allows
+# detection of when -fPIC is used.  CFLAGS_.so should not need to be over-
+# ridden on a per-platform basis but can be if necessary.  (We don't use the
+# alternative -fpic which uses slightly smaller shared library instruction
+# offsets.)
+#
+CFLAGS_.so	= -fPIC -DPIC $(ARCH_CFLAGS) $(SYS_CFLAGS.1)
+CFLAGS_.a	= $(ARCH_CFLAGS) $(ARCH_CFLAGS.1)
+CFLAGS_		= $(ARCH_CFLAGS) $(ARCH_CFLAGS.1)
+			
+
+# The standard CFLAGS macro can be overridden on the 'make' command line.  We
+# put CBUILD in a separate macro so its setting doesn't get lost when a user
+# *does* override CFLAGS.
+#
+CBUILD			=	-DPVR_BUILD_DIR="\"$(PVR_BUILD_DIR)\"" \
+					-DPVR_BUILD_DATE="\"$(DATE)\"" \
+					-DPVR_BUILD_TYPE="\"$(BUILD)\""
+
+#  Don't support HW recovery on debug builds
+CBUILD.debug	= -DDEBUG
+CBUILD.timing	= -DTIMING
+CBUILD.release	= -DRELEASE
+CFLAGS.debug	= -g -O0
+CFLAGS.timing	= $(OPTIM)
+CFLAGS.release	= $(OPTIM)
+CFLAGS          = $(CFLAGS.$(BUILD))
+
+# SYS_FLAGS contains any flags specific to this system (eg to sh4/soleng)
+# MODULE_CFLAGS contains flags specific to the module (component) being built
+# ARCH_CFLAGS is a system-specific macro used to specify processor (eg) options
+# (such as -m4 for sh4)
+# CORE holds MBX core-specific definitions
+#
+# This used to be called CCFLAGS but has been changed to avoid confusion with
+# flags for the C++ compiler.
+#
+# NOTE on -fno-strict-aliasing: this fixes a problem with pointer casting which
+# regularly caused the warning "type punned pointer cast breaks strict aliasing
+# rules".  The problem gave rise to alignment problems with bytes and shorts in
+# GL.  We add it to ALL_CFLAGS so it never gets left out unless someone does an
+# override of ALL_CFLAGS (very silly).  It should really go in the builds'
+# individual settings of OPTIM.
+#
+ALL_CFLAGS	=	-DLINUX \
+				$(CBUILD) $(CBUILD.$(BUILD)) \
+				$(CFLAGS) $(CFLAGS_$(MODSUFFIX)) \
+				$(SYS_CFLAGS) $(SYS_CFLAGS.1) \
+				$(MODULE_CFLAGS) $(MODULE_CFLAGS.$(BUILD)) \
+				$(CORE) \
+				-Wall -fno-strict-aliasing
+
+
+# File type dependent include flags.
+
+# When building kernel modules, we make sure that no X11R6 include path is used
+#
+ALL_INCLUDES_.ko = $(SYS_INCLUDES) $(INCLUDES) $(INCLUDES.1)
+ALL_INCLUDES_.o = $(SYS_INCLUDES) $(INCLUDES) $(INCLUDES.1)
+
+ALL_INCLUDES_.so = $(SYS_INCLUDES) $(SYS_INCLUDES.1) $(INCLUDES) $(INCLUDES.1)
+ALL_INCLUDES_.a  = $(SYS_INCLUDES) $(SYS_INCLUDES.1) $(INCLUDES) $(INCLUDES.1)
+ALL_INCLUDES_	 = $(SYS_INCLUDES) $(SYS_INCLUDES.1) $(INCLUDES) $(INCLUDES.1)
+
+
+# COMPILE.c and COMPILE.cpp have fairly simple definitions
+#
+COMPILE.c	= $(CC) $(ALL_CFLAGS) $(ALL_INCLUDES_$(MODSUFFIX)) -c -o $@
+COMPILE.cpp	= $(CPP) $(CCFLAGS) $(ALL_CFLAGS) $(ALL_INCLUDES_$(MODSUFFIX)) -c -o $@
+COMPILE.s	= $(CC) $(ALL_CFLAGS) $(ALL_INCLUDES_$(MODSUFFIX)) -c -o $@
+
+
+# Define LINK according to whether we are building a static or dynamic
+# library.  When using shared libraries, the executable must be able to find
+# the library at run-time.  Add the run-time path to the library to
+# LD_LIBRARY_PATH on the target system or install the library in a standard
+# place (eg /usr/lib)
+#
+# Note that LINK.shlib MUST use $(CC) and not $(LD) so that the correct binding
+# of C and Maths library symbols is done.
+#
+LINK.lib	= $(AR) $(ARFLAGS) $@
+LINK.object	= $(LD) -r -o $@ $(LD_FLAGS)
+LINK.shlib	= $(CC) -shared -Wl,-soname=$(MODULE) -o $@ $(LD_FLAGS) -Wl -nostartfiles \
+				$(LINK_PATH) \
+				$(LINK_PATH.1) \
+				$(addprefix -Xlinker -rpath=,$(DLINK_PATH_RT) $(DLINK_PATH_RT.1)) \
+				$(addprefix -Xlinker -rpath-link=,$(DLINK_PATH_CT) $(DLINK_PATH_CT.1))
+LINK.exe	= $(CC) -o $@ $(SYS_EXE_LDFLAGS) $(LD_FLAGS) \
+				$(LINK_PATH) \
+				$(LINK_PATH.1) \
+				$(addprefix -Xlinker -rpath=,$(DLINK_PATH_RT.1) $(DLINK_PATH_RT)) \
+				$(addprefix -Xlinker -rpath-link=,$(DLINK_PATH_CT.1) $(DLINK_PATH_CT))
+
+SOLIB_VERSION	= $(OPENGLES_VERSION).$(PVRVERSION_BRANCH).$(PVRVERSION_BUILD)
+
+# Linux kernel defines
+#
+KERNEL_VER		= $(shell $(GREP) "^VERSION = " \
+	 				$(KERNELDIR)/Makefile | cut -f3 -d' ')
+KERNEL_REL		= $(shell $(GREP) "^PATCHLEVEL = " \
+	 				$(KERNELDIR)/Makefile | cut -f3 -d' ')
+KERNEL_SUBREL	= $(shell $(GREP) "^SUBLEVEL = " \
+	 				$(KERNELDIR)/Makefile | cut -f3 -d' ')
+KERNELVERSION	= $(KERNEL_VER).$(KERNEL_REL).$(KERNEL_SUBREL)
+
+
+DONT_USE_UTS_RELEASE = 1
+
+ifdef DONT_USE_UTS_RELEASE
+# For the given linux kernel source, if shell command
+#     grep UTS_RELEASE $KERNELDIR/include/linux/version.h | cut -f3 -d' ' | sed s/\"//g
+# returns nothing then DONT_USE_UTS_RELEASE macro mush be used.
+# newer linux version.h file no longer uses
+#     #define UTS_RELEASE "x.x.xx"
+# line.
+KERNEL_ID		= $(KERNELVERSION)
+else
+KERNEL_ID		?= $(shell $(GREP) UTS_RELEASE \
+					$(KERNELDIR)/include/linux/version.h | \
+					cut -f3 -d' ' | $(SED) s/\"//g)
+endif
+
+
+ifeq ("$(KERNEL_VER)", "2")
+ifeq ("$(KERNEL_REL)", "6")
+KM_SUFFIX		= ko
+else
+KM_SUFFIX		= o
+CFLAGS_.o	+= -DEXPORT_SYMTAB $(CFLAGS_.ko)
+endif
+else 
+KM_SUFFIX		= o
+endif
+
+
+# This is nasty.  modpost moved in 2.6.7 but we have to support kernels before
+# and after that.  What happens here for 2.4 kernels is unimportant since they
+# don't need modpost.
+#
+_MODPOSTDIR = $(shell [ -d $(KERNELDIR)/scripts/mod ] && echo mod)
+MODPOST     = $(KERNELDIR)/scripts/$(_MODPOSTDIR)/modpost
+
+
+# The version file is useful.  It should only be created when it doesn't
+# exist.  We use the .INTERMEDIATE rule here to signify we want to rebuild
+# PVRVERSION_H if EMBEDDED_PJ changes but not to worry about EMBEDDED_PJ
+# if it's not there.
+#
+# DON'T CHANGE THIS unless you REALLY do know what you're doing!
+#
+.INTERMEDIATE: $(EMBEDDED_PJ)
+
+$(PVRVERSION_H): $(EMBEDDED_PJ)
+	@if [ ! -f "$(EMBEDDED_PJ)" ]; then \
+		echo; \
+		echo "** Both $$PVR_CONSUMER_ROOT/include/pvrversion.h and embedded.pj missing."; \
+		echo "** Your tree is not intact.  Cannot continue."; \
+		echo; \
+		exit 1; \
+	fi
+	$(SILENT)$(RM) $@
+	$(SILENT)$(PERL) $(PVR_CONSUMER_ROOT)/build/scripts/create_pvrversion.pl \
+						-i $(PVR_CONSUMER_ROOT)/embedded.pj	$@
+	$(ECHO) " Updated pvrversion.h"
+
+
+# Rule to create $(BUILD_DATA).  If one of $(OBJS) changes then we always
+# rebuild it.
+#
+$(BUILD_DATA): $(OBJS)
+	$(SILENT)$(RM) $(BUILD_DATA)
+	$(SILENT)$(TOUCH) $(BUILD_DATA)
+	$(ECHO) "Date: `date`" >>$(BUILD_DATA)
+	$(ECHO) "Version: $(PVRVERSION)" >>$(BUILD_DATA)
+	$(ECHO) "User: `whoami`" >>$(BUILD_DATA)
+	$(ECHO) "Build-host: `uname -a`" >>$(BUILD_DATA)
+	$(ECHO) "Build-dir: $(SYSBIN)" >>$(BUILD_DATA)
+ifndef HAVE_KBUILD_BASENAME
+	$(ECHO) "Compiler-flags: $(ALL_CFLAGS)" >>$(BUILD_DATA)
+endif
+
+
+# Rules for creating stuff in $(BIN) follow.
+#
+# We do not use pattern matching (e.g. %.o: $(OBJS)) here because we want to be
+# super-sure make will create the correct thing and expecting it to correctly
+# infer what to do leads to unreliable results.
+
+# Handle creation of AR (archive) libraries, where only those member objects
+# are extracted that are needed to resolve symbol dependencies.  We shouldn't
+# really need $(LIBS) here but include it for some libraries' needs.
+#
+$(BIN)/$(MODBASE).a: $(OBJS)
+	$(ECHO) "  Linking archive library $@"
+	$(SILENT)$(LINK.lib) $(OBJS)
+
+
+# Handle creation of shared libraries.
+#
+$(BIN)/$(MODBASE).so: $(OBJS) $(BUILD_DATA)
+	$(ECHO) "  Linking shared object $@"
+	$(SILENT)$(LINK.shlib) $(OBJS) $(LIBS)
+	$(SILENT)$(OBJCOPY) --add-section .build-data=$(BUILD_DATA) $@
+
+
+# Handle creation of ordinary objects as a large object consisting of other,
+# smaller objects.   This rule is so far only used for modules with Linux v2.4
+# kernel.  Any other use is not recommended.
+#
+$(BIN)/$(MODBASE).o: $(OBJS) $(BUILD_DATA)
+	$(ECHO) "  Linking object $@"
+	$(SILENT)$(LINK.object) $(OBJS)
+	$(SILENT)$(OBJCOPY) --add-section .build-data=$(BUILD_DATA) $@
+
+
+# Handle creation of .ko modules (Linux kernel 2.6) and all the stuff that goes
+# with them.
+#
+$(TMP)/$(MODBASE).core.o: $(OBJS) $(BUILD_DATA)
+	$(ECHO) "  Linking pre-processed kernel module $@"
+	$(SILENT)$(LINK.object) $(OBJS)
+	$(SILENT)$(OBJCOPY) --add-section .build-data=$(BUILD_DATA) $@
+
+$(MODBASE).core.mod.c: $(TMP)/$(MODBASE).core.o $(MODPOST)
+	$(ECHO) "  Performing module post processing"
+	$(SILENT)$(MODPOST) $(TMP)/$(MODBASE).core.o
+	$(SILENT)$(MV) $(TMP)/$(MODBASE).core.mod.c .
+
+$(BIN)/$(MODBASE).ko: $(TMP)/$(MODBASE).core.o $(TMP)/$(MODBASE).core.mod.o
+	$(ECHO) "  Linking post-processed kernel module $@"
+	$(SILENT)$(LINK.object) $(TMP)/$(MODBASE).core.o $(TMP)/$(MODBASE).core.mod.o
+
+$(MODPOST):
+	$(MAKE) -C $(KERNELDIR) modules
+
+
+# This is a convenience rule to build the Linux kernel.
+#
+.PHONY: vmlinux
+vmlinux: $(KERNELDIR)/vmlinux
+
+$(KERNELDIR)/vmlinux:
+	$(MAKE) -C $(KERNELDIR) vmlinux
+
+
+# Handle final link of executables.
+#
+$(BIN)/%: $(OBJS) $(BUILD_DATA)
+	$(ECHO) "  Linking executable $@"
+	$(SILENT)$(LINK.exe) \
+			$(OBJS) $(CROSSPLATFORM_PATHS) \
+			$(LIBS) $(CROSSPLATFORM_LIBS)
+	$(SILENT)$(OBJCOPY) --add-section .build-data=$(BUILD_DATA) $@
+
+
+# The following rules (copy, package and install) are only defined when MODULE
+# is non-NULL to avoid make issuing warnings about overriding targets for
+# $(SYSBIN).
+#
+ifneq ("$(MODULE)","")
+
+# The "copy" rule copies targets into the system binary directory.  Only copy
+# when the local source has been modified.
+#
+.PHONY: copy
+copy: pre_req $(SYSBIN)/$(MODULE)
+
+$(SYSBIN)/$(MODULE): $(BIN)/$(MODULE)
+	$(ECHO) " Copying $< to $(SYSBIN)"
+	$(SILENT)$(CP) $< $@
+
+
+# The "package" rule handles the DDK-related things like stripping etc.
+#
+.PHONY: package
+package: copy
+ifeq ("$(BUILD)", "release")
+
+ifneq ("$(suffix $(MODULE))",".a")
+	$(ECHO) " DDK-packaging $(MODULE)"
+	$(SILENT)$(STRIP) --strip-unneeded $(SYSBIN)/$(MODULE)
+endif #ifeq ("$(suffix $(MODULE))",".a")
+ 
+endif #ifeq ("$(BUILD)", "release")
+
+
+
+
+# The "symbolpackage" rule handles the DDK-related things like stripping and symbol file creation etc.
+#
+.PHONY: symbolpackage
+symbolpackage: copy
+ifeq ("$(BUILD)", "release")
+
+ifeq ("$(suffix $(MODULE))",".so")
+	$(SILENT)$(OBJCOPY) --input-target=$(OBJCOPYFORMAT) --only-keep-debug $(SYSBIN)/$(MODULE) $(SYSBIN)/$(basename $(MODULE)).dbg
+endif
+
+ifneq ("$(suffix $(MODULE))",".a")
+	$(ECHO) " DDK-packaging $(MODULE)"
+	$(SILENT)$(STRIP) --strip-unneeded $(SYSBIN)/$(MODULE)
+endif #ifeq ("$(suffix $(MODULE))",".a")
+ 
+ifeq ("$(suffix $(MODULE))",".so")
+	$(SILENT)$(OBJCOPY) --input-target=$(OBJCOPYFORMAT) --add-gnu-debuglink=$(SYSBIN)/$(basename $(MODULE)).dbg $(SYSBIN)/$(MODULE)
+endif
+
+endif #ifeq ("$(BUILD)", "release")
+
+
+
+
+endif # ifneq ("$(MODULE)","")
+
+
+
+# DEPS must be completely expanded at this point.  Do not indent the -include
+# line below - it might break the command/rule/directive flow.
+#
+ifdef SOURCES
+-include $(DEPS)
+# Mark dependency files as phony to stop make trying to figure out how to 
+# rebuild them. Although they aren't strictly 'phony', they are never the 
+# target of a build; they are output as a side-effect of compiling C files.
+#
+.PHONY: $(DEPS)
+endif
+
+
+# Rules for building object from c files.  DEPENDENCIES_OUTPUT tells gcc to
+# write a dependency list for the c file to the specified file at the same
+# time as gererating its normal output.  Refer to "Environment Variables
+# Affecting GCC" in the GCC manual.
+#
+$(TMP)/%.o:%.c
+	$(ECHO) "   Compiling $<"
+	$(SILENT)$(RM) $(basename $@).depend
+	$(SILENT)DEPENDENCIES_OUTPUT="$(basename $@).depend $@" $(COMPILE.c) $<
+
+$(TMP)/%.o:%.cpp
+	$(ECHO) "   Compiling $<"
+	$(SILENT)$(RM) $(basename $@).depend
+	$(SILENT)DEPENDENCIES_OUTPUT="$(basename $@).depend $@" $(COMPILE.cc) $<
+
+$(TMP)/%.o:%.s
+	$(ECHO) "   Compiling $<"
+	$(SILENT)$(RM) $(basename $@).depend
+	$(SILENT)DEPENDENCIES_OUTPUT="$(basename $@).depend $@" $(COMPILE.s) $<
+
+# Preprocess vfp assembler code to obtain structure offsets for the
+# chosen OGL version
+#
+%.s:%.spp
+	$(CC) -x assembler-with-cpp $(ALL_CFLAGS) $(ALL_INCLUDES) -c -o $@ -E $<
+
+
+# Make sure we notice changes to these files and effect a rebuild since
+# compilation flags might have been changed.
+#
+$(OBJS): \
+	$(PVR_CONSUMER_ROOT)/build/$(PVR_BUILD_DIR)/makeconf.build \
+	$(PVR_CONSUMER_ROOT)/build/$(PVR_BUILD_DIR)/$(MAKECONF_CORE) \
+	$(PVR_CONSUMER_ROOT)/build/makeconf \
+	makefile.alt
+
+$(BIN)/$(MODULE): $(MODULE_DEPS) makefile.alt
+
+
+# Rules for debugging compilation - these files can be compiled (if necessary)
+# but are produced only for debugging pre-processor problems.  
+#
+$(TMP)/%.s:%.c
+	$(ECHO) "   Compiling $< to assembler"
+	$(SILENT)$(COMPILE.c) -S $<
+
+$(TMP)/%.s:%.cpp
+	$(ECHO) "   Compiling $< to assembler"
+	$(SILENT)$(COMPILE.cc) -S $<
+
+$(TMP)/%.i:%.c
+	$(ECHO) "  Pre-processing $<"
+	$(SILENT)$(COMPILE.c) -E $< >$@
+
+$(TMP)/%.i:%.cpp
+	$(ECHO) "  Pre-processing $<"
+	$(SILENT)$(COMPILE.cc) -E $< >$@
+
+
+# 'buildcheck' checks that the $(BUILD) macro is set to someting sensible.
+#
+buildcheck:
+	@if [ "$(BUILD)" != release -a \
+						"$(BUILD)" != debug -a "$(BUILD)" != timing ]; then \
+		echo "The build type \"$(BUILD)\" is not supported!"; \
+		exit 1; \
+	fi
+
+
+# kernelcheck checks a kernel directory is named and that a build has been
+# performed.  It also checks the version of the kernel is the one that
+# this build requires
+#
+kernelcheck:
+	@if [ -z "$(KERNELDIR)" -o ! -d "$(KERNELDIR)" ]; then \
+		echo; \
+		echo "** The \$$KERNELDIR variable must be set correctly to do a build."; \
+		echo "** Don't forget to actually build the kernel either!"; \
+		exit 1; \
+	fi
+	@if [ ! -f $(KERNELDIR)/include/linux/version.h ]; then \
+		echo; \
+		echo -n "** You must first complete a kernel build in the directory "; \
+		echo "named by \$$KERNELDIR."; \
+		echo "** Use:"; \
+		echo -e "\n   $$ make -C \$$KERNELDIR vmlinux\n"; \
+		exit 1; \
+	fi
+	@if [ -z "$(REQUIREDKERNELVERSION)" ]; then \
+		echo; \
+		echo "** The \$$REQUIREDKERNELVERSION variable is not set."; \
+		echo; \
+		exit 1; \
+	fi
+	@if [ "$(REQUIREDKERNELVERSION)" != "$(KERNELVERSION)" ]; then \
+		echo; \
+		echo "** This build expects kernel version $(REQUIREDKERNELVERSION), "; \
+		echo "** but found $(KERNELVERSION). If \$$KERNELDIR is set correctly,"; \
+ 		echo "** you should use \$$LINUX_KERNEL_VERSION to specify kernel version explicitly"; \
+		echo; \
+		exit 1; \
+	fi
+	@if [ -z "$(KERNEL_ID)" ]; then \
+		echo; \
+		echo -n "** Unable to identify kernel id"; \
+		echo ". Try using \$$DONT_USE_UTS_RELEASE=1."; \
+		exit 1; \
+	fi
+# Simply rules to print out useful things we sometimes like to know.
+#
+.PHONY: show_kernel
+show_kernel:
+	$(ECHO) "Kernel ID is $(KERNEL_ID)"
+	$(ECHO) "Kernel version is $(KERNEL_VER)"
+	$(ECHO) "Kernel rel is $(KERNEL_REL)"
+	$(ECHO) "Kernel subrel is $(KERNEL_SUBREL)"
+	$(ECHO) "Kernel module suffix is $(KM_SUFFIX)"
+	$(ECHO) "Modpost is $(MODPOST)"
+	$(ECHO) "Module name is $(MODULE)"
+	$(ECHO) "Module basename is $(MODBASE)"
+	$(ECHO) "Module suffix is $(MODSUFFIX)"
+
+.PHONY: show_settings
+show_settings:
+ifeq ("$(MBX_GPL)","1")
+		$(ECHO) "! ======================= MBX GPL BUILD ==============================:"
+endif
+	$(ECHO) "! DATE: `date`"
+	$(ECHO) "! PWD: `pwd`"
+	$(ECHO) "!"
+	$(ECHO) "! SETTINGS:"
+	$(ECHO) "!"
+	$(ECHO) "! PVRVERSION: $(PVRVERSION)"
+	$(ECHO) "! KERNELVERSION: $(KERNELVERSION)"
+	$(ECHO) "! BUILD=$(BUILD)"
+	$(ECHO) "! PVR_BUILD_DIR=$(PVR_BUILD_DIR)"
+	$(ECHO)	"! SYSTEM=$(SYSTEM)"
+	$(ECHO) "! CROSS_COMPILE=$(CROSS_COMPILE)"
+	$(ECHO) "! TOOLCHAIN=$(TOOLCHAIN)"
+	$(ECHO) "! KERNELDIR=$(KERNELDIR)"
+	$(ECHO) "!"
+	$(ECHO) "! ALL_CFLAGS=$(ALL_CFLAGS)"
+	$(ECHO) "!"
+	$(ECHO) "! ALL_INCLUDES=$(ALL_INCLUDES)"
+	$(ECHO) "!"
+	$(ECHO) "! SYSBIN is"
+	$(ECHO) "! $(SYSBIN)"
+	$(ECHO) "!"
+
+
+.PHONY: show_all_settings
+show_all_settings: show_settings
+	$(ECHO) "! ARCH_CFLAGS=$(ARCH_CFLAGS)"
+	$(ECHO) "! KARCH_CFLAGS=$(KARCH_CFLAGS)"
+	$(ECHO) "! SYS_CFLAGS=$(SYS_CFLAGS)"
+	$(ECHO) "! SYS_CFLAGS.1=$(SYS_CFLAGS.1)"
+	$(ECHO) "! SYS_CFLAGS_$(MODSUFFIX)=$(SYS_CFLAGS_$(MODSUFFIX))"
+
+# Clean up what's been built.  The $(RM) macro already sets the -f flag.  But
+# we don't use the -r flag - nothing we're deleting should be a directory so we
+# shouldn't need it.  If, for some reason, a directory is in place, then we
+# really want to know about it rather than just deleting without asking any
+# questions. 
+#
+# We delete all objects and dependencies (rather than $(OBJS) and $(DEPS)) so
+# that moving between release, timing and debug builds always provides a
+# reliable starting point.  We remove any created debugging files and any
+# kernel object intermediate files (.core.mod.c).
+#
+ifneq ("$(MODULE)","")
+.PHONY: clean
+clean:
+	$(SILENT)$(RM) $(TMP)/*.[ois]
+	$(SILENT)$(RM) $(TMP)/*.depend
+	$(SILENT)$(RM) *.core.mod.c $(BUILD_DATA)
+endif #ifneq ("$(MODULE)","")
+
+
+# Clobber things: this deletes all objects, dependencies PLUS all binaries and
+# in EVERY build.
+#
+ifneq ("$(MODULE)","")
+.PHONY: clobber
+clobber:
+	$(SILENT)$(RM) -r tmp_*
+	$(SILENT)$(RM) -r bin_*
+	$(SILENT)$(RM) *.core.mod.c
+endif #ifneq ("$(MODULE)","")
+
+
+# TAGS file for emacs etags mode. Note that if sources are spread out on the
+# VPATH this will not find them.
+#
+TAGS: $(SOURCES)
+	etags $(SOURCES)
+
+# Ensure certain useful build directories are created before hand.  We don't
+# have check do the mkdir commands directly so that we don't get time-stamp
+# related artefacts when building or copying.
+#
+dirs: $(BIN) $(TMP) $(SYSBIN)
+
+$(BIN) $(TMP) $(SYSBIN):
+	$(DO_MKDIR)
+
+# TMP, BIN, OBJS, PRE_REQ and MODULE must all be fully defined at this point.
+# 'target' should normally be the default build target specified by the 
+# makefile. The application or library being built is $(BIN)/$(MODULE) 
+#
+.PHONY: target
+target: pre_req $(BIN)/$(MODULE) $(COPY)
+
+pre_req: kernelcheck buildcheck dirs $(PRE_REQ) $(PVRVERSION_H)

@@ -1,0 +1,205 @@
+#
+# Copyright(c) 2008 Imagination Technologies Ltd. All rights reserved.
+# 
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+# 
+# This program is distributed in the hope it will be useful but, except 
+# as otherwise stated in writing, without any warranty; without even the 
+# implied warranty of merchantability or fitness for a particular purpose. 
+# See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+# 
+# The full GNU General Public License is included in this distribution in
+# the file called "COPYING".
+#
+# Contact Information:
+# Imagination Technologies Ltd. <gpl-support@imgtec.com>
+# Home Park Estate, Kings Langley, Herts, WD4 8LZ, UK 
+# 
+#
+
+ifeq ($(MBX_GPL),1)
+
+	ifeq ($(KBUILD),1)
+		
+		SUBDIRS	=	gpl/driver
+	
+	endif
+	
+	ifeq ($(UBUILD),1)
+		
+		SUBDIRS	+=	gpl/services_um \
+					gpl/mbxservicesdaemon \
+					gpl/mbxdaemonapp
+		
+		SUBDIRS += pvr2d
+		
+		ifeq ($(PDUMP2),1)
+			SUBDIRS += 	tools/intern/debug/dbgdriv/linux \
+						tools/intern/pdump
+		endif
+
+		ifeq ($(DYNAMIC_VERTEX_CODE_GEN),1)
+			SUBDIRS	+=	dvcgen
+		endif
+
+		SUBDIRS	+=	egl \
+		
+		ifeq ($(EGL1_2),1)
+			SUBDIRS	+=	eglcommon
+		endif
+		
+		ifeq ($(SUPPORT_BUFFER_CLASS),1)
+			SUBDIRS +=	3rdparty/example_camera/kernel				\
+						3rdparty/example_camera/client
+		endif
+		
+		ifeq ($(SUPPORT_OPENGL),1)
+			SUBDIRS	+=	opengles
+		endif
+
+		ifeq ($(SUPPORT_OPENVG),1)
+			SUBDIRS	+=	vgu
+			SUBDIRS	+=	openvg
+		endif
+
+		SUBDIRS	+=	wsegl/null_linux \
+					wsegl/null_linux_flip
+
+		OPK_SUBDIRS = 	wsegl/null_linux \
+						wsegl/null_linux_flip
+				
+				
+		# For the X11 window system, we add the following sub-directories
+		#
+		ifeq ($(SUPPORT_XWS),1)
+			SUBDIRS	+=	wsegl/x11_linux
+			OPK_SUBDIRS +=	wsegl/x11_linux
+		endif
+		
+		ifeq ($(SUPPORT_UNITTESTS),1)
+			SUBDIRS	+=	unittests/services_test \
+						unittests/pvr2d_test2 \
+						unittests/power_test
+
+			ifeq ($(SUPPORT_BUFFER_CLASS),1)
+				SUBDIRS +=	unittests/bufferclass_test/sw_camera_ctrl	\
+							unittests/bufferclass_test/ogles_camera_ext
+			endif
+
+			ifeq ($(SUPPORT_XWS),1)
+				SUBDIRS	+=	unittests/xtest
+			
+			ifeq ($(SUPPORT_OPENGL),1)
+				SUBDIRS	+=	unittests/xegltest
+			endif
+			
+			ifeq ($(SUPPORT_OPENVG),1)
+				SUBDIRS	+=	unittests/xovg_test
+			endif
+		endif
+
+		ifeq ($(SUPPORT_OPENGL),1)
+			SUBDIRS	+=	unittests/egl_test \
+						unittests/glinfo
+		endif
+
+		ifeq ($(SUPPORT_OPENVG),1)
+			SUBDIRS	+=	unittests/ovg_demos \
+						unittests/linux_ovg_test
+		endif
+	endif
+		
+		
+	endif
+	
+else
+	
+	SUBDIRS	=	services \
+				services_um
+	
+	SUBDIRS += pvr2d
+
+	ifeq ($(PDUMP2),1)
+		SUBDIRS += tools/intern/debug/dbgdriv/linux \
+					tools/intern/pdump
+	endif
+	
+	ifeq ($(DYNAMIC_VERTEX_CODE_GEN),1)
+		SUBDIRS	+=	dvcgen
+	endif
+
+	SUBDIRS	+=	egl \
+	
+	ifeq ($(EGL1_2),1)
+		SUBDIRS	+=	eglcommon
+	endif
+	
+	ifeq ($(SUPPORT_BUFFER_CLASS),1)
+		SUBDIRS +=	3rdparty/example_camera/kernel				\
+					3rdparty/example_camera/client
+	endif
+	
+	ifeq ($(SUPPORT_OPENGL),1)
+		SUBDIRS	+=	opengles
+	endif
+
+	ifeq ($(SUPPORT_OPENVG),1)
+		SUBDIRS	+=	vgu
+		SUBDIRS	+=	openvg
+	endif
+
+	SUBDIRS	+=	wsegl/null_linux \
+				wsegl/null_linux_flip
+				
+	OPK_SUBDIRS = 	wsegl/null_linux \
+				wsegl/null_linux_flip
+
+	# For the X11 window system, we add the following sub-directories
+	#
+	ifeq ($(SUPPORT_XWS),1)
+		SUBDIRS	+=	wsegl/x11_linux
+		OPK_SUBDIRS +=	wsegl/x11_linux
+	endif
+	
+	ifeq ($(SUPPORT_UNITTESTS),1)
+		SUBDIRS	+=	unittests/services_test \
+					unittests/pvr2d_test2 \
+					unittests/power_test
+
+		ifeq ($(SUPPORT_BUFFER_CLASS),1)
+			SUBDIRS +=	unittests/bufferclass_test/sw_camera_ctrl	\
+						unittests/bufferclass_test/ogles_camera_ext
+		endif
+
+		ifeq ($(SUPPORT_XWS),1)
+			SUBDIRS	+=	unittests/xtest
+			
+			ifeq ($(SUPPORT_OPENGL),1)
+				SUBDIRS	+=	unittests/xegltest
+			endif
+			
+			ifeq ($(SUPPORT_OPENVG),1)
+				SUBDIRS	+=	unittests/xovg_test
+			endif
+		endif
+
+		ifeq ($(SUPPORT_OPENGL),1)
+			SUBDIRS	+=	unittests/egl_test \
+						unittests/glinfo
+		endif
+
+		ifeq ($(SUPPORT_OPENVG),1)
+			SUBDIRS	+=	unittests/ovg_demos \
+						unittests/linux_ovg_test
+		endif
+	endif
+	
+endif
+
+SUBDIRS += $(EXTRA_SUBDIRS)

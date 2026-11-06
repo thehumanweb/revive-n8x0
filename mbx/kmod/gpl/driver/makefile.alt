@@ -1,0 +1,91 @@
+#
+# Copyright(c) 2008 Imagination Technologies Ltd. All rights reserved.
+# 
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+# 
+# This program is distributed in the hope it will be useful but, except 
+# as otherwise stated in writing, without any warranty; without even the 
+# implied warranty of merchantability or fitness for a particular purpose. 
+# See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+# 
+# The full GNU General Public License is included in this distribution in
+# the file called "COPYING".
+#
+# Contact Information:
+# Imagination Technologies Ltd. <gpl-support@imgtec.com>
+# Home Park Estate, Kings Langley, Herts, WD4 8LZ, UK 
+# 
+#
+
+# Services library
+#
+PRE_REQ	= #vmlinux
+
+MODULE	= mbxaccess.$(KM_SUFFIX)
+
+MODULE_CFLAGS = -DMONTAVISTA_PM
+
+DBG_MOD_NAME = "KERNL"
+MODULE_CFLAGS += -DDBG_MOD_NAME="\"$(DBG_MOD_NAME)\""
+
+ifdef ACCESSDRIVER
+ifeq ($(ACCESSDRIVER), stub)
+	MODULE_CFLAGS += -DDRIVERSTUB
+endif
+endif
+
+ifdef DEBUGPARSE
+ifeq ($(DEBUGPARSE), true)
+	MODULE_CFLAGS += -DFORPARSING
+endif
+endif
+
+INCLUDES =	-I$(PVR_CONSUMER_ROOT) 	\
+		-I$(PVR_CONSUMER_ROOT)/gpl/include/ \
+		-I$(PVR_CONSUMER_ROOT)/includeint \
+		-I$(PVR_CONSUMER_ROOT)/include/ \
+		-I$(PVR_CONSUMER_ROOT)/services/include/ \
+		-I$(PVR_CONSUMER_ROOT)/services/env/linux \
+		-I$(PVR_CONSUMER_ROOT)/gpl/include/driver \
+		-I$(PVR_CONSUMER_ROOT)/gpl/include/common \
+		-I$(PVR_CONSUMER_ROOT)/hwdefs \
+		-I$(PVR_CONSUMER_ROOT)/includeext \
+		-I$(PVR_CONSUMER_ROOT)/system/$(SYSTEM) \
+		-I$(PVR_CONSUMER_ROOT)/system/include \
+
+SOURCE_CORE =	mbxaccess.c
+
+SOURCE_WRAP = \
+		mbxaccess_iowrapper.c \
+		mbxaccess_mbxmem.c \
+		mbxaccess_memwrapper.c \
+		mbxaccess_mmapwrapper.c \
+		mbxaccess_procwrapper.c \
+		mbxaccess_pvrclassjtable.c \
+		mbxaccess_timerwrapper.c \
+		mbxaccess_virtmemwrapper.c \
+		mm.c \
+		mutex.c
+
+SOURCE_ORIG = \
+		malloc_debug.c \
+		mmap.c \
+
+
+SOURCES = $(SOURCE_CORE) $(SOURCE_ORIG) $(SOURCE_WRAP)
+
+ifdef ENABLE_DUMP_MEM
+SOURCES				+= pvr_debug.c
+else
+SOURCES.debug		+= pvr_debug.c
+SOURCES.timing		+= pvr_debug.c
+endif
+
+VPATH = $(PVR_CONSUMER_ROOT)/gpl/common \
+		$(PVR_CONSUMER_ROOT)/services/env/linux

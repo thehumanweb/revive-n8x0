@@ -1,0 +1,930 @@
+#
+# Copyright(c) 2008 Imagination Technologies Ltd. All rights reserved.
+# 
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+# 
+# This program is distributed in the hope it will be useful but, except 
+# as otherwise stated in writing, without any warranty; without even the 
+# implied warranty of merchantability or fitness for a particular purpose. 
+# See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+# 
+# The full GNU General Public License is included in this distribution in
+# the file called "COPYING".
+#
+# Contact Information:
+# Imagination Technologies Ltd. <gpl-support@imgtec.com>
+# Home Park Estate, Kings Langley, Herts, WD4 8LZ, UK 
+# 
+#
+
+# Main rule - "all" comes first so other defined rules don't become the
+# default.
+#
+all: show_settings
+	$(SILENT)$(MAKE) $(MAKE_OPT) subdirs TARGET=$@
+	$(SILENT)$(MAKE) $(MAKE_OPT) scripts
+
+# Include make settings and rules.
+#
+include makeconf.build
+include ../makeconf
+
+package: show_settings
+	$(SILENT)$(MAKE) $(MAKE_OPT) subdirs TARGET=$@
+	$(SILENT)$(MAKE) $(MAKE_OPT) scripts
+
+#
+# target for creating stripped release builds with
+# debug symbols in separate files.  All .so and .dbg
+# files are removed prior to the build - without this
+# all .so files that haven't changed since the last build
+# will cause i386objcopy to fail to add the debug link
+#
+
+symbolpackage: show_settings
+	$(SILENT)$(RM) $(SYSBIN)/*.so
+	$(SILENT)$(RM) $(SYSBIN)/*.dbg
+	$(SILENT)$(MAKE) $(MAKE_OPT) subdirs TARGET=$@
+	$(SILENT)$(MAKE) $(MAKE_OPT) scripts
+
+install: all
+ifeq ($(SUPPORT_XWS),1)
+	$(SILENT)(cd $(SYSBIN); \
+				if [ -d $(SYSFDO) ]; then \
+					./install.sh; \
+				else \
+					echo; \
+					echo "X Window system not present for this install" 2>&1; \
+					./install.sh --no-x; \
+				fi)
+else
+	$(SILENT)(cd $(SYSBIN); ./install.sh)
+endif
+
+
+# OEM Porting Kit support.
+#
+opk:
+	$(ECHO) "! TARGET=$(TARGET)"
+	$(ECHO) "!"
+	$(SILENT)$(MAKE) $(OPK_SUBDIRS)
+	
+
+uninstall: scripts
+	$(SILENT)(cd $(SYSBIN); ./install.sh --uninstall)
+
+
+# Determine PVR_BUILD_DIR automatically from the directory from which we're
+# invoked.  The use of $(notdir ..) here actually strips away the leading
+# components of the current directory here.  We export this so it's passed to
+# sub-makes automatically.
+#
+export	PVR_BUILD_DIR = $(notdir $(shell pwd))
+
+KFLAG	= $(findstring -k,$(MAKEFLAGS))
+MBX_GPL ?= 0
+KBUILD ?= 0
+UBUILD ?= 0
+LOAD_DAEMON ?= 0
+PVR_KERNEL_MODULE = rc.pvr
+
+ifeq ($(KBUILD),1)
+ifeq ($(UBUILD),1)
+	LOAD_DAEMON = 1
+endif
+endif
+
+ifeq ($(MBX_GPL),1)
+ifeq ($(KBUILD),1)
+	RC_INSTALL_SCRIPT = ../scripts/rc.mbxaccess.m4
+endif
+else
+	RC_INSTALL_SCRIPT = ../scripts/rc.pvr.m4
+endif
+
+# M4DEFS is required to determine how the auto-generation is performed.
+# M4FLAGS is optional and should only be defined for debugging purposes.
+#
+M4DEFS	= -DKM_SUFFIX=$(KM_SUFFIX) \
+			-DLIB_SUFFIX=$(LIB_SUFFIX) \
+			-DKERNEL_ID=$(KERNEL_ID) \
+			-DPVRVERSION=$(PVRVERSION) \
+			-DPVR_BUILD_DIR=$(PVR_BUILD_DIR) \
+			-DBUILD=$(BUILD) \
+			-DSOLIB_VERSION=$(SOLIB_VERSION) \
+			-DSUPPORT_XWS=$(SUPPORT_XWS) \
+			-DSUPPORT_OPENVG=$(SUPPORT_OPENVG) \
+			-DSUPPORT_UNITTESTS=$(SUPPORT_UNITTESTS) \
+			-DPROFILE_COMMONLITE=$(PROFILE_COMMONLITE) \
+			-DEGL1_2=$(EGL1_2) \
+			-DMBX_GPL=$(MBX_GPL) \
+			-DKBUILD=$(KBUILD) \
+			-DUBUILD=$(UBUILD) \
+			-DLOAD_DAEMON=$(LOAD_DAEMON) \
+			-DSUPPORT_BUFFER_CLASS=$(SUPPORT_BUFFER_CLASS) \
+			-DPVR_KERNEL_MODULE=$(PVR_KERNEL_MODULE) \
+			-DPDUMP2=$(PDUMP2) \
+			-DMBXACCESS_DEVICE=$(MBXACCESS_DEVICE)
+
+M4FLAGS	= #-dtalxfi
+
+# The scripts all depend upon these, which cause a regeneration on any
+# changes.
+#
+SCRIPT_DEPS	= ../scripts/common.m4	\
+				install.m4	\
+				makeconf.build	\
+				../makeconf.build	\
+				$(PVR_CONSUMER_ROOT)/include/pvrversion.h
+
+ifeq ($(MBX_GPL),1)
+ifeq ($(KBUILD),1)
+BUILD_PVR_KERNEL_MODULE = $(SYSBIN)/$(PVR_KERNEL_MODULE)
+endif
+else
+BUILD_PVR_KERNEL_MODULE = $(SYSBIN)/$(PVR_KERNEL_MODULE)
+endif
+
+# Perform build(s) as if for the automated build system
+#
+# BUILD_TARGETS		what to build (all, xserver etc. don't use install)
+#
+# TARGETS			the platforms to build.
+#
+# BUILDS			the build types (release, timing, debug)
+#
+# It's very much a BAD IDEA(tm) to mix targets that have different
+# compilers and/or kernels 
+#
+ifeq ($(SUPPORT_XWS),1)
+BUILD_TARGETS	= libx11 all fdo
+else
+BUILD_TARGETS	= all
+endif
+
+TARGETS		?= $(PVR_BUILD_DIR)
+BUILDS		?= $(BUILD)
+
+.PHONY: _build
+_build:
+	$(SILENT)$(MAKE) $(BUILD_TARGETS)
+
+.PHONY: build
+build:
+	$(SILENT)if [ -z "$(BUILDS)" -a -z "$(TARGETS)" ]; then \
+		echo "build rule requires non-NULL settings for TARGETS and BUILDS"; \
+		exit 1; \
+	fi
+	$(SILENT)for target in $(TARGETS); do \
+		for build in $(BUILDS); do \
+			$(MAKE) -C $(PVR_CONSUMER_ROOT)/build/$$target \
+						$(MAKE_OPT) _build BUILD=$$build || \
+			([ -z "$(KFLAG)" ] && exit 1); \
+		done; \
+	done
+
+
+.PHONY: subdirs $(SUBDIRS)
+subdirs: buildcheck
+	$(ECHO) "! TARGET=$(TARGET)"
+	$(ECHO) "!"
+	$(SILENT)$(MAKE) $(SUBDIRS)
+
+
+%:
+	$(ECHO) "+$@"
+	$(SILENT)$(MAKE) -C $(PVR_CONSUMER_ROOT)/$@ \
+			-f $(PVR_CONSUMER_ROOT)/build/makeconf.alt \
+			$(MAKE_OPT) $(TARGET) || \
+		([ -z "$(KFLAG)" ] && exit 1)
+	$(ECHO) "-$@"
+
+
+# Construct rc.pvr from a template.
+#
+$(SYSBIN)/rc.pvr: $(RC_INSTALL_SCRIPT) $(SCRIPT_DEPS)
+	$(ECHO) "Creating $@"
+	$(SILENT)$(TOUCH) $@
+ifeq ($(MBX_GPL),1)
+ifeq ($(KBUILD),1)
+	$(SILENT)$(M4) $(M4FLAGS) $(M4DEFS) ../../build/scripts/rc.mbxaccess.m4 install.m4 > $@
+endif
+else
+	$(SILENT)$(M4) $(M4FLAGS) $(M4DEFS) ../scripts/rc.pvr.m4 install.m4 > $@
+endif
+	$(SILENT)$(DOS2UNIX) $@ 2>/dev/null
+	$(SILENT)$(CHMOD) +x $@
+
+$(SYSBIN)/rc.mbxaccess: ../../gpl/build/scripts/rc.mbxaccess.m4 $(SCRIPT_DEPS) install.m4
+	$(ECHO) "Creating $@"
+	$(SILENT)$(TOUCH) $@
+	$(SILENT)$(M4) $(M4FLAGS) $(M4DEFS) ../../gpl/build/scripts/rc.mbxaccess.m4 install.m4 > $@
+	$(SILENT)$(DOS2UNIX) $@ 2>/dev/null
+	$(SILENT)$(CHMOD) +x $@
+
+# Construct install.sh from a template.
+#
+$(SYSBIN)/install.sh: ../scripts/install.sh.m4 $(SCRIPT_DEPS)
+	$(ECHO) "Creating $@"
+	$(SILENT)$(TOUCH) $@
+	$(SILENT)$(M4) $(M4FLAGS) $(M4DEFS) ../scripts/install.sh.m4 install.m4 > $@
+	$(SILENT)$(DOS2UNIX) $@ 2>/dev/null
+	$(SILENT)$(CHMOD) +x $@
+
+$(SYSBIN)/checkpackage.sh: ../scripts/checkpackage.m4 $(SCRIPT_DEPS)
+	$(ECHO) "Creating $@"
+	$(SILENT)$(TOUCH) $@
+	$(SILENT)$(M4) $(M4FLAGS) $(M4DEFS) ../scripts/checkpackage.m4 install.m4 > $@
+	$(SILENT)$(DOS2UNIX) $@ 2>/dev/null
+	$(SILENT)$(CHMOD) +x $@
+	
+.PHONY: scripts
+scripts: $(SYSBIN)/install.sh $(BUILD_PVR_KERNEL_MODULE)
+
+checkpackage: scripts $(SYSBIN)/checkpackage.sh
+	@-echo "Checking package content"
+	$(SILENT)(cd $(SYSBIN); \
+				if [ -f ./checkpackage.sh ]; then \
+					./checkpackage.sh; \
+					 $(RM) -rf ./checkpackage.sh; \
+				fi)
+
+# Rules for FreeDesktop.Org (fdo) version of X Window System Version 11
+#
+.PHONY: X fdo fdo_clean fdo_clobber libX11 libx11 xserver xapps
+xwscheck:
+	@if [ "$(SUPPORT_XWS)" != 1 ]; then \
+		echo "This is only applicable for X window system builds."; \
+		exit 1; \
+	fi
+
+X fdo fdo_clean fdo_clobber libX11 libx11 xserver xapps: xwscheck
+	$(SILENT)$(MAKE) $(MAKE_OPT) -C $(FDO) \
+			SILENT=$(SILENT) \
+			DDK_BINARY_DIR=$(SYSBIN) \
+			BUILD=$(BUILD) \
+			CC=$(CC) \
+                        ARCH_CFLAGS="$(ARCH_CFLAGS)" \
+			TARGET=$(PVR_BUILD_DIR) \
+			XSERVER_ONLY=$(XWS_SERVER_ONLY) $@
+
+
+# Rules for khronos EGL conformance tests.
+#
+CONFORMES=$(PVR_CONSUMER_ROOT)/tests/khronos/conformes
+CONFORMES_DEST=$(DISCIMAGE)/usr/local/bin
+GLES_DIR=$(PVR_CONSUMER_ROOT)/tests/khronos/GLES
+
+$(GLES_DIR):
+	$(DO_MKDIR)
+
+_conformes: $(GLES_DIR)
+	$(SILENT)$(LN) -sf $(PVR_CONSUMER_ROOT)/opengles/drvgl.h $(GLES_DIR)/gl.h
+	$(SILENT)$(LN) -sf $(PVR_CONSUMER_ROOT)/opengles/drvgl.h $(GLES_DIR)
+	$(SILENT)$(LN) -sf $(PVR_CONSUMER_ROOT)/opengles/drvgl1_0.h $(GLES_DIR)
+	$(SILENT)$(LN) -sf $(PVR_CONSUMER_ROOT)/opengles/drvgl1_1.h $(GLES_DIR)
+	$(SILENT)$(LN) -sf $(PVR_CONSUMER_ROOT)/include/drvegl1_0.h $(GLES_DIR)
+	$(SILENT)$(LN) -sf $(PVR_CONSUMER_ROOT)/include/drvegl1_1.h $(GLES_DIR)
+	$(SILENT)$(LN) -sf $(PVR_CONSUMER_ROOT)/include/drvegl1_2.h $(GLES_DIR)
+	$(SILENT)$(SED) -e 's,drvgl\.h,gl.h,' < $(PVR_CONSUMER_ROOT)/include/drvegl.h >$(GLES_DIR)/egl.h
+	$(SILENT)$(LN) -sf $(PVR_CONSUMER_ROOT)/include/drvegltypes.h $(GLES_DIR)
+	$(SILENT)$(LN) -sf $(SYSBIN)/libGLES*.so $(GLES_DIR)
+
+.PHONY: conformes
+conformes: all _conformes
+	$(ECHO) "!"
+	$(ECHO) "! The Khronos tests in this tree are not up-to-date, so this test facility"
+	$(ECHO) "! is not supported.  You will have to install binaries manually by copying them"
+	$(ECHO) "! from $(CONFORMES)/conform"
+	$(ECHO) "!"
+	$(MAKE) -C $(CONFORMES) -f GNUmakefile \
+				CONFORMES=$(CONFORMES) \
+				OPENGLES1_1=$(OPENGLES1_1) \
+				PROFILE_COMMONLITE=$(PROFILE_COMMONLITE) \
+				CC="$(CROSS_COMPILE)gcc $(SYS_CFLAGS.1) $(SYS_INCLUDES)" \
+				LD="$(CROSS_COMPILE)gcc -L$(TOOLCHAIN)/lib $(CROSSPLATFORM_LIBS) -Wl,-rpath-link=$(SYSBIN)"
+
+conformes_install: conformes
+	$(SILENT)for file in covgl covegl primtest conform; do \
+		echo "Copying $$file to $(CONFORMES_DEST)"; \
+		$(CP) $(CONFORMES)/conform/$$file/$$file $(CONFORMES_DEST); \
+	done
+							
+conformes_clean:
+	$(RM) -r $(GLES_DIR)
+	$(MAKE) -C $(CONFORMES) -f GNUmakefile CONFORMES=$(CONFORMES) clean
+	
+conformes_clobber:
+	$(RM) -r $(GLES_DIR)
+	$(MAKE) -C $(CONFORMES) -f GNUmakefile CONFORMES=$(CONFORMES) clobber
+
+
+# Rules for the Linux kernel
+#
+.PHONY: kernel kernel_clean clean_kernel
+kernel:
+	$(SILENT)(cd $(KERNELDIR); $(MAKE) vmlinux zImage modules)
+
+kernel_clean clean_kernel:
+	$(SILENT)(cd $(KERNELDIR); $(MAKE) clean)
+	
+
+# Rules for tidying stuff up.
+#
+clean:
+	$(ECHO) "! BUILD=$(BUILD) PVR_BUILD_DIR=$(PVR_BUILD_DIR)"
+	$(ECHO) "!"
+	$(SILENT)$(MAKE) $(MAKE_OPT) subdirs TARGET=clean
+	$(SILENT)$(RM) $(SYSBIN)/install.sh
+	$(SILENT)$(RM) $(SYSBIN)/rc.pvr
+
+clobber:
+	$(ECHO) "! BUILD=*all* PVR_BUILD_DIR=*all*"
+	$(ECHO) "!"
+	$(SILENT)$(MAKE) $(MAKE_OPT) subdirs TARGET=clobber
+	$(SILENT)$(RM) -r $(_SYSBIN)_*
+	$(SILENT)-find $(PVR_CONSUMER_ROOT) -name "*~" -exec $(RM) \;
+
+
+opk_clean:
+	$(ECHO) "! BUILD=$(BUILD) PVR_BUILD_DIR=$(PVR_BUILD_DIR)"
+	$(ECHO) "!"
+	$(SILENT)$(MAKE) $(MAKE_OPT) $(OPK_SUBDIRS) TARGET=clean
+
+
+# Rules for make cscope file lists
+#
+.PHONY: cscope kscope cscope.files
+
+cscope.files:
+	$(SILENT)$(RM) $@
+	$(ECHO) "-p4" > $@
+	$(SILENT)$(FIND) $(PVR_CONSUMER_ROOT) -type f \
+		\( -name make\* -o -name \*.[chsS] \) \
+		! -name \*.o ! -name \*.depend \
+		-print >> $@
+
+cscope: cscope.files
+
+kscope: cscope.files
+ifdef KERNELDIR
+	$(SILENT)$(FIND) $(KERNELDIR) -type f \
+		\( -name Make\* -o -name \*.[chsS] \) \
+		-print >> cscope.files
+else
+	$(ECHO) "Must set KERNEL ter for $@ to work."
+endif
+
+
+# These are the standard sub-directories for all targets.  The
+# SUBDIRS macro is now out-of-bounds to other makefiles.
+#
+
+include ../makeconf.dir
+
+
+
+
+###########################################################################################
+###########################################################################################
+
+checkexportlist: all checkpackage
+	$(SILENT)$(RM) -f expected_resolved_ogl.txt expected_resolved_egl.txt
+ifeq ($(SUPPORT_OPENVG),1)
+	$(SILENT)$(RM) -f expected_resolved_ovg.txt
+	$(SILENT)$(RM) -f expected_resolved_ovgu.txt
+endif
+
+#
+# EGL 1.0 FUNCTIONS
+#
+	$(SILENT) $(ECHO) eglChooseConfig >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglCopyBuffers >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglCreateContext >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglCreatePbufferSurface >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglCreatePixmapSurface >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglCreateWindowSurface >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglDestroyContext >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglDestroySurface >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglGetConfigAttrib >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglGetConfigs >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglGetCurrentContext >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglGetCurrentDisplay >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglGetCurrentSurface >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglGetDisplay >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglGetError >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglGetProcAddress >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglInitialize >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglMakeCurrent >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglQueryContext >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglQueryString >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglQuerySurface >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglSwapBuffers >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglTerminate >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglWaitGL >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglWaitNative >> expected_resolved_egl.txt
+
+#
+# EGL 1.1 FUNCTIONS
+#
+ifeq ("$(EGL1_1)", "1")
+	$(SILENT) $(ECHO) eglBindTexImage >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglSwapInterval >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglReleaseTexImage >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglSurfaceAttrib >> expected_resolved_egl.txt
+endif # EGL1_1
+
+
+#
+# EGL 1.2 FUNCTIONS
+#
+ifeq ("$(EGL1_2)", "1")
+	$(SILENT) $(ECHO) eglBindTexImage >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglSwapInterval >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglReleaseTexImage >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglSurfaceAttrib >> expected_resolved_egl.txt
+endif # EGL1_2
+
+#
+# Take a copy of just the expected egl functions in ogles
+#
+	$(SILENT) $(CP) expected_resolved_egl.txt expected_resolved_ogl.txt
+
+
+ifeq ("$(EGL1_2)", "1")
+	$(SILENT) $(ECHO) eglCreatePbufferFromClientBuffer >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglBindAPI >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglQueryAPI >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglWaitClient >> expected_resolved_egl.txt
+	$(SILENT) $(ECHO) eglReleaseThread >> expected_resolved_egl.txt
+endif # EGL1_2
+
+#
+# OPENGLES 1.0 COMMONLITE FUNCTIONS
+#
+	$(SILENT) $(ECHO) glActiveTexture >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glAlphaFuncx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glBindTexture >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glBlendFunc >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glClear >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glClearColorx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glClearDepthx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glClearStencil >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glClientActiveTexture >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glColor4x >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glColorMask >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glColorPointer >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glCompressedTexImage2D >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glCompressedTexSubImage2D >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glCopyTexImage2D >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glCopyTexSubImage2D >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glCullFace >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDeleteTextures >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDepthFunc >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDepthMask >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDepthRangex >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDisable >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDisableClientState >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDrawArrays >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDrawElements >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glEnable >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glEnableClientState >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFinish >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFlush >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFogx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFogxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFrontFace >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFrustumx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGenTextures >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetError >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetIntegerv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetString >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glHint >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLightModelx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLightModelxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLightx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLightxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLineWidthx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLoadIdentity >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLoadMatrixx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLogicOp >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMaterialx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMaterialxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMatrixMode >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMultMatrixx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMultiTexCoord4x >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glNormal3x >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glNormalPointer >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glOrthox >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPixelStorei >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPointSizex >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPolygonOffsetx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPopMatrix >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPushMatrix >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glReadPixels >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glRotatex >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glSampleCoveragex >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glScalex >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glScissor >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glShadeModel >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glStencilFunc >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glStencilMask >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glStencilOp >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexCoordPointer >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexEnvx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexEnvxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexImage2D >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexParameterx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexSubImage2D >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTranslatex >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glVertexPointer >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glViewport >> expected_resolved_ogl.txt
+
+#
+# OPENGLES 1.0 COMMON FUNCTIONS
+#
+ifneq ("$(PROFILE_COMMONLITE)", "1")
+	$(SILENT) $(ECHO) glAlphaFunc >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glClearColor >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glClearDepthf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glColor4f >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDepthRangef >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFogf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFogfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glFrustumf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLightModelf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLightModelfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLightf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLightfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLineWidth >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLoadMatrixf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMaterialf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMaterialfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMultMatrixf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMultiTexCoord4f >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glNormal3f >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glOrthof >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPointSize >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPolygonOffset >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glRotatef >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glSampleCoverage >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glScalef >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexEnvf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexEnvfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexParameterf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTranslatef >> expected_resolved_ogl.txt
+endif # PROFILE_COMMONLITE
+
+
+#
+# OPENGLES 1.1 COMMONLITE FUNCTIONS
+#
+ifeq ("$(OPENGLES1_1)", "1")
+	$(SILENT) $(ECHO) glBindBuffer >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glBufferData >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glBufferSubData >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glClipPlanex >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glColor4ub >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDeleteBuffers >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetBooleanv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetBufferParameteriv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetClipPlanex >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGenBuffers >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetFixedv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetLightxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetMaterialxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetPointerv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetTexEnviv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetTexEnvxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetTexParameteriv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetTexParameterxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glIsBuffer >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glIsEnabled >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glIsTexture >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPointParameterx >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPointParameterxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPointSizePointerOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexEnvi >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexParameteri >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexParameteriv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexParameterxv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexEnviv >> expected_resolved_ogl.txt
+
+#
+# OPENGLES 1.1 COMMON FUNCTIONS
+#
+ifneq ("$(PROFILE_COMMONLITE)", "1")
+	$(SILENT) $(ECHO) glClipPlanef >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetClipPlanef >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetFloatv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetLightfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetMaterialfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetTexEnvfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetTexParameterfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPointParameterf >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glPointParameterfv >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glTexParameterfv >> expected_resolved_ogl.txt
+endif # PROFILE_COMMONLITE
+
+endif # OPENGLES1_1
+
+
+#
+# VERTEX PROGRAM COMMONLITE FUNCTIONS
+#
+ifneq ("$(PASSTHROUGH_BUILD)", "1")
+
+ifeq ("$(VERTEX_PROGRAM)", "1")
+ifeq ("$(VGP)", "1")
+	$(SILENT) $(ECHO) glVertexAttrib4xIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramLocalParameter4xIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramLocalParameter4xvIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramEnvParameter4xIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramEnvParameter4xvIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glVertexAttribPointerARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glEnableVertexAttribArrayARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDisableVertexAttribArrayARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramStringARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glBindProgramARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDeleteProgramsARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGenProgramsARB >> expected_resolved_ogl.txt
+
+#
+# VERTEX PROGRAM COMMON FUNCTIONS
+#
+ifneq ("$(PROFILE_COMMONLITE)", "1")
+	$(SILENT) $(ECHO) glVertexAttrib4fARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramEnvParameter4fARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramEnvParameter4fvARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramLocalParameter4fARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramLocalParameter4fvARB >> expected_resolved_ogl.txt
+endif # PROFILE_COMMONLITE
+
+endif # VGP
+ifeq ("$(VGP_LITE)", "1")
+	$(SILENT) $(ECHO) glVertexAttrib4xIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramLocalParameter4xIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramLocalParameter4xvIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramEnvParameter4xIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramEnvParameter4xvIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glVertexAttribPointerARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glEnableVertexAttribArrayARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDisableVertexAttribArrayARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramStringARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glBindProgramARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDeleteProgramsARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGenProgramsARB >> expected_resolved_ogl.txt
+
+#
+# VERTEX PROGRAM COMMON FUNCTIONS
+#
+ifneq ("$(PROFILE_COMMONLITE)", "1")
+	$(SILENT) $(ECHO) glVertexAttrib4fARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramEnvParameter4fARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramEnvParameter4fvARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramLocalParameter4fARB >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glProgramLocalParameter4fvARB >> expected_resolved_ogl.txt
+endif # PROFILE_COMMONLITE
+
+endif # VGP_LITE
+endif # VERTEX_PROGRAM
+
+endif # PASSTHROUGH_BUILD
+
+#
+# OPENGLES 1.1 EXTENSION FUNCTIONS
+#
+ifeq ("$(OPENGLES1_1)", "1")
+
+#
+# DRAW TEXTURE COMMONLITE FUNCTIONS
+#
+ifeq ("$(DRAW_TEXTURE)", "1")
+	$(SILENT) $(ECHO) glDrawTexsOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDrawTexiOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDrawTexxOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDrawTexsvOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDrawTexivOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDrawTexxvOES >> expected_resolved_ogl.txt
+
+#
+# DRAW TEXTURE COMMON FUNCTIONS
+#
+ifneq ("$(PROFILE_COMMONLITE)", "1")
+	$(SILENT) $(ECHO) glDrawTexfOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glDrawTexfvOES >> expected_resolved_ogl.txt
+endif # PROFILE_COMMONLITE
+
+endif # DRAW_TEXTURE
+
+
+#
+# MATRIX PALETTE FUNCTIONS
+#
+ifeq ("$(MATRIX_PALETTE)", "1")
+	$(SILENT) $(ECHO) glCurrentPaletteMatrixOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glLoadPaletteFromModelViewMatrixOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMatrixIndexPointerOES >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glWeightPointerOES >> expected_resolved_ogl.txt
+endif # MATRIX_PALETTE
+endif # OPENGLES1_1
+
+
+
+
+
+#
+# QUERY MATRIX FUNCTIONS
+#
+ifeq ("$(QUERY_MATRIX)", "1")
+	$(SILENT) $(ECHO) glQueryMatrixxOES >> expected_resolved_ogl.txt
+endif # QUERY_MATRIX
+
+
+#
+# EXTENTED COLOR MATERIAL FUNCTIONS
+#
+ifeq ("$(EXTENDED_COLOR_MATERIAL)", "1")
+	$(SILENT) $(ECHO) glColorMaterial >> expected_resolved_ogl.txt
+endif # EXTENDED_COLOR_MATERIAL
+
+
+#
+# TEXTURE STREAM FUNCTIONS
+#
+ifeq ("$(TEXTURE_STREAM)", "1")
+	$(SILENT) $(ECHO) glTexBindStreamIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetTexStreamDeviceAttributeivIMG >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glGetTexStreamDeviceNameIMG >> expected_resolved_ogl.txt
+endif # TEXTURE_STREAM
+
+#
+# MULTI DRAW FUNCTIONS
+#
+ifeq ("$(MULTI_DRAW_ARRAYS)", "1")
+	$(SILENT) $(ECHO) glMultiDrawArrays >> expected_resolved_ogl.txt
+	$(SILENT) $(ECHO) glMultiDrawElements >> expected_resolved_ogl.txt
+endif # MULTI_DRAW_ARRAYS
+
+
+#
+# USER CLIPPLANE EXTENSION FUNCTIONS
+#
+ifneq ("$(OPENGLES1_1)", "1")
+ifeq ("$(USER_CLIPPLANES)", "1")
+ifeq ("$(VGP)", "1")
+ifneq ("$(VGP_LITE)", "1")
+
+	$(SILENT) $(ECHO) glClipPlanex >> expected_resolved_ogl.txt
+ifneq ("$(PROFILE_COMMONLITE)", "1")
+	$(SILENT) $(ECHO) glClipPlanef >> expected_resolved_ogl.txt
+endif # PROFILE_COMMONLITE
+
+endif # VGP_LITE
+endif # VGP
+endif # USER_CLIPPLANES
+endif # OPENGLES1_1
+
+
+#
+# Once the functions have been decided, call the checking script
+#
+	$(SILENT)$(SORT) expected_resolved_ogl.txt > expected_resolved_temp.txt
+	$(SILENT)$(UNIQ) expected_resolved_temp.txt > expected_resolved_ogl.txt
+
+	$(SILENT)$(SORT) expected_resolved_egl.txt > expected_resolved_temp.txt
+	$(SILENT)$(UNIQ) expected_resolved_temp.txt > expected_resolved_egl.txt
+
+	$(SILENT)$(RM) -f expected_resolved_temp.txt
+
+	$(SILENT)$(DOS2UNIX) $(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh
+
+ifeq ("$(EGL1_2)", "1")
+	$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh $(SYSBIN)/libEGL.so expected_resolved_egl.txt;
+else 
+	$(SILENT)$(RM) -f expected_resolved_egl.txt
+endif # EGL1_2
+
+ifneq ("$(PROFILE_COMMONLITE)", "1")
+	$(SILENT)if [ -f "$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh" ]; then \
+	$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh $(SYSBIN)/libGLES_CM.so expected_resolved_ogl.txt; \
+	fi
+else
+	$(SILENT)if [ -f "$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh" ]; then \
+	$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh $(SYSBIN)/libGLES_CL.so expected_resolved_ogl.txt; \
+	fi
+endif # PROFILE_COMMONLITE
+
+ifeq ($(SUPPORT_OPENVG),1)
+	$(SILENT) $(ECHO) vgAppendPath > expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgAppendPathData >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgChildImage >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgClear >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgClearImage >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgClearPath >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgColorMatrix >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgConvolve >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgCopyImage >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgCopyPixels >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgCreateImage >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgCreatePaint >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgCreatePath >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgDestroyImage >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgDestroyPaint >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgDestroyPath >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgDrawImage >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgDrawPath >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgFinish >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgFlush >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGaussianBlur >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetColor >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetError >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetImageSubData >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetMatrix >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetPaint >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetParameterVectorSize  >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetParameterf >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetParameterfv >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetParameteri >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetParameteriv >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetParent >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetPathCapabilities >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetPixels >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetString >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetVectorSize >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetf >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetfv >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGeti >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgGetiv >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgHardwareQuery >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgImageSubData >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgInterpolatePath >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgLoadIdentity >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgLoadMatrix >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgLookup >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgLookupSingle >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgMask >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgModifyPathCoords >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgMultMatrix >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgPaintPattern >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgPathBounds >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgPathLength >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgPathTransformedBounds >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgPointAlongPath >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgReadPixels >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgRemovePathCapabilities >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgRotate >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgScale >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSeparableConvolve >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetColor >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetPaint >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetParameterf >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetParameterfv >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetParameteri >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetParameteriv >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetPixels >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetf >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetfv >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSeti >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgSetiv >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgShear >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgTransformPath >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgTranslate >> expected_resolved_ovg.txt
+	$(SILENT) $(ECHO) vgWritePixels >> expected_resolved_ovg.txt
+
+	$(SILENT)$(SORT) expected_resolved_ovg.txt > expected_resolved_temp.txt
+	$(SILENT)$(UNIQ) expected_resolved_temp.txt > expected_resolved_ovg.txt
+
+	$(SILENT)if [ -f "$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh" ]; then \
+	$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh $(SYSBIN)/libOpenVG.so expected_resolved_ovg.txt; \
+	fi
+endif
+
+
+ifeq ($(SUPPORT_OPENVG),1)
+
+	$(SILENT) $(ECHO) vguArc > expected_resolved_ovgu.txt
+	$(SILENT) $(ECHO) vguComputeWarpQuadToQuad >> expected_resolved_ovgu.txt
+	$(SILENT) $(ECHO) vguComputeWarpQuadToSquare >> expected_resolved_ovgu.txt
+	$(SILENT) $(ECHO) vguComputeWarpSquareToQuad >> expected_resolved_ovgu.txt
+	$(SILENT) $(ECHO) vguEllipse >> expected_resolved_ovgu.txt
+	$(SILENT) $(ECHO) vguLine >> expected_resolved_ovgu.txt
+	$(SILENT) $(ECHO) vguPolygon >> expected_resolved_ovgu.txt
+	$(SILENT) $(ECHO) vguRect >> expected_resolved_ovgu.txt
+	$(SILENT) $(ECHO) vguRoundRect >> expected_resolved_ovgu.txt
+
+	$(SILENT)$(SORT) expected_resolved_ovgu.txt > expected_resolved_temp.txt
+	$(SILENT)$(UNIQ) expected_resolved_temp.txt > expected_resolved_ovgu.txt
+	
+	$(SILENT)if [ -f "$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh" ]; then \
+	$(PVR_CONSUMER_ROOT)/build/scripts/checkexports.sh $(SYSBIN)/libOpenVGU.so expected_resolved_ovgu.txt; \
+	fi
+
+endif
+

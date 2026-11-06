@@ -1,0 +1,226 @@
+#
+# Copyright(c) 2008 Imagination Technologies Ltd. All rights reserved.
+# 
+# This program is free software; you can redistribute it and/or modify it
+# under the terms and conditions of the GNU General Public License,
+# version 2, as published by the Free Software Foundation.
+# 
+# This program is distributed in the hope it will be useful but, except 
+# as otherwise stated in writing, without any warranty; without even the 
+# implied warranty of merchantability or fitness for a particular purpose. 
+# See the GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License along with
+# this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+# 
+# The full GNU General Public License is included in this distribution in
+# the file called "COPYING".
+#
+# Contact Information:
+# Imagination Technologies Ltd. <gpl-support@imgtec.com>
+# Home Park Estate, Kings Langley, Herts, WD4 8LZ, UK 
+# 
+#
+#
+
+# Tool chain and cross-compile settings.  arm-linux-gcc must be in the path.
+#
+
+LINUX_KERNEL_VERSION	?= 2.6.21
+#UBUILD ?= 1
+MBX1_LITE_REV51 = 1
+
+ifeq ($(LINUX_KERNEL_VERSION), 2.6.10)
+REQUIREDKERNELVERSION = $(LINUX_KERNEL_VERSION)
+CROSS_COMPILE 		= arm_v6_vfp_le-
+TOOLCHAIN			?= opt/montavista/devkit/arm/mv-m14.1-001
+else
+ifeq ($(LINUX_KERNEL_VERSION), 2.6.21)
+REQUIREDKERNELVERSION = 2.6.21
+CROSS_COMPILE 		= arm-none-linux-gnueabi-
+TOOLCHAIN			?= /DATA/toolchain/arm-2007q3
+#TOOLCHAIN			?= /data/TI-Linux/cs-arm-2007q3
+else
+REQUIREDKERNELVERSION = 2.4.20
+CROSS_COMPILE 		= arm_v5t_le-
+TOOLCHAIN			?= /opt/montavista/devkit/arm/v5t_le
+endif
+endif
+
+LINUX_KERNEL_VERSION ?= 2.4.20
+# Cross-compile extra settings.
+#
+CROSSPLATFORM_LIBS	= -ldl
+CROSSPLATFORM_PATHS	=
+
+# The system definitions from embedded/system/
+#
+SYSTEM = omap24xx
+DISPLAY_CONTROLLER = omaplcd
+
+# Kernel does not use floating point. Other code does.  These options were
+# taken from the kernel compiler options for TI OMAP Linux 2.6
+# KARCH_CFLAGS are not used with 2.6 kernel
+#
+
+ifeq ($(LINUX_KERNEL_VERSION), 2.6.10)
+KARCH_CFLAGS		= -mapcs \
+						-mno-sched-prolog \
+						-mlittle-endian \
+						-D__LINUX_ARM_ARCH__=6 \
+						-march=armv6 \
+						-mtune=strongarm \
+						-msoft-float \
+						-Wa \
+						-Uarm
+endif
+
+ifeq ($(LINUX_KERNEL_VERSION), 2.6.21)
+HAVE_KBUILD_BASENAME = 1
+KARCH_CFLAGS		=   -nostdinc \
+						-isystem $(TOOLCHAIN)/bin/../lib/gcc/arm-none-linux-gnueabi/4.2.1/include \
+						-Iinclude \
+						-include linux/autoconf.h \
+						-mlittle-endian \
+						-Wall \
+						-Wundef \
+						-Wstrict-prototypes \
+						-Wno-trigraphs \
+						-fno-strict-aliasing \
+						-fno-common \
+						-Os \
+						-marm \
+						-fno-omit-frame-pointer \
+						-mapcs \
+						-mno-sched-prolog \
+						-mabi=aapcs-linux \
+						-mno-thumb-interwork \
+						-D__LINUX_ARM_ARCH__=6 \
+						-march=armv6 \
+						-mtune=arm1136j-s \
+						-msoft-float \
+						-Uarm \
+						-fno-omit-frame-pointer \
+						-fno-optimize-sibling-calls \
+						-fno-stack-protector \
+						-Wdeclaration-after-statement \
+						-Wno-pointer-sign 
+endif
+
+ifeq ($(LINUX_KERNEL_VERSION), 2.4.20)
+KARCH_CFLAGS		= -mapcs \
+						-mno-sched-prolog \
+						-mlittle-endian \
+						-mapcs-32 \
+						-D__LINUX_ARM_ARCH__=6 \
+						-march=armv5te -Wa,-march=armv5te \
+						-mtune=strongarm \
+						-malignment-traps \
+						-mshort-load-bytes \
+						-msoft-float \
+						-Wa,-mno-fpu \
+						-Uarm
+endif
+
+ARCH_CFLAGS		=
+
+
+# SYS_FLAGS contains any flags specific to this system
+ifeq ($(LINUX_KERNEL_VERSION), 2.6.10)
+SYS_CFLAGS		= -DBLIT -DOMAP2430 -DVIPT_MMAP_COLOUR
+else
+SYS_CFLAGS		= -DBLIT -DMONTAVISTA_PM -DOMAP2420 -DVIPT_MMAP_COLOUR
+endif
+
+# Protection for kernel reentrancy
+SYS_CFLAGS += -DREENTRANCY_PROTECTION
+
+# OPTIM contains the optimisation level in timing and release builds
+ifeq ($(LINUX_KERNEL_VERSION), 2.6.10)
+OPTIM			= 
+else
+OPTIM			= -O2
+endif
+
+# Name of the fb device
+FBDEV_NAME = /dev/fb/0
+
+# File format for objcopy
+OBJCOPYFORMAT = elf32-littlearm
+
+MBX1_LITE_REV51	= 1
+SUPPORT_MBX_1_5_FEATURES = 1
+#PDUMP2				= 1
+#PROFILE_COMMONLITE		= 1
+SUPPORT_POWER_MANAGEMENT= 1
+USE_TERMINATE_PORT 		= 1
+VGP_LITE		= 1
+#INCREMENTING_SPWRITES	= 1
+#DISABLE_HW				= 1
+#DISABLE_TA				= 1
+#DISABLE_RENDER			= 1
+ifeq ($(LINUX_KERNEL_VERSION), 2.6.10)
+#EXTENDED_COLOR_MATERIAL	= 1
+else
+EXTENDED_COLOR_MATERIAL	= 1
+endif
+OPENGLES1_1				= 1
+EGL1_2					= 1
+SUPPORT_OPENVG				= 1
+PVRTC					= 1
+SINGLE_PRECISION		= 1
+USER_CLIPPLANES			= 1
+TEXENVCOMBINE			= 1
+TEXENVDOT3				= 1
+QUERY_MATRIX			= 1
+VERTEX_PROGRAM			= 1
+MATRIX_PALETTE			= 1
+USE_FBDEV				= 1
+SUPPORT_DYNAMIC_PBRESIZE= 1
+RENDER_TO_TEXTURE		= 1
+READ_FORMAT				= 1
+TEXTURE_FORMAT_8888		= 1
+SUPPORT_HW_RECOVERY		= 1
+SCHEDULER_CONTROL_SUPPORT = 1
+USE_IMG_POWER_DOMAIN_FUNCTION   = 1
+DRAW_TEXTURE			= 1
+FAST_TWIDDLE_16BPP		= 1
+FAST_TWIDDLE_32BPP		= 1
+MULTI_DRAW_ARRAYS		= 1
+
+
+TEXTURE_STREAM			= 1
+
+ifeq ($(MBX_GPL),1)
+ifneq ($(KBUILD),1)
+ifneq ($(UBUILD),1)
+	KBUILD = 1
+	UBUILD = 1
+endif
+endif
+else
+ifeq ($(KBUILD),1)
+	MBX_GPL = 1
+endif
+ifeq ($(UBUILD),1)
+	MBX_GPL = 1
+endif
+endif
+
+ifneq ($(MBX_GPL),1)
+USE_HOST_EVENTS				= 1
+endif
+
+ifneq ($(MBX_GPL),1)
+SUPPORT_BUFFER_CLASS		= 1
+endif
+
+UPCONVERT_SINGLE_CHANNEL_TEXTURES	= 1
+
+ifneq ($(PASSTHROUGH_BUILD),1)
+DYNAMIC_VERTEX_CODE_GEN = 1
+endif
+
+
+
