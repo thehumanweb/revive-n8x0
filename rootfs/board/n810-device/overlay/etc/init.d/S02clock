@@ -1,0 +1,39 @@
+#!/bin/sh
+#
+# Keep the clock across reboots. Retu's RTC (rtc0, patches/6.18/0052) counts
+# time, but its date base lives here: after each NTP sync the udhcpc hook
+# writes the RTC (hwclock -w) and "save" keeps the base in /var/lib/clock.rtc;
+# at boot the base goes back to the RTC and hwclock -s sets the clock. The
+# RTC refuses a base saved before it lost power, and reads fail 254 days
+# after the last sync; then the time saved at shutdown and after each sync
+# (/var/lib/clock) is used, when it is later than the clock.
+
+F=/var/lib/clock
+B=/sys/class/rtc/rtc0/base
+
+case "$1" in
+start)
+	if [ -e /dev/rtc0 ]; then
+		[ -e $B ] && [ -s $F.rtc ] && cat $F.rtc > $B 2>/dev/null
+		hwclock -s -u 2>/dev/null && echo "clock: $(date) (RTC)"
+	fi
+	t=$(cat $F 2>/dev/null)
+	if [ -n "$t" ] && [ "$t" -gt "$(date +%s)" ] 2>/dev/null; then
+		date -s "@$t" > /dev/null && echo "clock: $(date) (saved)"
+	fi
+	;;
+stop|save)
+	mkdir -p /var/lib
+	date +%s > $F.tmp && mv $F.tmp $F
+	if [ -e $B ] && cat $B > $F.rtc.tmp 2>/dev/null; then
+		mv $F.rtc.tmp $F.rtc
+	else
+		rm -f $F.rtc.tmp
+	fi
+	;;
+*)
+	echo "Usage: $0 {start|stop|save}"
+	exit 1
+	;;
+esac
+exit 0

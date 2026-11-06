@@ -1,0 +1,12 @@
+#!/bin/sh
+# Maemo's DSME (running from the initfs) changes state with sysvinit's
+# "telinit -t <secs> <runlevel>"; busybox init has no runlevels. Halt (0)
+# and reboot (6) go through busybox init, so the shutdown scripts run;
+# other runlevels (Maemo's USER 2/5, ACTDEAD ...) need nothing here.
+while getopts t: opt; do :; done
+shift $((OPTIND - 1))
+case "$1" in
+	0) exec poweroff ;;
+	6) exec reboot ;;
+esac
+exit 0

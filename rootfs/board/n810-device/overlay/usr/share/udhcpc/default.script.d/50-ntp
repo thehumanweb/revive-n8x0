@@ -1,0 +1,37 @@
+#!/bin/sh
+# udhcpc hook: set the clock from NTP once a lease is bound or renewed, from
+# the DHCP server's NTP servers (option 42; udhcpc asks for it with
+# -O ntpsrv) and pool.ntp.org, in the background. The time then goes
+# to Retu's RTC (hwclock -w) and is saved for the next boot (S02clock: the
+# RTC's date base, and the time itself as the fallback).
+# /run/ntp-synced (tmpfs: gone at reboot) then tells wifi-ui that the clock
+# is right, which the chat needs for TLS.
+# Right after the lease the first query can go unanswered (DNS or the
+# link not quite up), so it is retried, 5 s apart and then a minute apart,
+# until one answers; one such loop at a time.
+case "$1" in
+bound|renew) ;;
+*) exit 0 ;;
+esac
+servers="$ntpsrv pool.ntp.org"
+pidfile=/run/ntp-sync.pid
+[ -e $pidfile ] && kill -0 "$(cat $pidfile)" 2>/dev/null && exit 0
+(
+	args=
+	for s in $servers; do
+		args="$args -p $s"
+	done
+	n=0
+	until ntpd -n -q $args > /dev/null 2>&1; do
+		n=$((n + 1))
+		[ $n = 1 ] && logger -t ntp "no answer from $servers, retrying"
+		if [ $n -lt 12 ]; then sleep 5; else sleep 60; fi
+	done
+	logger -t ntp "clock set from $servers: $(date)"
+	touch /run/ntp-synced
+	[ -e /dev/rtc0 ] && hwclock -w -u
+	/etc/init.d/S02clock save
+	rm -f $pidfile
+) < /dev/null > /dev/null 2>&1 &
+echo $! > $pidfile
+exit 0

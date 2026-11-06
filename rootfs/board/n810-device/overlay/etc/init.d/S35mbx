@@ -1,0 +1,14 @@
+#!/bin/sh
+# The MBX DRM driver on the real N810: not loaded at boot until it has been
+# tried by hand (a bad probe could hang the machine). touch /etc/mbx-autoload to load
+# it at every boot; otherwise: modprobe mbx
+case "$1" in
+	start)
+		if [ -e /etc/mbx-autoload ]; then
+			modprobe mbx 2>/dev/null || echo "mbx: not loaded"
+		else
+			echo "mbx: not loaded at boot (touch /etc/mbx-autoload, or modprobe mbx)"
+		fi ;;
+	stop) rmmod mbx 2>/dev/null ;;
+esac
+exit 0
