@@ -1,0 +1,7 @@
+#!/bin/sh
+# Load the MBX access driver if the kernel has the hardware.
+case "$1" in
+	start) modprobe mbxaccess 2>/dev/null || echo "mbxaccess: not loaded" ;;
+	stop) rmmod mbxaccess 2>/dev/null ;;
+esac
+exit 0

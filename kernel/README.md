@@ -24,7 +24,7 @@ scripts/fetch-linux.sh      # src/linux-6.18.58.tar.xz, sha256-checked
 scripts/prepare-6.18.sh     # extract, apply patches, configure (optional fragment: config/debug-6.18)
 scripts/build-6.18.sh       # out/zImage-6.18 (N810 DTB appended), out/zImage-6.18-n800
 scripts/build-mbx.sh        # out/mbxaccess.ko
-scripts/build-loader.sh     # out/zImage-loader (needs the n810-buildroot image and a Buildroot toolchain)
+scripts/build-loader.sh     # out/zImage-loader (needs the n810-buildroot image and the rootfs build's toolchain, `../rootfs`)
 ```
 
 `out/zImage-6.18` is what QEMU's `-kernel` takes (the DTB is appended because
@@ -32,9 +32,8 @@ NOLO and QEMU pass ATAGs, not a DTB). Builds are incremental, with objects in
 `build/`. `build-6.18.sh` warns when the image no longer fits the kernel
 partition.
 
-`scripts/build-loader.sh` expects a Buildroot output tree at
-`build/br-out-armel` with an armel toolchain; the Buildroot rootfs itself is
-not part of this repository.
+`scripts/build-loader.sh` compiles the loader with the toolchain of the
+Buildroot build in `../rootfs` (`BR_OUT` overrides the path).
 
 ## Licence
 

@@ -8,10 +8,11 @@ set -eu
 cd "$(dirname "$0")/.."
 V=6.18.58
 K=build/linux-$V O=build/obj-loader-$V L=build/loader
-CC=build/br-out-armel/host/bin/arm-buildroot-linux-gnueabi-gcc
+BR=${BR_OUT:-../rootfs/build/br-out-armel}
+CC=/br/host/bin/arm-buildroot-linux-gnueabi-gcc
 mkdir -p $L $O out
 # /init: static, no libc, ARMv6 EABI
-docker run --rm -v "$PWD":/work n810-buildroot sh -c "cd /work &&
+docker run --rm -v "$PWD":/work -v "$(cd "$BR" && pwd)":/br:ro n810-buildroot sh -c "cd /work &&
 	$CC -Os -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic \
 		-march=armv6 -marm -Wall -Wextra -Wl,-e,_start -Wl,--gc-sections \
 		-o $L/init loader/init.c -lgcc &&
