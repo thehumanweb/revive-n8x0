@@ -532,3 +532,22 @@ circuit.
       their value), then the tile's list, to the last entry's end mark; it raises RENDER_COMPLETE and
       EVM_DALLOC and returns the tile pages. (On the unit the render skipped entries without a list
       and did not draw the background there; see the journal.)
+
+34. **The MMU protocol and what the render flushes** (found during device testing).
+    - The stock daemon's MMU sequence: soft reset `0x080` = `0x111` then 0, sixteen times, with interrupts
+      off and cleared and `0x85c` = `0x80`; every page-table entry on one scratch page; the table addresses
+      to `0x1000`-`0x101c`; `0x1020` bit 0 cleared and bit 16 read until it clears, then bit 0 set and bit 16
+      read until it sets; then, for every page mapped, the table entry (a bare physical address) and a TLB
+      load (`0x1024` the device page, `0x1028` the physical page, `0x1020` bit 8, bit 24 read until it
+      clears). A 256-entry TLB is described elsewhere; whether the chip also walks the tables on a miss is
+      not known. The model walks them on a miss and counts, softly, a page used without a software load
+      (`V_TLB`) and the enable without the handshake (`V_MMU_SEQ`); the sixteen resets are not checked.
+      The driver has switches for all three (`mmu_seq`, `tlb_mode`, `reset16`); with them, on the unit, the
+      output is unchanged. Not modelled: the device's memory is all uncached (the target, the parameter
+      buffer, the region arrays, the tails, the contexts and the free list's table); a cacheable buffer the
+      CPU fills would need explicit cleaning, which the stock flow never does.
+    - What the unit flushes: with our setup, every tile of a frame comes out as one of two 16 x 16 patterns
+      (by tile parity), almost fixed from run to run (4048 of 4096 pixels the same in ten runs, about 40 vary),
+      independent of what the target held, and each pixel is ones with about 2 of 24 bits cleared
+      (`docs/n810-tile-flush.txt`). That is the look of the tile buffers (two, used by turns) being flushed
+      with nothing drawn into them. The model gives white in such a case (strict mode).

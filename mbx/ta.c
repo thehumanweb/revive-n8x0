@@ -193,6 +193,9 @@ static void check_contract(struct mbxemu *e, const struct scene *s)
 	else if ((R[R_TA_CTX_BASE / 4] | R[R_EVM_CTX_BASE / 4]) & 0x3fff)
 		emu_violation(e, V_CTX, "the TA or EVM context (0x820, 0x864) is not 16 KB aligned");
 	/* soft: what the stock stack and GLES do, not confirmed on the device */
+	if ((R[R_MMU_CTRL / 4] & 1) && !e->mmu_hand)
+		emu_violation(e, V_MMU_SEQ, "the MMU was enabled without the handshake (0x1020 written 0 and read "
+			      "until bit 16 clears, then 1 and read until it sets)");
 	if ((R[R_TA_CTX_BASE / 4] | R[R_FL_TABLE / 4]) & 0x3fff || (R[R_TA_REGIONS / 4] | R[R_EVM_CTX_BASE / 4]) & 0xfff)
 		emu_violation(e, V_ALIGN_SOFT, "0x820 and 0x824 are not 16 KB aligned, or 0x844 and 0x864 not 4 KB");
 	{

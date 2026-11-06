@@ -1,0 +1,76 @@
+What the N810's render flushes when nothing is drawn into its tile buffers (64x64 ARGB8888 target, our driver; RGB bytes of each pixel).
+All 16 tiles of a full-scene run carry one of two nearly fixed 16x16 patterns (tile index parity); across ten runs 4048 of the 4096 pixels never changed.
+
+run 'base' (full scene), tile (0,0):
+  ffffff afffff fefdfd fffbef fdffff fbffff fdf7fe fdbfff ebffdf fefff7 fffeff fbfeff fbedff bfffbf f5b6ee ffffff
+  ffdffe fefff7 ffffff fffffe ffffff feffef bffeff fdffff fedfff f7effe dbffff ffedff ffeb9f fffffe fdfeff ffffff
+  ffefff 5effee fffbff fdbfa5 efffff fddeff fbffff ffdfff fabfec ffefff ffffef f7ffbf dfffff ffddf6 dfeede ffffdd
+  bffffb feffde bfffff cafffb fbfffc febfff efffff ffffff ffffff caff9f fffef9 ffffbe befef7 bfcfee ffaf9b fffeff
+  ffdffe efdfff feffbf dfffff fbfeff fefffb ff7ffd 9bffff bfebff febffc ffffff ffffff fffff7 fffeff ffffff fffbff
+  ffffff ffffff ffdfff fbffbf feffff dffebf fffeff dfffff dfeff7 f3ffad ffffff dbe7dd feefff ffeffe ffbfdf fffbff
+  bfdfff dfbdff b7ffff fff7fe feffff f7ffff ffdfff feffef fffdff fffbff fffffb effef7 dffff7 ffe5fe ffeeff fffffe
+  ffffbf fffbfb fffffe fffef7 fddfff f7dfff fedfef eefeff efbfdf efbffb efcffe ffcfff febfff ffffff efedff fffef7
+  fffdff bffffa bfffff feffff ffbfff fffeff fbffff deffff ff9f9f fffedd fecfff dfffdf bfffff ffffff f6ffff ffffff
+  fff7ff fffbff fefffe ffffbf bfdfdf ffefef bffdff dfefff fffeff dffffd f7dffa fdfabf d6feff ffbfff ffffff fbffff
+  fffff7 d9dfff bdffff fcffff fffffe ffffff bebfff b7bffd ffbfdf feffff ffffef ffffff efffff ffffff fefcff fc9ddf
+  fdffff ffdfef ffbfff dfffff ffffff befff7 ffffbf ffbfff ff9ffb cfffff fffffe ffd7ff fefffb ffffff efffff fffeef
+  affeff feefff bbfffa fffdbd fbfaff ffbfff fffafe f5f5de f7ffef d7ffff fffffd bffeff dfffff ffffef efbffb fffffb
+  ffffff fef7b7 dfdfff ffffff ffffff afffff fefdfd ffffff ffefff ffefff fedfff feffef fdfffd ffffff fff7ff fffddf
+  ffffcf ffffaf ffbffd ffffff fefffe fffbff faffdf f8ffff fffedf fffdff ffffff eefffd ffffff feefdf fffeff ecfbef
+  fff7ff ffffdf fbfff7 ffdfff fffffd efefbf faffb3 fffdfe fffffa ffd7ff f5eeff efffff ffffff ffffff fffffe fffbef
+
+run 'base', tile (1,0) (the other pattern):
+  ffffff ebffff ffffbf ffefde fffebf fbffff fffbfb fdfff6 ffffff dbfff5 ffbfff ffffff faffef ffffef fffefb ffffff
+  ffffff fefbbe ffdef7 fed7ff fffbff ff9ffd ffffff feffdf dedfef fedfff fbffff bffffe f7ffff fbffff fefeff f9ffff
+  fffede ffbfff deffff f7faff f7fffd f7efff ffffff fffff7 dfffff feffdf feffff fffff7 fffff6 fffffe fefff7 f7efff
+  ffffff fffebf fffeff dfffef ffedff ffffff fffffd fffdff beffff fff6ff fefffd ffffff feffff fdffff fefeff d9fffe
+  ffffff fffffd bffffb bffdff ffeeff b5ffff feefff ffbeff ffffff fffffb ffff9b fdffff ffff7b ffffff ffffff ffffff
+  fdf7db fdf6ff fbfefd ffffff ffbfff feffff fefeff ffffff fff7ff fff7ff ddfeef dffffe ffffff ffebf7 bfffff f7d6db
+  bfdfef ffff5e ffbfff ffffbf fedeff fffffe ffdfff f7fffb ffffeb ffd7ff d7dfbf ffffff ffefff fdeffd fffffe ffffff
+  fffffd dfffef ffefff ffffff f5fcfe fff1fa ffffff ffafff feffff fef6bf fffdf9 f7fef7 bdf7ff feffff feffbf deffef
+  fbf7b5 efffbf f7ffff fffbf7 fbffff ffffff ffffbf ffffff fdffef ffffff effffd fdffff b5feff fffffe ffffed fdfffe
+  fffffd fbffcf fbfbff bbffff fbffff fffeff fdffff effff7 bffefe ffffdf ffeffe ffffee feefff feffff ffffff faffef
+  ffffff ffffbf fbf7ff ffffdf fbf7ff fffdcd eacffb ffffee fedfdf fcbfff ffffff fffbff fffbff dfdfef e7ffff f7fffe
+  fffff7 ffffff fffffa ffeffe ffbffd ffffff bfffff fffffe feffdf fffbfe bfffdf ffffde fedff9 ffffff ffffff fbffff
+  ffffff ffffff ffedff fdfffb ffffde 9ffffd fffffb ffdefd fdfbff fffeff caffbf fffffe e7ffbe dffff7 fd86ff ffffff
+  ebffff ffffbf febff7 fefeff f7ffff ffbfff fdffff feebff dfffdb f7bfff ffffdf b1f5fe fddfff bfedff fffffd ff8efe
+  fdfffd ffddee ffbffb bef9db ffffd6 ffffef aedbff ffffff ffffa5 fffbfc bbbfff fefaef fbee9f fffefe fbffff fffcff
+  fdfbff ffffff ffefff f6ffff ffffdf ffaedf dffff7 dfffff fffffb deffff bffeff fffef6 ffefbf fffeff ffdfdf ffefde
+
+run 'tlb2' (another run, same setup), tile (0,0):
+  faffdf f8ffff fffedf fffbef fdffff fbffff fdf7fe fdbfff ebffdf fefff7 fffeff fbfeff fbedff bfffbf f5b6ee ffffff
+  ffdffe fefff7 ffffff fffffe ffffff feffef bffeff fdffff fedfff f7effe dbffff ffedff ffeb9f fffffe fdfeff ffffff
+  ffefff 5effee fffbff fdbfa5 efffff fddeff fbffff ffdfff fabfec ffefff ffffef f7ffbf dfffff ffddf6 dfeede ffffdd
+  bffffb feffde bfffff cafffb fbfffc febfff efffff ffffff ffffff caff9f fffef9 ffffbe befef7 bfcfee ffaf9b fffeff
+  ffdffe efdfff feffbf dfffff fbfeff fefffb ff7ffd 9bffff bfebff febffc ffffff ffffff fffff7 fffeff ffffff fffbff
+  ffffff ffffff ffdfff fbffbf feffff dffebf fffeff dfffff dfeff7 f3ffad ffffff dbe7dd feefff ffeffe ffbfdf fffbff
+  bfdfff dfbdff b7ffff fff7fe feffff f7ffff ffdfff feffef fffdff fffbff fffffb effef7 dffff7 ffe5fe ffeeff fffffe
+  ffffbf fffbfb fffffe fffef7 fddfff f7dfff fedfef eefeff efbfdf efbffb efcffe ffcfff febfff ffffff efedff fffef7
+  fffdff bffffa bfffff feffff ffbfff fffeff fbffff deffff ff9f9f fffedd fecfff dfffdf bfffff ffffff f6ffff ffffff
+  fff7ff fffbff fefffe ffffbf bfdfdf ffefef bffdff dfefff fffeff dffffd f7dffa fdfabf d6feff ffbfff ffffff fbffff
+  fffff7 d9dfff bdffff fcffff fffffe ffffff bebfff b7bffd ffbfdf feffff ffffef ffffff efffff ffffff fefcff fc9ddf
+  fdffff ffdfef ffbfff dfffff ffffff befff7 ffffbf ffbfff ff9ffb cfffff fffffe ffd7ff fefffb ffffff efffff fffeef
+  affeff feefff bbfffa fffdbd fbfaff ffbfff fffafe f5f5de f7ffef d7ffff fffffd bffeff dfffff ffffef efbffb fffffb
+  ffffff fef7b7 dfdfff ffffff ffffff afffff fefdfd ffffff ffefff ffefff fedfff feffef fdfffd ffffff fff7ff fffddf
+  ffffcf ffffaf ffbffd ffffff fefffe fffbff faffdf f8ffff fffedf fffdff ffffff eefffd ffffff feefdf fffeff ecfbef
+  fff7ff ffffdf fbfff7 ffdfff fffffd efefbf faffb3 fffdfe fffffa ffd7ff f5eeff efffff ffffff ffffff fffffe fffbef
+
+empty scene, target holding one distinct value per pixel, the only tile processed (3,3):
+  ffffff afffff fefdfd fffbef fdffff fbffff fdf7fe fdbfff ebffdf fefff7 fffeff fbfeff fbedff bfffbf f5b6ee ffffff
+  ffdffe fefff7 ffffff fffffe ffffff feffef bffeff fdffff fedfff f7effe dbffff ffedff ffeb9f fffffe fdfeff ffffff
+  ffefff 5effee fffbff fdbfa5 efffff fddeff fbffff ffdfff fabfec ffefff ffffef f7ffbf dfffff ffddf6 dfeede ffffdd
+  bffffb feffde bfffff cafffb fbfffc febfff efffff ffffff ffffff caff9f fffef9 ffffbe befef7 bfcfee ffaf9b fffeff
+  ffdffe efdfff feffbf dfffff fbfeff fefffb ff7ffd 9bffff bfebff febffc ffffff ffffff fffff7 fffeff ffffff fffbff
+  ffffff ffffff ffdfff fbffbf feffff dffebf fffeff dfffff dfeff7 f3ffad ffffff dbe7dd feefff ffeffe ffbfdf fffbff
+  bfdfff dfbdff b7ffff fff7fe feffff f7ffff ffdfff feffef fffdff fffbff fffffb effef7 dffff7 ffe5fe ffeeff fffffe
+  ffffbf fffbfb fffffe fffef7 fddfff f7dfff fedfef eefeff efbfdf efbffb efcffe ffcfff febfff ffffff efedff fffef7
+  fffdff bffffa bfffff feffff ffbfff fffeff fbffff deffff ff9f9f fffedd fecfff dfffdf bfffff ffffff f6ffff ffffff
+  fff7ff fffbff fefffe ffffbf bfdfdf ffefef bffdff dfefff fffeff dffffd f7dffa fdfabf d6feff ffbfff ffffff fbffff
+  fffff7 d9dfff bdffff fcffff fffffe ffffff bebfff b7bffd ffbfdf feffff ffffef ffffff efffff ffffff fefcff fc9ddf
+  fdffff ffdfef ffbfff dfffff ffffff befff7 ffffbf ffbfff ff9ffb cfffff fffffe ffd7ff fefffb ffffff efffff fffeef
+  affeff feefff bbfffa fffdbd fbfaff ffbfff fffafe f5f5de f7ffef d7ffff fffffd bffeff dfffff ffffef efbffb fffffb
+  ffffff fef7b7 dfdfff ffffff ffffff afffff fefdfd ffffff ffefff ffefff fedfff feffef fdfffd ffffff fff7ff fffddf
+  ffffcf ffffaf ffbffd ffffff fefffe fffbff faffdf f8ffff fffedf fffdff ffffff eefffd ffffff feefdf fffeff ecfbef
+  fff7ff ffffdf fbfff7 ffdfff fffffd efefbf faffb3 fffdfe fffffa ffd7ff f5eeff efffff ffffff ffffff fffffe fffbef
+
+tile (0,0) of 'base' and 'tlb2': 253 of 256 pixels equal

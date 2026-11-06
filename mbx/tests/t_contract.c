@@ -131,7 +131,7 @@ static void clear_surface(void)
 static struct mbxemu_host HOST;
 /* test-only variants of a frame, on top of the skipped steps */
 enum { X_NONE, X_CTX_UNALIGNED, X_NO_END, X_BREAK_LIST, X_CTX_UNMAPPED, X_STALE, X_MARKERS, X_NO_BASE, X_GRID,
-       X_FMT, X_ENTRY, X_ALIGN4K, X_NO_CLEAR };
+       X_FMT, X_ENTRY, X_ALIGN4K, X_NO_CLEAR, X_MMU_PROTOCOL };
 static int variant;
 
 static int frame(uint32_t skip, int strict, uint32_t *mask)
@@ -145,6 +145,24 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	memset(ram, 0, RAM_SIZE);
 	mbxemu_set_strict(E, strict);
 	setup_mmu();
+	if (variant == X_MMU_PROTOCOL) {
+		/* the stock daemon's protocol: the enable handshake, then a TLB load (0x1024 the device page, 0x1028
+		 * the physical page, bit 8 of 0x1020) for every page that was mapped */
+		uint32_t pg;
+
+		wr(R_MMU_CTRL, 0);
+		wr(R_MMU_CTRL, 1);
+		for (pg = 0x10; pg < 0x58; pg++) {
+			wr(R_MMU_TLB_PAGE, pg);
+			wr(R_MMU_TLB_PHYS, (RAM_BASE >> 12) + pg);
+			wr(R_MMU_CTRL, 0x101);
+		}
+		for (pg = 0; pg < PB_TABLE_SIZE / PAGE + PB_PAGES; pg++) {
+			wr(R_MMU_TLB_PAGE, (PB_TABLE_VA >> 12) + pg);
+			wr(R_MMU_TLB_PHYS, (RAM_BASE + PB_PHYS) / PAGE + pg);
+			wr(R_MMU_CTRL, 0x101);
+		}
+	}
 	wr(R_INT_CLEAR, 0x7fff);
 	mbx_contract_pb_fill(&IO, PB_VA, PB_PAGES);
 	mbx_contract_freelist(&IO, PB_TABLE_VA, PB_VA, PB_LAST_PAGE);
@@ -306,6 +324,10 @@ int main(void)
 	variant = X_NONE;
 	n = frame(V_TILES, 1, &mask);
 	CHECK(mask & V_TILES && n == 1144, "0x860 not matching 0x85c: counted (soft), the picture is fine (mask %#x, %d)", mask, n);
+	variant = X_NONE; frame(0, 1, &mask);
+	CHECK(mask & V_MMU_SEQ && mask & V_TLB, "an MMU enabled without the handshake and pages without a TLB load: counted (mask %#x)", mask);
+	variant = X_MMU_PROTOCOL; n = frame(0, 1, &mask);
+	CHECK(!(mask & (V_MMU_SEQ | V_TLB)) && n == 1144, "the stock MMU protocol: neither counted, the triangle drawn (mask %#x, %d)", mask, n);
 	variant = X_NO_CLEAR; n = frame(0, 1, &mask);
 	CHECK(mask & V_DEPTH_CLEAR && n != 1144, "no depth-only clear: counted, the depth starts as NaN and the triangle fails its test (mask %#x, %d)", mask, n);
 	variant = X_NO_CLEAR; n = frame(0, 0, &mask);

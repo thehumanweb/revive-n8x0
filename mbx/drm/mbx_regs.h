@@ -53,7 +53,9 @@
 /* the MMU: eight page tables of 1024 bare physical page addresses (32 MB) */
 #define MBX_REG_MMU_TABLE(i)	(0x1000 + 4 * (i))
 #define MBX_MMU_TABLES		8
-#define MBX_REG_MMU_CTRL	0x1020	/* bit 0 enable; a write otherwise flushes the TLB */
+#define MBX_REG_MMU_CTRL	0x1020	/* bit 0 enable, bit 8 loads a TLB entry, bit 16 reads back enabled, bit 24 busy */
+#define MBX_REG_MMU_TLB_PAGE	0x1024	/* the device page number to load */
+#define MBX_REG_MMU_TLB_PHYS	0x1028	/* the physical page number it maps to */
 
 #define MBX_INT_RENDER		BIT(2)
 #define MBX_INT_ISP		BIT(3)

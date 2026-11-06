@@ -264,10 +264,12 @@ struct pbw {
 #define V_TA_BASE	(1u << 17)	/* 0x85c lacks the base bits 0xe1 */
 #define V_REGS		(1u << 18)	/* a render or TA register of the set was not written since the last kick/start */
 #define V_WRITE_OUT	(1u << 19)	/* the chip wrote outside the target, the buffer, the tails, the regions, the contexts */
+#define V_TLB		(1u << 23)	/* a page the chip used was not loaded into the TLB (0x1024, 0x1028, 0x1020 bit 8) */
+#define V_MMU_SEQ	(1u << 24)	/* the MMU was enabled without the disable, wait, enable, wait handshake */
 #define V_TILES		(1u << 22)	/* 0x860 does not match the tile grid in 0x85c: the deallocation frees the wrong pages */
 #define V_PB_FILL	(1u << 21)	/* the parameter buffer was not filled with 0xf0000000 end words before the build */
 #define V_DEPTH_CLEAR	(1u << 20)	/* the scene has no depth-only clear: the tile's depth starts as NaN */
-#define V_SOFT		(V_TILES | V_PB_FILL | V_DEPTH_CLEAR | V_ALIGN_SOFT | V_GRID | V_FMT | V_FL_CHAIN | V_TA_BASE | V_REGS | V_WRITE_OUT)
+#define V_SOFT		(V_TLB | V_MMU_SEQ | V_TILES | V_PB_FILL | V_DEPTH_CLEAR | V_ALIGN_SOFT | V_GRID | V_FMT | V_FL_CHAIN | V_TA_BASE | V_REGS | V_WRITE_OUT)
 
 struct mbxemu {
 	struct mbxemu_host host;
@@ -285,6 +287,8 @@ struct mbxemu {
 
 	/* MMU */
 	uint32_t tlb[DEV_SPACE >> 12];	/* physical page + 1, 0 not loaded */
+	uint8_t tlb_sw[(DEV_SPACE >> 12) / 8];	/* pages loaded by software (0x1024/0x1028, bit 8), not by a walk */
+	int mmu_off_seen, mmu_hand;	/* 0x1020 written 0, then 1: the enable handshake (README assumption 31) */
 
 	/* the TA */
 	struct scene ctx[2];		/* the two hardware contexts */

@@ -84,8 +84,27 @@ static void mbx_feed(struct mbx_device *m, const u32 *w, u32 n)
 	}
 }
 
+/* debug: 1 resets the cores sixteen times, interrupts off, 0x85c = 0x80, as the stock daemon's bring-up does */
+static int reset16;
+module_param(reset16, int, 0644);
+MODULE_PARM_DESC(reset16, "debug: 1 resets the cores sixteen times as the stock daemon does");
+
 static void mbx_reset_cores(struct mbx_device *m)
 {
+	int i;
+
+	if (reset16) {
+		mbx_write(m, MBX_REG_INT_ENABLE, 0);
+		mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_MASK);
+		mbx_write(m, MBX_REG_TA_CONFIG, 0x80);
+		for (i = 0; i < 16; i++) {
+			mbx_write(m, MBX_REG_SOFT_RESET, 0x111);
+			mbx_write(m, MBX_REG_SOFT_RESET, 0);
+		}
+		mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_MASK);
+		mbx_write(m, MBX_REG_INT_ENABLE, MBX_INT_MASTER | MBX_INT_RENDER | MBX_INT_TA_DONE | MBX_INT_TA_OFLOW |
+			  MBX_INT_TA_STREAM | MBX_INT_EVM_DALLOC);
+	}
 	mbx_write(m, MBX_REG_SOFT_RESET, 0x111);
 	mbx_write(m, MBX_REG_SOFT_RESET, 0);
 	mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_MASK);

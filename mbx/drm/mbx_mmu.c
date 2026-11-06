@@ -5,8 +5,10 @@
  * a DRM file; the MMU holds one at a time, switched at each job. Pages with no
  * buffer point at a scratch page so a stray access never reaches physical 0.
  */
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/highmem.h>
+#include <linux/module.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 
@@ -190,6 +192,40 @@ int mbx_vm_unmap(struct mbx_vm *vm, struct drm_gem_object *obj)
 	return ret;
 }
 
+/*
+ * The stock daemon's MMU protocol (found during device testing), tried through module parameters:
+ * mmu_seq 1: the enable handshake (clear bit 0 and wait for bit 16 to clear, set it and wait for bit 16);
+ * tlb_mode 1: a TLB load (0x1024 the device page, 0x1028 the physical page, bit 8 of 0x1020, poll bit 24
+ * clear) for every page of the client's buffers, the contexts and the free list's table and first pages;
+ * 2: and for all the parameter buffer's pages.
+ */
+static int mmu_seq;
+module_param(mmu_seq, int, 0644);
+MODULE_PARM_DESC(mmu_seq, "debug: 1 does the stock daemon's MMU enable handshake");
+static int tlb_mode;
+module_param(tlb_mode, int, 0644);
+MODULE_PARM_DESC(tlb_mode, "debug: 1 loads the TLB for the client's pages, 2 also for the whole parameter buffer");
+
+static void mbx_tlb_load(struct mbx_vm *vm, u32 pg)
+{
+	struct mbx_device *m = vm->m;
+	int i;
+
+	mbx_write(m, MBX_REG_MMU_TLB_PAGE, pg);
+	mbx_write(m, MBX_REG_MMU_TLB_PHYS, vm->pt[pg >> 10][pg & 1023] >> 12);
+	mbx_write(m, MBX_REG_MMU_CTRL, BIT(8) | BIT(0));
+	for (i = 0; i < 1000 && (mbx_read(m, MBX_REG_MMU_CTRL) & BIT(24)); i++)
+		udelay(1);
+}
+
+static void mbx_tlb_load_range(struct mbx_vm *vm, u32 va, u32 bytes)
+{
+	u32 pg;
+
+	for (pg = va >> 12; pg < (va + bytes) >> 12; pg++)
+		mbx_tlb_load(vm, pg);
+}
+
 /* Make vm the MMU's address space; the TLB is flushed whenever it is written */
 void mbx_vm_activate(struct mbx_vm *vm)
 {
@@ -198,7 +234,29 @@ void mbx_vm_activate(struct mbx_vm *vm)
 
 	for (i = 0; i < MBX_MMU_TABLES; i++)
 		mbx_write(m, MBX_REG_MMU_TABLE(i), lower_32_bits(vm->pt_dma[i]));
-	mbx_write(m, MBX_REG_MMU_CTRL, 1);
+	if (mmu_seq) {
+		int k;
+
+		mbx_write(m, MBX_REG_MMU_CTRL, 0);
+		for (k = 0; k < 1000 && (mbx_read(m, MBX_REG_MMU_CTRL) & BIT(16)); k++)
+			udelay(1);
+		mbx_write(m, MBX_REG_MMU_CTRL, 1);
+		for (k = 0; k < 1000 && !(mbx_read(m, MBX_REG_MMU_CTRL) & BIT(16)); k++)
+			udelay(1);
+	} else {
+		mbx_write(m, MBX_REG_MMU_CTRL, 1);
+	}
+	if (tlb_mode) {
+		struct mbx_mapping *map;
+
+		mutex_lock(&vm->lock);
+		list_for_each_entry(map, &vm->maps, link)
+			mbx_tlb_load_range(vm, map->node.start, map->node.size);
+		mutex_unlock(&vm->lock);
+		mbx_tlb_load_range(vm, MBX_CTX_VA, MBX_CTX_SIZE);
+		mbx_tlb_load_range(vm, MBX_PB_TABLE_VA, MBX_PB_TABLE_SIZE);
+		mbx_tlb_load_range(vm, MBX_PB_VA, tlb_mode > 1 ? MBX_PB_PAGES * MBX_PAGE : 16 * MBX_PAGE);
+	}
 	m->active_vm = vm;
 }
 

@@ -80,6 +80,7 @@ void emu_raise(struct mbxemu *e, uint32_t bits)
 static void tlb_flush(struct mbxemu *e)
 {
 	memset(e->tlb, 0, sizeof(e->tlb));
+	memset(e->tlb_sw, 0, sizeof(e->tlb_sw));
 }
 
 static void host_read(struct mbxemu *e, uint32_t phys, void *buf, uint32_t len)
@@ -109,6 +110,11 @@ static int translate(struct mbxemu *e, uint32_t dev, uint32_t *phys)
 	if (dev >= DEV_SPACE)
 		return -1;
 	page = dev >> 12;
+	/* the stock stack loads the TLB for each page it maps (0x1024, 0x1028, bit 8 of 0x1020); the model also walks
+	 * the tables on a miss, which the chip may not (soft: counted once a scene) */
+	if (e->watch && !(e->tlb_sw[page >> 3] >> (page & 7) & 1) && !(e->viol & V_TLB))
+		emu_violation(e, V_TLB, "the chip used a page that was not loaded into the TLB (0x1024, 0x1028, "
+			      "0x1020 bit 8); the model walks the tables");
 	if (!e->tlb[page]) {
 		uint32_t entry = 0;
 
@@ -448,6 +454,7 @@ static void soft_reset(struct mbxemu *e)
 		free(n);
 	}
 	e->regs[R_MMU_CTRL / 4] = 0;
+	e->mmu_off_seen = e->mmu_hand = 0;
 	tlb_flush(e);
 }
 
@@ -535,9 +542,16 @@ void mbxemu_reg_write(struct mbxemu *e, uint32_t reg, uint32_t v)
 		if (v & 0x100) {
 			uint32_t page = e->regs[R_MMU_TLB_PAGE / 4];
 
-			if (page < (DEV_SPACE >> 12))
+			if (page < (DEV_SPACE >> 12)) {
 				e->tlb[page] = e->regs[R_MMU_TLB_PHYS / 4] + 1;
+				e->tlb_sw[page >> 3] |= 1u << (page & 7);
+			}
 		} else {
+			/* bit 0 written 0 and then 1, with the readback of bit 16 between: the enable handshake */
+			if (!(v & 1))
+				e->mmu_off_seen = 1;
+			else if (e->mmu_off_seen)
+				e->mmu_hand = 1;
 			tlb_flush(e);
 		}
 		e->regs[reg / 4] &= ~0x01010100u;
