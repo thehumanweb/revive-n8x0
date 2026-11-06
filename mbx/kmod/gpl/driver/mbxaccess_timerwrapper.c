@@ -46,8 +46,25 @@ extern void MBXAccess_KillFAsyncLimited(unsigned long timebreak);
 static IMG_HANDLE HostAddTimerKernel(PFN_TIMER_FUNC pfnTimerFunc, IMG_VOID *pvData, IMG_UINT32 ui32MsTimeout);
 static PVRSRV_ERROR HostRemoveTimerKernel(IMG_HANDLE hTimer);
 
+/* Active timers, so that they can be stopped when the services go away */
+#define MBX_MAX_TIMERS 8
+static TIMER_CALLBACK_DATA *gpsTimers[MBX_MAX_TIMERS];
+
+void MBXAccess_RemoveAllTimers(void)
+{
+	int i;
+
+	for (i = 0; i < MBX_MAX_TIMERS; i++)
+		if (gpsTimers[i]) {
+			HostRemoveTimerKernel(gpsTimers[i]);
+			gpsTimers[i] = NULL;
+		}
+}
+
 void MBXRecoverHWInKS(IMG_VOID *data)
 {
+	if (!gpsInterruptStructKernel)
+		return;
 	
 	gpsInterruptStructKernel->pvHWRecoveryData = data;
 	gpsInterruptStructKernel->bHWRecovery = IMG_TRUE;
@@ -70,6 +87,8 @@ void MBXSyncSrv_HostAddTimerHandler(IMG_VOID *pvData)
 {
 	MBXUserDataForHostAddTimer infoFromUser;
 	COPY_FROM_USER((void*)&infoFromUser, pvData, sizeof(MBXUserDataForHostAddTimer));
+	if ((unsigned int)infoFromUser.id >= MBXIDTIMERCB_END)
+		return;
 
 	
 	infoFromUser.handle = HostAddTimerKernel(MBXTimerCBFuncs[infoFromUser.id], infoFromUser.data, infoFromUser.timeout);
@@ -77,9 +96,15 @@ void MBXSyncSrv_HostAddTimerHandler(IMG_VOID *pvData)
 	COPY_TO_USER(pvData,(void*)&infoFromUser, sizeof(MBXUserDataForHostAddTimer));
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
+static IMG_VOID HostTimerCallbackWrapper(struct timer_list *t)
+{
+	TIMER_CALLBACK_DATA *psTimerCBData = timer_container_of(psTimerCBData, t, sTimer);
+#else
 static IMG_VOID HostTimerCallbackWrapper(IMG_UINT32 ui32Data)
 {
 	TIMER_CALLBACK_DATA *psTimerCBData = (TIMER_CALLBACK_DATA*)ui32Data;
+#endif
 
 	
 	psTimerCBData->pfnTimerFunc(psTimerCBData->pvData);
@@ -116,15 +141,27 @@ static IMG_HANDLE HostAddTimerKernel(PFN_TIMER_FUNC pfnTimerFunc, IMG_VOID *pvDa
 								?   1
 								:   ((HZ * ui32MsTimeout) / 1000);
 	
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4,15,0))
+	timer_setup(&psTimerCBData->sTimer, HostTimerCallbackWrapper, 0);
+#else
 	init_timer(&psTimerCBData->sTimer);
 
 	
 	psTimerCBData->sTimer.function = HostTimerCallbackWrapper;
 	psTimerCBData->sTimer.data = (IMG_UINT32)psTimerCBData;
+#endif
 	psTimerCBData->sTimer.expires = psTimerCBData->ui32Delay + jiffies;
 
 	lastFAsyncTime = jiffies;
 	
+	{
+		int i;
+
+		for (i = 0; i < MBX_MAX_TIMERS && gpsTimers[i]; i++)
+			;
+		if (i < MBX_MAX_TIMERS)
+			gpsTimers[i] = psTimerCBData;
+	}
 	add_timer(&psTimerCBData->sTimer);
 	
 	return (IMG_HANDLE)psTimerCBData;
@@ -135,9 +172,20 @@ static PVRSRV_ERROR HostRemoveTimerKernel (IMG_HANDLE hTimer)
 	TIMER_CALLBACK_DATA    *psTimerCBData = (TIMER_CALLBACK_DATA*)hTimer;
 	
 	
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,2,0))
+	timer_delete_sync(&psTimerCBData->sTimer);
+#else
 	del_timer(&psTimerCBData->sTimer);
+#endif
 
 	
+	{
+		int i;
+
+		for (i = 0; i < MBX_MAX_TIMERS; i++)
+			if (gpsTimers[i] == psTimerCBData)
+				gpsTimers[i] = NULL;
+	}
 	KFREE(psTimerCBData); 
 	
 	return PVRSRV_OK;

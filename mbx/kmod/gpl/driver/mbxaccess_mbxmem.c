@@ -257,9 +257,29 @@ void MBXSyncSrv_GetDeviceNodeValue(IMG_VOID *pvData)
 	MBXUserDataForDeviceFieldGet infoFromUser;
 
 	COPY_FROM_USER((void*)&infoFromUser, pvData, sizeof(MBXUserDataForDeviceFieldGet));
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+	/*
+	 * ppValue is a user pointer: bounce the value through the kernel
+	 * (no direct user access with CPU_SW_DOMAIN_PAN)
+	 */
+	{
+		IMG_VOID * __user *ppvUser = (IMG_VOID * __user *)infoFromUser.ppValue;
+		IMG_VOID *pvValue;
+
+		if (!ppvUser || get_user(pvValue, ppvUser))
+			status = PVRSRV_ERROR_GENERIC;
+		else {
+			status = MBXGetDeviceNodeValue(infoFromUser.ui32ID,
+						       infoFromUser.eField, &pvValue);
+			if (put_user(pvValue, ppvUser))
+				status = PVRSRV_ERROR_GENERIC;
+		}
+	}
+#else
 	status = MBXGetDeviceNodeValue(infoFromUser.ui32ID,
 												infoFromUser.eField,
 												infoFromUser.ppValue);
+#endif
 	infoFromUser.ret = status;
 	COPY_TO_USER(pvData,(void*)&infoFromUser, sizeof(MBXUserDataForDeviceFieldGet));
 }
@@ -272,6 +292,14 @@ void MBXSyncSrv_SetDeviceNodeValue(IMG_VOID *pvData)
 	MBXUserDataForDeviceFieldSet infoFromUser;
 
 	COPY_FROM_USER((void*)&infoFromUser, pvData, sizeof(MBXUserDataForDeviceFieldSet));
+	{
+		extern int mbxaccess_trace;
+
+		if (mbxaccess_trace)
+			printk(KERN_INFO "mbxaccess:   set node %u field %d = %px\n",
+			       (unsigned int)infoFromUser.ui32ID, (int)infoFromUser.eField,
+			       infoFromUser.pValue);
+	}
 	status = MBXSetDeviceNodeValue(infoFromUser.ui32ID,
 												infoFromUser.eField,
 												infoFromUser.pValue);
@@ -324,8 +352,20 @@ static PVRSRV_ERROR MBXGetDeviceNodeValue(IMG_UINT32 ui32ID, MBXDeviceNodeField 
 			case MBXDEVICENODEFIELD_DEVICE_INDEX_LIST:
 			{
 				IMG_UINT32 ui32DevCount = 0x0000;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+				PVRSRV_DEVICE_CLASS eClass;
+				IMG_UINT32 *psDeviceList;
+
+				if (get_user(eClass, (PVRSRV_DEVICE_CLASS __user *)(*ppValue)))
+				{
+					ret = PVRSRV_ERROR_GENERIC;
+					break;
+				}
+				psDeviceList = MBXGetDeviceIndexList(eClass, &ui32DevCount);
+#else
 				PVRSRV_DEVICE_CLASS *pTemp = (PVRSRV_DEVICE_CLASS*)(*ppValue);
 				IMG_UINT32 *psDeviceList = MBXGetDeviceIndexList(*pTemp, &ui32DevCount);
+#endif
 				COPY_TO_USER(*ppValue, (IMG_VOID*)psDeviceList, sizeof(IMG_UINT32) * ui32DevCount);
                 KFREE(psDeviceList);
 				break;
@@ -366,8 +406,24 @@ static PVRSRV_ERROR MBXGetDeviceNodeValue(IMG_UINT32 ui32ID, MBXDeviceNodeField 
 				*ppValue = (IMG_VOID*)psDeviceNode->pvInterruptStruct;
 				break;
 			case MBXDEVICENODEFIELD_DEVICE_RESMAN_INFO:
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+			{
+				PVRSRV_DC_RESMAN_INFO sInfo;
+
+				if (copy_from_user(&sInfo, *ppValue, sizeof(sInfo)))
+				{
+					ret = PVRSRV_ERROR_GENERIC;
+					break;
+				}
+				sInfo.pfnKSwapToSystem = ((PVRSRV_DISPLAYCLASS_INFO*)psDeviceNode->pvDevice)->pfnKSwapToSystem;
+				sInfo.hSysSwapData = ((PVRSRV_DISPLAYCLASS_INFO*)psDeviceNode->pvDevice)->hSysSwapData;
+				if (copy_to_user(*ppValue, &sInfo, sizeof(sInfo)))
+					ret = PVRSRV_ERROR_GENERIC;
+			}
+#else
 				((PVRSRV_DC_RESMAN_INFO*)(*ppValue))->pfnKSwapToSystem = ((PVRSRV_DISPLAYCLASS_INFO*)psDeviceNode->pvDevice)->pfnKSwapToSystem;
 				((PVRSRV_DC_RESMAN_INFO*)(*ppValue))->hSysSwapData = ((PVRSRV_DISPLAYCLASS_INFO*)psDeviceNode->pvDevice)->hSysSwapData;
+#endif
 				break;
 			default:
 				*ppValue = IMG_NULL;
@@ -438,8 +494,23 @@ static PVRSRV_ERROR MBXSetDeviceNodeValue(IMG_UINT32 ui32ID, MBXDeviceNodeField 
 				gpsInterruptStructKernel = (MBX_WORKER_THREAD_STRUCT*)(psDeviceNode->pvInterruptStruct);
 				break;
 			case MBXDEVICENODEFIELD_DEVICE_PVRSRV_INFO_DISPLAY:
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+			{
+				PVRSRV_DC_PVRSRV_INFO sInfo;
+				PVRSRV_DISPLAYCLASS_INFO *psDC = psDeviceNode->pvDevice;
+
+				if (copy_from_user(&sInfo, pValue, sizeof(sInfo)))
+				{
+					ret = PVRSRV_ERROR_GENERIC;
+					break;
+				}
+				psDC->pfnKSwapToSystem = sInfo.pfnSwapToSystem;
+				strscpy(psDC->szClientDrvName, sInfo.szClientDrvName, sizeof(psDC->szClientDrvName));
+			}
+#else
 				((PVRSRV_DISPLAYCLASS_INFO*)psDeviceNode->pvDevice)->pfnKSwapToSystem = ((PVRSRV_DC_PVRSRV_INFO*)pValue)->pfnSwapToSystem;
 				strcpy(((PVRSRV_DISPLAYCLASS_INFO*)psDeviceNode->pvDevice)->szClientDrvName, ((PVRSRV_DC_PVRSRV_INFO*)pValue)->szClientDrvName);
+#endif
 				break;
 			case MBXDEVICENODEFIELD_DEVICE_PVRSRV_DEVICE_DELETE:
                 KFREE(psDeviceNode->pvDevice);

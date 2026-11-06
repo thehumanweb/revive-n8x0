@@ -135,6 +135,40 @@ void MBXSyncSrv_RemoveProcEntriesHandler(IMG_VOID *pvData)
 	RemoveProcEntries();
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0))
+#include <linux/seq_file.h>
+
+/* seq_file front end for the off_t handler(buf, size, off) callbacks */
+static int pvr_proc_show(struct seq_file *m, void *v)
+{
+	pvr_read_proc_t *handler = m->private;
+	char *buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	off_t off, len;
+
+	if (!buf)
+		return -ENOMEM;
+	for (off = 0; ; off++) {
+		len = handler(buf, PAGE_SIZE, off);
+		if (len == END_OF_FILE || len < 0)
+			break;
+		seq_write(m, buf, len);
+	}
+	kfree(buf);
+	return 0;
+}
+
+int CreateProcReadEntry (const char * name, void* handler)
+{
+	if (!dir)
+		dir = proc_mkdir ("pvr", NULL);
+	if (!dir || !proc_create_single_data(name, 0444, dir, pvr_proc_show, handler))
+	{
+		PVR_DPF((PVR_DBG_ERROR, "cannot make proc entry /proc/pvr/%s", name));
+		return -ENOMEM;
+	}
+	return 0;
+}
+#else
 int CreateProcReadEntry (const char * name, void* handler)
 {
 	int ret;
@@ -167,6 +201,8 @@ int CreateProcReadEntry (const char * name, void* handler)
 	return ret;
 }
 
+#endif
+
 int CreateProcEntries (void)
 {
 	int ret = 0;
@@ -182,6 +218,13 @@ int CreateProcEntries (void)
 	}
 	else
 	{
+		{
+			extern off_t procMBXIrqStats(char *buf, size_t size, off_t off);
+			extern off_t procMBXIrqLog(char *buf, size_t size, off_t off);
+
+			CreateProcReadEntry("irqstats", procMBXIrqStats);
+			CreateProcReadEntry("irqlog", procMBXIrqLog);
+		}
 		if(CreateProcReadEntry("version", procDumpVersion))
 		{
 			PVR_DPF((PVR_DBG_ERROR, "couldn't make /proc/pvr/version"));
@@ -198,6 +241,19 @@ int CreateProcEntries (void)
 	return ret;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0))
+int CreateProcEntry (const char * name, read_proc_t rhandler, write_proc_t whandler, void *data)
+{
+	return -ENOSYS;
+}
+
+void RemoveProcEntries (void)
+{
+	if (dir)
+		proc_remove(dir);
+	dir = NULL;
+}
+#else
 int CreateProcEntry (const char * name, read_proc_t rhandler, write_proc_t whandler, void *data)
 {
 	int ret = 0;
@@ -255,6 +311,8 @@ void RemoveProcEntries (void)
 	remove_proc_entry("pvr", NULL);
 	dir = NULL;
 }
+
+#endif
 
 void RemoveProcEntry (const char *name)
 {

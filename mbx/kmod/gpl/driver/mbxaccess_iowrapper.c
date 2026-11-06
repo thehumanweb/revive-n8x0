@@ -87,6 +87,85 @@ extern MBX_WORKER_THREAD_STRUCT *gpsInterruptStructKernel;
 
 char *IRQdevname = 0;
 
+/* /proc/pvr/irqstats: MBX interrupts by status bit (MBX1_INT_*) */
+static IMG_UINT32 gui32MBXIrqs, gaui32MBXIrqBits[16];
+
+off_t procMBXIrqStats(char *buf, size_t size, off_t off)
+{
+	static const char *const names[16] = {
+		"CMDPROC", "RESERVED1", "RENDER_COMPLETE", "ISP", "TA_COMPLETE",
+		"TA_OFLOW", "EVM_DALLOC", "TA_TIMEOUT", "TA_CONTEXT", "TA_STREAM_ERR",
+		"2DSYNC", "bit11", "bit12", "bit13", "bit14", "MASTER",
+	};
+	int b, len;
+
+	if (off > 16)
+		return (off_t)-1;
+	if (off == 0)
+		return snprintf(buf, size, "interrupts %lu\n", (unsigned long)gui32MBXIrqs);
+	b = off - 1;
+	if (!gaui32MBXIrqBits[b])
+		return 0;
+	len = snprintf(buf, size, "%-16s %lu\n", names[b], (unsigned long)gaui32MBXIrqBits[b]);
+	return len;
+}
+
+/*
+ * /proc/pvr/irqlog: the last MBX interrupts other than ISP-only kicks, as
+ * microseconds since boot and status & enable, oldest first.
+ */
+#define MBX_IRQLOG 256
+static struct { u32 us, status; } gasMBXIrqLog[MBX_IRQLOG];
+static unsigned int gui32MBXIrqLogNext;
+
+off_t procMBXIrqLog(char *buf, size_t size, off_t off)
+{
+	unsigned int n = gui32MBXIrqLogNext < MBX_IRQLOG ? gui32MBXIrqLogNext : MBX_IRQLOG;
+	unsigned int i;
+
+	if (off >= n)
+		return (off_t)-1;
+	i = (gui32MBXIrqLogNext - n + off) % MBX_IRQLOG;
+	return snprintf(buf, size, "%10u %04x\n", gasMBXIrqLog[i].us, gasMBXIrqLog[i].status);
+}
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0))
+#include <linux/of.h>
+#include <linux/irqdomain.h>
+
+/*
+ * The services pass the OMAP2420 INTC line, which was the Linux IRQ number
+ * on 2.6.21; now it has to go through the INTC's IRQ domain.
+ */
+static unsigned int MBXAccess_MapIrq(unsigned int hwirq)
+{
+	struct device_node *np = of_find_compatible_node(NULL, NULL, "ti,omap2-intc");
+	struct irq_domain *domain = np ? irq_find_host(np) : NULL;
+	unsigned int irq = domain ? irq_create_mapping(domain, hwirq) : 0;
+
+	of_node_put(np);
+	printk(KERN_INFO "mbxaccess: MBX on INTC line %u, IRQ %u\n", hwirq, irq);
+	return irq;
+}
+
+static unsigned int giMBXIrq;
+static void *gpvMBXIrqDevId;
+#endif
+
+/* The services can die without freeing the IRQ: free it on module unload */
+void MBXAccess_FreeIrqOnExit(void)
+{
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0))
+	if (bMBXIsrInstalled && giMBXIrq)
+		free_irq(giMBXIrq, gpvMBXIrqDevId);
+	giMBXIrq = 0;
+#endif
+	bMBXIsrInstalled = IMG_FALSE;
+	if (IRQdevname)
+		KFREE(IRQdevname);
+	IRQdevname = 0;
+}
+
 void MBXSyncSrv_RequestIrqHandler(IMG_VOID *pvData)
 {
 	MBXUserDataForRequestIrq infoFromUser;
@@ -101,6 +180,12 @@ void MBXSyncSrv_RequestIrqHandler(IMG_VOID *pvData)
 
 		PVR_DPF((PVR_DBG_VERBOSE, "request_irq at %d", infoFromUser.irq));
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0))
+		giMBXIrq = MBXAccess_MapIrq(infoFromUser.irq);
+		gpvMBXIrqDevId = infoFromUser.dev_id;
+		infoFromUser.ret = giMBXIrq ? request_irq(giMBXIrq, deviceisr_wrapperInKS,
+				IRQF_SHARED, IRQdevname, infoFromUser.dev_id) : -EINVAL;
+#else
 		infoFromUser.ret = request_irq(infoFromUser.irq, deviceisr_wrapperInKS,
 		#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22))
 				SA_SHIRQ,
@@ -108,6 +193,7 @@ void MBXSyncSrv_RequestIrqHandler(IMG_VOID *pvData)
 				IRQF_SHARED,
 		#endif
 			IRQdevname, infoFromUser.dev_id);
+#endif
 		if(infoFromUser.ret)
 		{
 			PVR_DPF((PVR_DBG_ERROR, "MBX IRQ request failed!"));
@@ -129,7 +215,13 @@ void MBXSyncSrv_FreeIrqHandler(IMG_VOID *pvData)
 	MBXUserDataForFreeIrq infoFromUser;
 	COPY_FROM_USER((void*)&infoFromUser, pvData, sizeof(MBXUserDataForFreeIrq));
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,0,0))
+	if (giMBXIrq)
+		free_irq(giMBXIrq, (void*)(infoFromUser.data));
+	giMBXIrq = 0;
+#else
 	free_irq(infoFromUser.irq, (void*)(infoFromUser.data));
+#endif
 	bMBXIsrInstalled = IMG_FALSE;
 	if (IRQdevname)
 	{
@@ -154,7 +246,11 @@ void MBXSyncSrv_PCIFindSlotHandler(IMG_VOID *pvData)
 
 	COPY_FROM_USER((void*)&infoFromUser, pvData, sizeof(MBXUserDataForPCIFindSlot));
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35))
+	infoFromUser.retPCIDevPointerInKS = NULL;	/* no PCI on OMAP */
+#else
 	infoFromUser.retPCIDevPointerInKS = pci_find_slot(infoFromUser.bus, infoFromUser.devfn);
+#endif
 	COPY_TO_USER(pvData,(void*)&infoFromUser, sizeof(MBXUserDataForPCIFindSlot));
 }
 
@@ -165,7 +261,11 @@ void MBXSyncSrv_HostPCIReadDwordHandler(IMG_VOID *pvData)
 	MBXUserDataForHostPCIReadWriteDword infoFromUser;
 	COPY_FROM_USER((void*)&infoFromUser, pvData, sizeof(MBXUserDataForHostPCIReadWriteDword));
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35))
+	dev = NULL;
+#else
 	dev = pci_find_slot(infoFromUser.bus, PCI_DEVFN(infoFromUser.devfn, infoFromUser.func));
+#endif
 
 	if (dev)
 	{
@@ -186,7 +286,11 @@ void MBXSyncSrv_HostPCIReadWriteDwordHandler(IMG_VOID *pvData)
 
 	COPY_FROM_USER((void*)&infoFromUser, pvData, sizeof(MBXUserDataForHostPCIReadWriteDword));
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35))
+	dev = NULL;
+#else
 	dev = pci_find_slot(infoFromUser.bus, PCI_DEVFN(infoFromUser.devfn, infoFromUser.func));
+#endif
 
 	if (dev)
 	{
@@ -286,7 +390,7 @@ irqreturn_t deviceisr_wrapperInKS(int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 	
-	if (psDeviceNode && psDeviceNode->pfnDeviceISR)
+	if (psDeviceNode && psDeviceNode->pfnDeviceISR && gpsInterruptStructKernel)
 	{
 		
 		IMG_UINT32 ui32MBXIntEnable = MBXDisableInterrupts (gpvLinBase, MBX1_INT_ALL, gpsInterruptStructKernel->bInterruptSense);
@@ -294,6 +398,21 @@ irqreturn_t deviceisr_wrapperInKS(int irq, void *dev_id)
 		IMG_UINT32 ui32MBXIntStatus = ReadHWReg(gpvLinBase, MBX1_GLOBREG_INT_STATUS);
 
 		gpsInterruptStructKernel->ui32InterruptStatus = ui32MBXIntStatus & ui32MBXIntEnable;
+		{
+			IMG_UINT32 s = ui32MBXIntStatus & ui32MBXIntEnable;
+			int b;
+
+			gui32MBXIrqs++;
+			for (b = 0; b < 16; b++)
+				if (s & (1U << b))
+					gaui32MBXIrqBits[b]++;
+			if (s & ~(1U << 3)) {
+				unsigned int i = gui32MBXIrqLogNext++ % MBX_IRQLOG;
+
+				gasMBXIrqLog[i].us = (u32)ktime_to_us(ktime_get());
+				gasMBXIrqLog[i].status = s;
+			}
+		}
 
 		gpsInterruptStructKernel->pvDeviceInfo = psDeviceNode->pvISRData;
 		gpsInterruptStructKernel->pfnDeviceISR = psDeviceNode->pfnDeviceISR;

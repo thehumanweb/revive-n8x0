@@ -29,6 +29,11 @@
 
 #define END_OF_FILE     (off_t) -1
 typedef off_t (pvr_read_proc_t)(char *, size_t, off_t);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0))
+/* read_proc/write_proc are gone; only the debug build used them */
+typedef void *read_proc_t;
+typedef void *write_proc_t;
+#endif
 
 int CreateProcEntries (void);
 

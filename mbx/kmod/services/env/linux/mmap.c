@@ -79,7 +79,8 @@
   #else
   
     #define IMG_IO_REMAP_PAGE_RANGE(vma,dst,src,size,prot) (io_remap_pfn_range(vma,dst,(src>>PAGE_SHIFT),size,prot))
-    #define IMG_REMAP_PAGE_RANGE(vma,dst,src,size,prot) (remap_pfn_range(vma,dst,(page_to_pfn(src)>>PAGE_SHIFT),size,prot))
+    /* page_to_pfn() is a page number already: no further shift */
+    #define IMG_REMAP_PAGE_RANGE(vma,dst,src,size,prot) (remap_pfn_range(vma,dst,page_to_pfn(src),size,prot))
   #endif
 #endif
 
@@ -237,7 +238,11 @@ static unsigned PVRMapBlock(struct vm_area_struct *ps_vma,
 		case PVR_MEM_AREA_IO:
 		{
 			
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0))
+			vm_flags_set(ps_vma, VM_IO);
+#else
 			ps_vma->vm_flags |= VM_IO;
+#endif
 			
 			ulAddr = MEM_AREA_ToCpuPAddr(psMemArea, ui32Offset).uiAddr;
 
@@ -356,11 +361,15 @@ int PVRMMap(struct file* pFile, struct vm_area_struct* ps_vma)
 
 	
 	
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0))
+	vm_flags_set(ps_vma, VM_DONTEXPAND | VM_DONTDUMP);
+#else
 	ps_vma->vm_flags |= VM_RESERVED;
 
 	
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,15))
 	ps_vma->vm_flags |= VM_DONTEXPAND;
+#endif
 #endif
 	
 	ps_vma->vm_private_data = (void *)psCurrentRec;
@@ -410,6 +419,13 @@ static void PVRMMapVOpen(struct vm_area_struct* ps_vma)
 	PVR_ASSERT(psRec != IMG_NULL)
 
 	psRec->ui16Mapped++;
+	{
+		extern int mbxaccess_trace;
+
+		if (mbxaccess_trace)
+			printk(KERN_INFO "mbxaccess:   [%d] vopen %px (%s) mapped %d\n", current->pid,
+			       MEM_AREA_ToCpuVAddr(psRec->psMemArea), psRec->pszName, psRec->ui16Mapped);
+	}
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0))
 	MOD_INC_USE_COUNT;
@@ -427,6 +443,13 @@ static void PVRMMapVClose(struct vm_area_struct* ps_vma)
 	psRec->ui16Mapped--;
 
 	pvVirtAddress = MEM_AREA_ToCpuVAddr(psRec->psMemArea);
+	{
+		extern int mbxaccess_trace;
+
+		if (mbxaccess_trace)
+			printk(KERN_INFO "mbxaccess:   [%d] vclose %px (%s) mapped %d\n", current->pid,
+			       pvVirtAddress, psRec->pszName, psRec->ui16Mapped);
+	}
 
 	PVR_DPF((PVR_DBG_MESSAGE, "PVRMMapVClose: area %p: mapped=%d", pvVirtAddress, psRec->ui16Mapped));
 
@@ -441,7 +464,7 @@ static void PVRMMapVClose(struct vm_area_struct* ps_vma)
 #endif
 }
 
-PKV_OFFSET_STRUCT *PVRMMapRegisterArea(const char * name, PMEM_AREA psMemArea, IMG_UINT32 ui32Flags)
+PKV_OFFSET_STRUCT PVRMMapRegisterArea(const char * name, PMEM_AREA psMemArea, IMG_UINT32 ui32Flags)
 {
 	PKV_OFFSET_STRUCT psNextAllocRec;
 
@@ -577,6 +600,23 @@ PVRMMapRemoveRegisteredArea(IMG_VOID *pvVirtAddress)
 		return PVRSRV_OK;
 	}
 
+	{
+		extern int mbxaccess_trace;
+
+		if (mbxaccess_trace)
+			printk(KERN_INFO "mbxaccess:   [%d] free area %px (%s) for %px\n", current->pid,
+			       pui8CpuVAddr, pv->pszName, pvVirtAddress);
+	}
+	/* Freeing the area the interrupt struct is in: the services died */
+	{
+		extern struct MBX_WORKER_THREAD_STRUCT_TAG *gpsInterruptStructKernel;
+		extern void MBXAccess_ServicesGone(void);
+		IMG_UINT8 *pui8IS = (IMG_UINT8 *)gpsInterruptStructKernel;
+
+		if (pui8IS && pui8IS >= pui8CpuVAddr &&
+		    pui8IS < pui8CpuVAddr + pv->psMemArea->ui32ByteSize)
+			MBXAccess_ServicesGone();
+	}
 	ui32RegisteredAreas--;
 
 	if(pv->psNext)

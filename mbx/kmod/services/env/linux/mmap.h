@@ -49,7 +49,7 @@ typedef struct KV_OFFSET_STRUCT_TAG
 
 #define MAX_MMAP_AREAS 2048
 
-PKV_OFFSET_STRUCT *PVRMMapRegisterArea(const char * name, PMEM_AREA psMemArea, IMG_UINT32 ui32Flags);
+PKV_OFFSET_STRUCT PVRMMapRegisterArea(const char * name, PMEM_AREA psMemArea, IMG_UINT32 ui32Flags);
 
 PVRSRV_ERROR PVRMMapRemoveRegisteredArea(IMG_VOID *pvMemArea);
 

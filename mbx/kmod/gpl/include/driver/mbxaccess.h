@@ -96,6 +96,9 @@ static void MBXSyncSrv_LoadDriverParams(IMG_VOID *pvData);
 
 
 static int MBXAccess_DriverRemove(struct STRUCT_DEVICE *pDevice);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,11,0))
+static void MBXAccess_DriverRemoveVoid(struct STRUCT_DEVICE *pDevice);
+#endif
 static int MBXAccess_DriverProbe(struct STRUCT_DEVICE *pDevice);
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,16))
 static int MBXAccess_DriverResume(struct STRUCT_DEVICE *pDevice, u32 level);

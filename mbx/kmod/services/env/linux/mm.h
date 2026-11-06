@@ -44,7 +44,9 @@ typedef int gfp_t;
 #if defined(__i386__) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26))
 	#define	IOREMAP(pa, bytes)	ioremap_cache(pa, bytes)
 #else	
-	#if defined(__arm__) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))
+	#if defined(__arm__) && (LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0))
+		#define	IOREMAP(pa, bytes)	ioremap_cache(pa, bytes)
+	#elif defined(__arm__) && (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,0))
 		#define	IOREMAP(pa, bytes)	ioremap_cached(pa, bytes)
 	#else
 		#define IOREMAP(pa, bytes)	ioremap(pa, bytes)
@@ -69,7 +71,11 @@ typedef int gfp_t;
 	#define IOREMAP_WC(pa, bytes)	ioremap_nocache(pa, bytes)
 #endif
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0))
+#define	IOREMAP_UC(pa, bytes)	ioremap(pa, bytes)
+#else
 #define	IOREMAP_UC(pa, bytes)	ioremap_nocache(pa, bytes)
+#endif
 
 #if !defined(mem_map_reserve)
 #define mem_map_reserve(p)	set_bit(PG_reserved, &((p)->flags))
@@ -110,6 +116,7 @@ typedef struct _PVR_MEM_AREA_
 		{
 		
 			IMG_VOID *pvVmallocAddress;
+			IMG_VOID *pvDmaBuf;	/* a dma-buf the area holds (MEM_AREA_FromVMap) */
 		}sVmalloc;
 		struct _sPageList
 		{
@@ -130,6 +137,7 @@ IMG_CPU_PHYADDR  MEM_AREA_ToCpuPAddr(PMEM_AREA psMemArea, IMG_UINT32 ui32ByteOff
 IMG_VOID		*MEM_AREA_ToCpuVAddr(PMEM_AREA psLinuxMemArea);
 PMEM_AREA		 MEM_AREA_NewAllocPages(IMG_UINT32 ui32Bytes);
 PMEM_AREA		 MEM_AREA_VMalloc(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32MappingFlags);
+PMEM_AREA		 MEM_AREA_FromVMap(IMG_VOID *pvCpuVAddr, IMG_UINT32 ui32Bytes, IMG_VOID *pvDmaBuf);
 MEM_AREA		*MEM_AREA_NewIORemap(IMG_CPU_PHYADDR BasePAddr, IMG_UINT32 ui32Bytes, IMG_UINT32 ui32MappingFlags);
 IMG_VOID 		 MEM_AREA_AreaDeepFree(MEM_AREA *psLinuxMemArea);
 

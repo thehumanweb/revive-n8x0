@@ -74,6 +74,9 @@ PVRSRV_ERROR PVRSRVFlushCpuCacheKM(IMG_UINT32 ui32Address,
 	IMG_UINT32 ui32Len = (ui32LengthBytes + ~PAGE_MASK) & PAGE_MASK;
 	IMG_UINT32 ui32End = ui32Start + ui32Len;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0))
+	mmap_read_lock(current->mm);
+#endif
 	psVma = find_vma(current->mm, ui32Start);
 
 	for (;;) 
@@ -100,8 +103,15 @@ PVRSRV_ERROR PVRSRVFlushCpuCacheKM(IMG_UINT32 ui32Address,
 		
 		HostFlushCpuCacheArea(psVma, ui32Start, psVma->vm_end, ui32Flags);
 		ui32Start = psVma->vm_end;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0))
+		psVma = find_vma(current->mm, psVma->vm_end);
+#else
 		psVma = psVma->vm_next;
+#endif
 	}
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0))
+	mmap_read_unlock(current->mm);
+#endif
 	return PVRSRV_OK;
 }
 

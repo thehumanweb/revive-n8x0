@@ -30,6 +30,8 @@
 #endif
 
 #include <linux/version.h>
+#include <linux/dma-buf.h>
+#include <linux/vmalloc.h>
 #include <asm/page.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
@@ -229,6 +231,7 @@ PMEM_AREA MEM_AREA_VMalloc(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32MappingFlags)
 	
 	psLinuxMemArea->eAreaType = PVR_MEM_AREA_VMALLOC;
 	psLinuxMemArea->uData.sVmalloc.pvVmallocAddress = pvCpuVAddr;
+	psLinuxMemArea->uData.sVmalloc.pvDmaBuf = IMG_NULL;
 	psLinuxMemArea->ui32ByteSize = ui32Bytes;
 	
 #if defined(DEBUG_HOST_ALLOC)
@@ -243,6 +246,22 @@ failed:
 		LinuxMemAreaStructFree(psLinuxMemArea);
 	return NULL;
 }
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+/* A vmalloc area over memory mapped elsewhere (a dma-buf): freed by vfree(), which only unmaps */
+PMEM_AREA MEM_AREA_FromVMap(IMG_VOID *pvCpuVAddr, IMG_UINT32 ui32Bytes, IMG_VOID *pvDmaBuf)
+{
+	MEM_AREA *psLinuxMemArea = LinuxMemAreaStructAlloc();
+
+	if (!psLinuxMemArea)
+		return NULL;
+	psLinuxMemArea->eAreaType = PVR_MEM_AREA_VMALLOC;
+	psLinuxMemArea->uData.sVmalloc.pvVmallocAddress = pvCpuVAddr;
+	psLinuxMemArea->uData.sVmalloc.pvDmaBuf = pvDmaBuf;
+	psLinuxMemArea->ui32ByteSize = ui32Bytes;
+	return psLinuxMemArea;
+}
+#endif
 
 PMEM_AREA MEM_AREA_NewAllocPages(IMG_UINT32 ui32Bytes)
 {
@@ -338,6 +357,10 @@ MEM_AREA * MEM_AREA_NewIORemap(IMG_CPU_PHYADDR BasePAddr,
 
 static IMG_VOID MEM_AREA_FreeVMalloc(MEM_AREA *psLinuxMemArea)
 {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+	struct dma_buf *psDmaBuf = psLinuxMemArea->uData.sVmalloc.pvDmaBuf;
+#endif
+
 	PVR_ASSERT(psLinuxMemArea);
 	PVR_ASSERT(psLinuxMemArea->eAreaType == PVR_MEM_AREA_VMALLOC);
 	PVR_ASSERT(psLinuxMemArea->uData.sVmalloc.pvVmallocAddress);
@@ -349,6 +372,11 @@ static IMG_VOID MEM_AREA_FreeVMalloc(MEM_AREA *psLinuxMemArea)
 #endif
 	
 	VFreeWrapper(psLinuxMemArea->uData.sVmalloc.pvVmallocAddress);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+	/* the dma-buf's pages may go now */
+	if (psDmaBuf)
+		dma_buf_put(psDmaBuf);
+#endif
 
 #if defined(DEBUG_HOST_ALLOC)
 	
@@ -514,8 +542,56 @@ IMG_VOID KMemCacheDestroyWrapper(LinuxKMemCache *psCache)
 	kmem_cache_destroy(psCache);
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0))
+/*
+ * System RAM (an omapdrm scanout buffer the MBX renders into) can't be
+ * ioremapped on ARM: map its pages with vmap(), and remember which
+ * mappings those are.
+ */
+#define MAX_RAM_MAPPINGS 16
+static IMG_VOID *apvRamMappings[MAX_RAM_MAPPINGS];
+
+static IMG_VOID *VMapRam(IMG_CPU_PHYADDR BasePAddr, IMG_UINT32 ui32Bytes, pgprot_t prot)
+{
+	unsigned long pfn = BasePAddr.uiAddr >> PAGE_SHIFT;
+	unsigned int off = BasePAddr.uiAddr & ~PAGE_MASK;
+	unsigned int i, n = PAGE_ALIGN(off + ui32Bytes) >> PAGE_SHIFT;
+	struct page **pages;
+	IMG_VOID *pv;
+
+	for (i = 0; i < MAX_RAM_MAPPINGS && apvRamMappings[i]; i++)
+		;
+	if (i == MAX_RAM_MAPPINGS)
+		return NULL;
+	pages = kvmalloc_array(n, sizeof(*pages), GFP_KERNEL);
+	if (!pages)
+		return NULL;
+	for (i = 0; i < n; i++)
+		pages[i] = pfn_to_page(pfn + i);
+	pv = vmap(pages, n, VM_MAP, prot);
+	kvfree(pages);
+	if (!pv)
+		return NULL;
+	for (i = 0; apvRamMappings[i]; i++)
+		;
+	apvRamMappings[i] = pv;
+	return (IMG_UINT8 *)pv + off;
+}
+#endif
+
 IMG_VOID IOUnmapWrapper(IMG_VOID *pvIORemapCookie)
 {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0))
+	IMG_VOID *pvBase = (IMG_VOID *)((unsigned long)pvIORemapCookie & PAGE_MASK);
+	int i;
+
+	for (i = 0; i < MAX_RAM_MAPPINGS; i++)
+		if (apvRamMappings[i] && apvRamMappings[i] == pvBase) {
+			vunmap(pvBase);
+			apvRamMappings[i] = NULL;
+			return;
+		}
+#endif
 	iounmap(pvIORemapCookie);
 }
 
@@ -525,6 +601,15 @@ IMG_VOID *_IORemapWrapper(IMG_CPU_PHYADDR BasePAddr, IMG_UINT32 ui32Bytes, IMG_U
 	IMG_VOID *pvIORemapCookie = IMG_NULL;
 
 	PVR_DPF((PVR_DBG_MESSAGE, "Mapping flags:%8x", ui32MappingFlags));
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0))
+	if (pfn_valid(BasePAddr.uiAddr >> PAGE_SHIFT))
+		return VMapRam(BasePAddr, ui32Bytes,
+			       (ui32MappingFlags & PVRSRV_HAP_CACHETYPE_MASK) == PVRSRV_HAP_CACHED ?
+			       PAGE_KERNEL :
+			       (ui32MappingFlags & PVRSRV_HAP_CACHETYPE_MASK) == PVRSRV_HAP_WRITECOMBINE ?
+			       pgprot_writecombine(PAGE_KERNEL) : pgprot_noncached(PAGE_KERNEL));
+#endif
 	
 	switch(ui32MappingFlags & PVRSRV_HAP_CACHETYPE_MASK)
 	{
@@ -611,7 +696,29 @@ IMG_VOID *_VMallocWrapper(IMG_UINT32 ui32Bytes, IMG_UINT32 ui32AllocFlags,
 	}
 	
 		
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,8,0))
+	/* __vmalloc() lost its pgprot: map our own pages; vfree() frees them */
+	{
+		unsigned int n = PAGE_ALIGN(ui32Bytes) >> PAGE_SHIFT, i;
+		struct page **pages = kvmalloc_array(n, sizeof(*pages), GFP_KERNEL);
+
+		pvRet = NULL;
+		if (pages) {
+			for (i = 0; i < n; i++)
+				if (!(pages[i] = alloc_page(GFP_KERNEL | __GFP_HIGHMEM | __GFP_ZERO)))
+					break;
+			if (i == n)
+				pvRet = vmap(pages, n, VM_MAP | VM_MAP_PUT_PAGES, PGProtFlags);
+			if (!pvRet) {
+				while (i--)
+					__free_page(pages[i]);
+				kvfree(pages);
+			}
+		}
+	}
+#else
 	pvRet = __vmalloc(ui32Bytes, GFP_KERNEL | __GFP_HIGHMEM, PGProtFlags);
+#endif
 	
 #if defined(DEBUG_LINUX_MEMORY_ALLOCATIONS)
 	if(pvRet)

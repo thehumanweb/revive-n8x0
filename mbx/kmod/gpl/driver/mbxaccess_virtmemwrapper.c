@@ -29,6 +29,8 @@
 #endif
 
 #include <linux/poll.h>
+#include <linux/dma-buf.h>
+#include <linux/vmalloc.h>
 
 #include "services_headers.h"
 #include "mbxaccess_virtmemwrapper_private.h"
@@ -64,7 +66,22 @@ void MBXSyncSrv_VirtualAllocateReserveHandler(IMG_VOID *pvData)
 	{
 		ui32Flags |= PVRSRV_HAP_USER_VISIBLE;
 	}
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+	{
+		extern void *MBXAccess_TakeArmedVMap(IMG_UINT32 ui32Bytes, void **ppvDmaBuf);
+		void *pvDmaBuf = NULL;
+		void *pvArmed = MBXAccess_TakeArmedVMap(infoFromUser.bytes, &pvDmaBuf);
+
+		psMemArea = pvArmed ? MEM_AREA_FromVMap(pvArmed, infoFromUser.bytes, pvDmaBuf) :
+				      MEM_AREA_VMalloc(infoFromUser.bytes, ui32Flags);
+		if (pvArmed && !psMemArea) {
+			vunmap(pvArmed);
+			dma_buf_put(pvDmaBuf);
+		}
+	}
+#else
 	psMemArea = MEM_AREA_VMalloc(infoFromUser.bytes, ui32Flags);
+#endif
 	
 	if(psMemArea == NULL)
 	{
@@ -81,6 +98,13 @@ void MBXSyncSrv_VirtualAllocateReserveHandler(IMG_VOID *pvData)
 	}
 
 	infoFromUser.mem = MEM_AREA_ToCpuVAddr(psMemArea);
+	{
+		extern int mbxaccess_trace;
+
+		if (mbxaccess_trace)
+			printk(KERN_INFO "mbxaccess:   reserve %u bytes -> %px\n",
+			       (unsigned int)infoFromUser.bytes, infoFromUser.mem);
+	}
 	
 	COPY_TO_USER(pvData,(void*)&infoFromUser, sizeof(MBXUserDataForVirtualAllocateReserve));
 }
@@ -91,6 +115,12 @@ void MBXSyncSrv_VirtualDeallocateUnreserveHandler(IMG_VOID *pvData)
 
 	COPY_FROM_USER((void*)&infoFromUser, pvData, sizeof(MBXUserDataForVirtualDeallocateUnreserve));
 
+	{
+		extern int mbxaccess_trace;
+
+		if (mbxaccess_trace)
+			printk(KERN_INFO "mbxaccess:   unreserve %px\n", infoFromUser.mem);
+	}
 	PVRMMapRemoveRegisteredArea(infoFromUser.mem);
 	COPY_TO_USER(pvData,(void*)&infoFromUser, sizeof(MBXUserDataForVirtualDeallocateUnreserve));
 }

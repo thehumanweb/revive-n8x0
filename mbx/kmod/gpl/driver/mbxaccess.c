@@ -38,7 +38,11 @@
 #include <linux/version.h>
 #include <linux/fs.h>
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,29))
+#include <linux/uaccess.h>
+#else
 #include <asm/uaccess.h>
+#endif
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,15))
 #include <linux/platform_device.h>
@@ -76,7 +80,7 @@ typedef u32 pm_message_t;
 #include <linux/clk.h>
 #endif
 #include <linux/delay.h>
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,15) && !defined(ARMVP))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,15) && LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27) && !defined(ARMVP))
 #include <asm/arch/clock.h>
 #endif
 
@@ -93,8 +97,10 @@ PVRSRV_LINUX_MUTEX gPVRSRVLock;
 module_init(MBXAccess_Init);
 module_exit(MBXAccess_Exit);
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0))
 struct timeval tv_before;
 struct timeval tv_after;
+#endif
 
 static int   driverInitialised = 0;
 
@@ -111,10 +117,259 @@ PVRSRV_LINUX_MUTEX MBX_Virtmem_lMallocHeadLock;
 
 int gi32MBXInitialized = MBX_SERVICEAPI_NOTINITIALIZED;
 
+/* The file that initialised the services (mbxdaemon's) */
+static struct file *gpsServicesFile;
+
+extern int mbxaccess_trace;
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+/*
+ * dma-bufs (omapdrm scanout buffers) the MBX renders into: their physical
+ * address for MBXMapSysPhysToDevVAddr, the attachment kept (the buffer
+ * pinned) until the file that asked is closed.
+ */
+#include <linux/dma-buf.h>
+#include <linux/dma-mapping.h>
+#include "mbxaccess_dmabuf.h"
+
+MODULE_IMPORT_NS("DMA_BUF");
+
+#define MBX_MAX_DMABUFS 16
+static struct {
+	struct file *owner;
+	struct dma_buf *buf;
+	struct dma_buf_attachment *att;
+	struct sg_table *sgt;
+} gsDmaBufs[MBX_MAX_DMABUFS];
+static struct platform_device *gpsDmaBufDev;
+
+static int dmabuf_phys(struct file *filp, unsigned long arg, int *slotp);
+
+static int MBXAccess_DmaBufPhys(struct file *filp, unsigned long arg)
+{
+	return dmabuf_phys(filp, arg, NULL);
+}
+
+/* MBXAccess_DmaBufPhys(), and the slot holding the attachment */
+static int dmabuf_phys(struct file *filp, unsigned long arg, int *slotp)
+{
+	struct mbxaccess_dmabuf req;
+	struct dma_buf *buf;
+	struct dma_buf_attachment *att;
+	struct sg_table *sgt;
+	struct scatterlist *sg;
+	dma_addr_t next;
+	int i, slot;
+
+	if (!gpsDmaBufDev)
+		return -ENODEV;
+	if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
+		return -EFAULT;
+	for (slot = 0; slot < MBX_MAX_DMABUFS && gsDmaBufs[slot].buf; slot++)
+		;
+	if (slot == MBX_MAX_DMABUFS)
+		return -ENOSPC;
+	buf = dma_buf_get(req.fd);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+	att = dma_buf_attach(buf, &gpsDmaBufDev->dev);
+	if (IS_ERR(att)) {
+		dma_buf_put(buf);
+		return PTR_ERR(att);
+	}
+	sgt = dma_buf_map_attachment_unlocked(att, DMA_BIDIRECTIONAL);
+	if (IS_ERR(sgt)) {
+		dma_buf_detach(buf, att);
+		dma_buf_put(buf);
+		return PTR_ERR(sgt);
+	}
+	req.size = buf->size;
+	req.phys = sg_dma_address(sgt->sgl);
+	req.contiguous = 1;
+	next = req.phys;
+	for_each_sgtable_dma_sg(sgt, sg, i) {
+		if (sg_dma_address(sg) != next)
+			req.contiguous = 0;
+		next = sg_dma_address(sg) + sg_dma_len(sg);
+	}
+	gsDmaBufs[slot].owner = filp;
+	gsDmaBufs[slot].buf = buf;
+	gsDmaBufs[slot].att = att;
+	gsDmaBufs[slot].sgt = sgt;
+	if (slotp)
+		*slotp = slot;
+	if (mbxaccess_trace)
+		printk(KERN_INFO "mbxaccess: [%d] dma-buf %u bytes at 0x%08x%s\n", current->pid,
+		       req.size, req.phys, req.contiguous ? "" : " (not contiguous)");
+	return copy_to_user((void __user *)arg, &req, sizeof(req)) ? -EFAULT : 0;
+}
+
+/* An armed dma-buf: the vmap that backs the next matching allocation */
+static struct {
+	pid_t tgid;
+	IMG_UINT32 size;
+	void *vaddr;
+	struct dma_buf *buf;	/* for the area the allocation gets to hold */
+	struct file *owner;
+} gsArmed[MBX_MAX_DMABUFS];
+
+/* A dma-buf's attachment slot given back (gsDmaBufs) */
+static void dmabuf_slot_free(int i)
+{
+	dma_buf_unmap_attachment_unlocked(gsDmaBufs[i].att, gsDmaBufs[i].sgt, DMA_BIDIRECTIONAL);
+	dma_buf_detach(gsDmaBufs[i].buf, gsDmaBufs[i].att);
+	dma_buf_put(gsDmaBufs[i].buf);
+	gsDmaBufs[i].buf = NULL;
+}
+
+/*
+ * Arm: the next allocation of its size is backed by a vmap of the dma-buf's
+ * pages, and holds the dma-buf. The attachment is only needed to find the
+ * pages: it goes back at once, or a long-lived client (a compositor
+ * importing buffer after buffer) runs out of the MBX_MAX_DMABUFS slots
+ * (ENOSPC), which were freed only when it closed /dev/mbx.
+ */
+static int MBXAccess_DmaBufArm(struct file *filp, unsigned long arg)
+{
+	struct mbxaccess_dmabuf req;
+	struct dma_buf *buf;
+	struct page **pages;
+	struct sg_page_iter it;
+	unsigned int i, n;
+	void *vaddr;
+	int err, slot, att;
+
+	err = dmabuf_phys(filp, arg, &att);
+	if (err)
+		return err;
+	err = -EFAULT;
+	if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
+		goto out;
+	err = -EINVAL;
+	if (req.contiguous && (req.phys & ~PAGE_MASK))
+		goto out;
+	for (slot = 0; slot < MBX_MAX_DMABUFS && gsArmed[slot].vaddr; slot++)
+		;
+	err = -ENOSPC;
+	if (slot == MBX_MAX_DMABUFS)
+		goto out;
+	n = PAGE_ALIGN(req.size) >> PAGE_SHIFT;
+	err = -ENOMEM;
+	pages = kvmalloc_array(n, sizeof(*pages), GFP_KERNEL);
+	if (!pages)
+		goto out;
+	if (req.contiguous) {
+		/* omapdrm's: one block, its scatterlist without pages */
+		for (i = 0; i < n; i++)
+			pages[i] = pfn_to_page((req.phys >> PAGE_SHIFT) + i);
+	} else {
+		/*
+		 * scattered pages (the system dma-heap's: a Wayland client's
+		 * buffer that is never scanned out): the services map the
+		 * allocation page by page into the MBX's MMU all the same
+		 */
+		i = 0;
+		for_each_sgtable_page(gsDmaBufs[att].sgt, &it, 0) {
+			if (i == n)
+				break;
+			pages[i++] = sg_page_iter_page(&it);
+		}
+		err = -EINVAL;
+		if (i < n) {
+			kvfree(pages);
+			goto out;
+		}
+	}
+	/* no VM_MAP_PUT_PAGES: vfree() only unmaps, the exporter keeps the pages */
+	vaddr = vmap(pages, n, VM_MAP, pgprot_writecombine(PAGE_KERNEL));
+	kvfree(pages);
+	err = -ENOMEM;
+	if (!vaddr)
+		goto out;
+	/*
+	 * The allocation it backs holds the dma-buf: the exporter frees the
+	 * pages once nothing maps them any more (the services daemon keeps its
+	 * own mapping until the MBX is done with them), not when the client
+	 * exits
+	 */
+	buf = dma_buf_get(req.fd);
+	if (IS_ERR(buf)) {
+		vunmap(vaddr);
+		err = PTR_ERR(buf);
+		goto out;
+	}
+	gsArmed[slot].buf = buf;
+	gsArmed[slot].owner = filp;
+	gsArmed[slot].tgid = current->tgid;
+	gsArmed[slot].size = n << PAGE_SHIFT;
+	gsArmed[slot].vaddr = vaddr;
+	err = 0;
+out:
+	dmabuf_slot_free(att);
+	return err;
+}
+
+/*
+ * For VirtualAllocateReserve: an armed dma-buf of this size, or NULL; its
+ * reference to the dma-buf goes to the caller (*ppvDmaBuf)
+ */
+void *MBXAccess_TakeArmedVMap(IMG_UINT32 ui32Bytes, void **ppvDmaBuf)
+{
+	void *vaddr;
+	int i;
+
+	for (i = 0; i < MBX_MAX_DMABUFS; i++)
+		/*
+		 * mbxdaemon reserves on the client's behalf: match on size (an arm
+		 * is one-shot, and the client allocates right after arming)
+		 */
+		if (gsArmed[i].vaddr && gsArmed[i].size == PAGE_ALIGN(ui32Bytes)) {
+			vaddr = gsArmed[i].vaddr;
+			*ppvDmaBuf = gsArmed[i].buf;
+			gsArmed[i].vaddr = NULL;
+			gsArmed[i].buf = NULL;
+			if (mbxaccess_trace)
+				printk(KERN_INFO "mbxaccess: [%d] allocation of %u bytes backed by a dma-buf\n",
+				       current->pid, ui32Bytes);
+			return vaddr;
+		}
+	return NULL;
+}
+
+static void MBXAccess_DmaBufRelease(struct file *filp)
+{
+	int i;
+
+	/* arms no allocation took: the client went first */
+	for (i = 0; i < MBX_MAX_DMABUFS; i++)
+		if (gsArmed[i].vaddr && (!filp || gsArmed[i].owner == filp)) {
+			vunmap(gsArmed[i].vaddr);
+			dma_buf_put(gsArmed[i].buf);
+			gsArmed[i].vaddr = NULL;
+			gsArmed[i].buf = NULL;
+		}
+
+	for (i = 0; i < MBX_MAX_DMABUFS; i++)
+		if (gsDmaBufs[i].buf && (!filp || gsDmaBufs[i].owner == filp))
+			dmabuf_slot_free(i);
+}
+#endif
+
+extern int mbxaccess_trace;
+static void MBXAccess_GfxPowerDown(void);
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
+static long MBXAccess_UnlockedIoctl(struct file *filp, unsigned int cmd, unsigned long arg);
+#endif
+
 static struct file_operations MBXAccess_fops =
 {
 	.owner   = THIS_MODULE,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
+	.unlocked_ioctl = MBXAccess_UnlockedIoctl,
+#else
 	.ioctl   = MBXAccess_Ioctl,
+#endif
 	.open    = MBXAccess_Open,
 	.release = MBXAccess_Release,
 	.mmap    = MBXAccess_Mmap,
@@ -194,7 +449,11 @@ static struct platform_driver powervr_driver =
 		.bus		= &platform_bus_type,
 	},
 	.probe      = MBXAccess_DriverProbe,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,11,0))
+	.remove     = MBXAccess_DriverRemoveVoid,
+#else
 	.remove     = MBXAccess_DriverRemove,
+#endif
 	.suspend    = MBXAccess_DriverSuspend,
 	.resume     = MBXAccess_DriverResume,
 	.shutdown   = MBXAccess_DriverShutdown,
@@ -301,16 +560,35 @@ static int MBXAccess_Ioctl(struct inode *inode, struct file *filp,
 		break;
 		case MBXInitDrv:
 		{
+			if (mbxaccess_trace)
+				printk(KERN_INFO "mbxaccess: [%d] MBXInitDrv\n", current->pid);
 			err = MBXAccess_InitDrv();
+			gpsServicesFile = filp;
 		}
 		break;
 		case MBXDeInitDrv:
 		{
+			if (mbxaccess_trace)
+				printk(KERN_INFO "mbxaccess: [%d] MBXDeInitDrv\n", current->pid);
 			err = MBXAccess_DeInitDrv();
 		}
 		break;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+		case MBXDmaBufPhys:
+		{
+			err = MBXAccess_DmaBufPhys(filp, arg);
+		}
+		break;
+		case MBXDmaBufArm:
+		{
+			err = MBXAccess_DmaBufArm(filp, arg);
+		}
+		break;
+#endif
 		case MBXRecyleDriver:
 		{
+			if (mbxaccess_trace)
+				printk(KERN_INFO "mbxaccess: [%d] MBXRecyleDriver\n", current->pid);
 			if(driverInitialised)
 			{
 				MBXAccess_DeInitDrv();
@@ -340,6 +618,13 @@ static int MBXAccess_Ioctl(struct inode *inode, struct file *filp,
 	LinuxUnLockMutex(&gPVRSRVLock);
 	return err;
 }
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
+static long MBXAccess_UnlockedIoctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	return MBXAccess_Ioctl(file_inode(filp), filp, cmd, arg);
+}
+#endif
 
 static int MBXAccess_Open(struct inode *inode, struct file *filp)
 {
@@ -383,13 +668,45 @@ static int MBXAccess_FAsync(int fd, struct file *filp, int mode)
 	return fasync_helper(fd, filp, mode, &dev->asyncqueue);
 }
 
+/*
+ * The services died or are going away: nothing in the kernel may keep using
+ * their memory (the interrupt struct) or calling back into them.
+ */
+void MBXAccess_ServicesGone(void)
+{
+	extern void MBXAccess_RemoveAllTimers(void);
+	extern void MBXAccess_FreeIrqOnExit(void);
+
+	MBXAccess_RemoveAllTimers();
+	MBXAccess_FreeIrqOnExit();
+	gpsInterruptStructKernel = NULL;
+}
+
 static int MBXAccess_Release(struct inode *inode, struct file *filp)
 {
 	int err = 0;
 	
 	PVR_UNREFERENCED_PARAMETER(inode);
-	PVR_UNREFERENCED_PARAMETER(filp);
 	
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+	LinuxLockMutex(&gPVRSRVLock);
+	MBXAccess_DmaBufRelease(filp);
+	LinuxUnLockMutex(&gPVRSRVLock);
+#endif
+	if (filp == gpsServicesFile)
+	{
+		extern void RemoveProcEntries(void);
+
+		LinuxLockMutex(&gPVRSRVLock);
+		MBXAccess_ServicesGone();
+		if (driverInitialised)
+			MBXAccess_DeInitDrv();
+		MBXAccess_GfxPowerDown();
+		gi32MBXInitialized = MBX_SERVICEAPI_NOTINITIALIZED;
+		RemoveProcEntries();
+		gpsServicesFile = NULL;
+		LinuxUnLockMutex(&gPVRSRVLock);
+	}
 	if(filp->f_flags & FASYNC)
 	{
 		
@@ -447,6 +764,13 @@ static int MBXAccess_DriverRemove(struct STRUCT_DEVICE *pDevice)
 	return ret;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,11,0))
+static void MBXAccess_DriverRemoveVoid(struct STRUCT_DEVICE *pDevice)
+{
+	MBXAccess_DriverRemove(pDevice);
+}
+#endif
+
 static int MBXAccess_DriverSuspend(struct STRUCT_DEVICE *device, pm_message_t state
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,15))
 								   , u32 level
@@ -494,11 +818,106 @@ static void MBXAccess_InitFailed(void)
 #else
 #define SUCCESSFUL(x)
 #endif
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+/*
+ * Nothing else powers the GFX block on current kernels (no hwmod for the
+ * OMAP2420's): it is on while the services are initialised, brought up as
+ * TI's EnableSystemClocks() (libmbxservicesdaemon) does. Order matters: an
+ * MPU access to the MBX before its clocks run and its reset is pulsed
+ * leaves the interconnect answering every later access with an external
+ * abort, until the next boot.
+ */
+#include <linux/io.h>
+#include <linux/iopoll.h>
+
+#define OMAP24XX_PRCM_BASE	0x48008000
+#define GFXP_PRCM_CLKCFG_CTRL	0x080	/* VALID_CONFIG: apply CM_CLKSEL changes */
+#define GFXP_PRCM_CLKCFG_STATUS	0x084
+#define GFXP_RM_RSTCTRL_GFX		0x350
+#define GFXP_RM_RSTST_GFX		0x358
+#define GFXP_RM_RSTST_GFX_RST	0x10
+#define GFXP_PM_PWSTCTRL_GFX		0x3e0
+
+static const char *const gfx_clk_names[] = { "gfx_ick", "gfx_2d_fck", "gfx_3d_fck" };
+static struct clk *gfx_clks[ARRAY_SIZE(gfx_clk_names)];
+
+static int gfxPowered;
+
+static void MBXAccess_GfxClocks(int on)
+{
+	void __iomem *prcm = ioremap(OMAP24XX_PRCM_BASE, 0x1000);
+	struct clk *l3;
+	u32 v;
+	int i;
+
+	if (!prcm)
+		return;
+	if (!on)
+		writel(1, prcm + GFXP_RM_RSTCTRL_GFX);
+	for (i = 0; i < ARRAY_SIZE(gfx_clk_names); i++) {
+		if (on) {
+			gfx_clks[i] = clk_get(NULL, gfx_clk_names[i]);
+			if (IS_ERR(gfx_clks[i]) || clk_prepare_enable(gfx_clks[i])) {
+				printk(KERN_ERR "mbxaccess: no clock %s\n", gfx_clk_names[i]);
+				if (!IS_ERR(gfx_clks[i]))
+					clk_put(gfx_clks[i]);
+				gfx_clks[i] = NULL;
+			}
+		} else if (gfx_clks[i]) {
+			clk_disable_unprepare(gfx_clks[i]);
+			clk_put(gfx_clks[i]);
+			gfx_clks[i] = NULL;
+		}
+	}
+	if (on) {
+		/* 2D and 3D cores at L3 / 2, as TI's and Nokia's settings */
+		l3 = clk_get(NULL, "core_l3_ck");
+		if (!IS_ERR(l3)) {
+			for (i = 1; i < ARRAY_SIZE(gfx_clk_names); i++)
+				if (gfx_clks[i])
+					clk_set_rate(gfx_clks[i], clk_get_rate(l3) / 2);
+			clk_put(l3);
+		}
+		if (!(readl(prcm + GFXP_PRCM_CLKCFG_STATUS) & 1))
+			writel(1, prcm + GFXP_PRCM_CLKCFG_CTRL);
+		/* pm24xx forces the GFX domain off; power on, pulse the reset */
+		writel(0, prcm + GFXP_PM_PWSTCTRL_GFX);
+		writel(GFXP_RM_RSTST_GFX_RST, prcm + GFXP_RM_RSTST_GFX);
+		writel(1, prcm + GFXP_RM_RSTCTRL_GFX);
+		writel(0, prcm + GFXP_RM_RSTCTRL_GFX);
+		if (readl_poll_timeout(prcm + GFXP_RM_RSTST_GFX, v, v & GFXP_RM_RSTST_GFX_RST, 10, 10000))
+			printk(KERN_ERR "mbxaccess: GFX reset did not complete\n");
+		writel(GFXP_RM_RSTST_GFX_RST, prcm + GFXP_RM_RSTST_GFX);
+	}
+	iounmap(prcm);
+}
+#endif
+
+static void MBXAccess_GfxPowerDown(void)
+{
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+	if (gfxPowered) {
+		MBXAccess_GfxClocks(0);
+		gfxPowered = 0;
+	}
+#endif
+}
+
 static int MBXAccess_InitDrv(void)
 {
 	int err = 0;
 	IMG_CPU_PHYADDR sRegsCPUPhysBase = {MBX_REG_SYS_PHYS_BASE};
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+	/*
+	 * Clients call MBXInitDrv/MBXDeInitDrv too: power up once, and down only
+	 * when the services go away (MBXAccess_GfxPowerDown())
+	 */
+	if (!gfxPowered) {
+		MBXAccess_GfxClocks(1);
+		gfxPowered = 1;
+	}
+#endif
 	
 	gpvLinBase = HostMapPhysToLin (sRegsCPUPhysBase, MBX_REG_RANGE, CACHETYPE_UNCACHED | EXTRA_CACHETYPE_SHARED);
 
@@ -544,7 +963,22 @@ static int __init MBXAccess_Init(void)
 		gpsMBXDeviceList->sDeviceID[i].bInUse = IMG_FALSE;
 	}
 	gpsMBXDeviceList->ui32NumDevices = SYS_DEVICE_COUNT;
+	/*
+	 * Device index 0 is the display class's: rc.pvr loads omaplcd before
+	 * mbxdaemon, and libsrv_um's PVRSRVQueueRender() queues 3D work for
+	 * device index 1. Without omaplcd the MBX would get 0 and the first
+	 * render goes to an index with no command processors (mbxdaemon
+	 * crashes in PVRSRVProcessQueues).
+	 */
+	gpsMBXDeviceList->sDeviceID[0].bInUse = IMG_TRUE;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+	gpsDmaBufDev = platform_device_register_simple("mbxaccess-dmabuf", -1, NULL, 0);
+	if (IS_ERR(gpsDmaBufDev))
+		gpsDmaBufDev = NULL;
+	else
+		dma_coerce_mask_and_coherent(&gpsDmaBufDev->dev, DMA_BIT_MASK(32));
+#endif
 	MBXMajor = register_chrdev(0, DRVNAME, &MBXAccess_fops);
 	if (MBXMajor <= 0)
 	{
@@ -594,6 +1028,21 @@ static void __exit MBXAccess_Exit(void)
 {
 	if(driverInitialised)
 		MBXAccess_DeInitDrv();
+	MBXAccess_GfxPowerDown();
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0))
+	MBXAccess_DmaBufRelease(NULL);
+	if (gpsDmaBufDev)
+		platform_device_unregister(gpsDmaBufDev);
+#endif
+
+	/* The services may have died without removing them */
+	{
+		extern void RemoveProcEntries(void);
+		extern void MBXAccess_FreeIrqOnExit(void);
+
+		RemoveProcEntries();
+		MBXAccess_ServicesGone();
+	}
 
 #if defined(TIMING)
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,21))
@@ -694,10 +1143,30 @@ SyncService syncServiceTable[MBXKERNELSYNCSERVICE_END] =
 #endif
 };
 
+int mbxaccess_trace;
+module_param_named(trace, mbxaccess_trace, int, 0644);
+MODULE_PARM_DESC(trace, "Log each sync kernel service call");
+
+static const char *const syncServiceNames[MBXKERNELSYNCSERVICE_END] = {
+	"RequestIrq", "FreeIrq", "HostMapPhysToLin", "PCIFindSlot",
+	"HostPCIReadDword", "PageToPhys", "VirtualAllocateReserve",
+	"VirtualDeallocateUnreserve", "ConvertKVToPage", "HostFlushCpuCacheArea",
+	"PVRSRVFlushCpuCacheKM", "CreateProcEntries", "RemoveProcEntries",
+	"HostAddTimer", "HostRemoveTimer", "MMapGetFullMapData", "HostReadHWReg",
+	"HostWriteHWReg", "LoadDriverParams", "DeviceNodeCreate",
+	"DeviceNodeDestroy", "GetDeviceNodeValue", "SetDeviceNodeValue",
+	"GetServiceAPIInitStatus", "SetServiceAPIInitStatus",
+};
+
 static void MBXCallSyncKernelServiceHandler(struct inode *inode, struct file *filp, unsigned long arg)
 {
 	MBXInfoForKernelSyncService infoFromUser;
 	COPY_FROM_USER((void*)&infoFromUser, (void*)(arg), sizeof(MBXInfoForKernelSyncService));
+	if ((unsigned int)infoFromUser.id >= MBXKERNELSYNCSERVICE_END)
+		return;
+	if (mbxaccess_trace)
+		printk(KERN_INFO "mbxaccess: [%d] %s\n", current->pid,
+		       syncServiceNames[infoFromUser.id] ? syncServiceNames[infoFromUser.id] : "?");
 #if defined(DEBUG)	
 	PVR_DPF((PVR_DBG_VERBOSE, "Requesting %s", syncServiceTable[infoFromUser.id].psServiceName ));
 	syncServiceTable[infoFromUser.id].pfnHandler((IMG_VOID*)infoFromUser.data);
