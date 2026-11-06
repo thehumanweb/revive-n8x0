@@ -85,6 +85,7 @@ struct mbx_device {
 	struct drm_gem_object *tbl;	/* the free list's table */
 	struct drm_gem_object *ctx;	/* the TA and EVM contexts */
 	bool pb_built;		/* the free list is built (not after a reset) */
+	u32 ctx_seq;		/* jobs so far, for the hardware context id (0 or 1) */
 	bool ctx_loaded;	/* the contexts are zeroed and loaded (not after a reset) */
 	void *dummy;		/* what unmapped pages point at */
 	dma_addr_t dummy_dma;

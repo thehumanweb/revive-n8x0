@@ -201,7 +201,7 @@ int mbx_vm_unmap(struct mbx_vm *vm, struct drm_gem_object *obj)
  * clear) for every page of the client's buffers, the contexts and the free list's table and first pages;
  * 2: and for all the parameter buffer's pages.
  */
-static int mmu_seq;
+static int mmu_seq = 1;	/* the stock daemon's handshake: without it the TLB keeps the previous client's pages (found on the unit with two clients) */
 module_param(mmu_seq, int, 0644);
 MODULE_PARM_DESC(mmu_seq, "debug: 1 does the stock daemon's MMU enable handshake");
 static int tlb_mode;

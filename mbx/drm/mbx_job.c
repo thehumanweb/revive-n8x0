@@ -87,6 +87,9 @@ static void mbx_feed(struct mbx_device *m, const u32 *w, u32 n)
 
 /* debug: 1 resets the cores sixteen times, interrupts off, 0x85c = 0x80, as the stock daemon's bring-up does */
 static int reset16;
+unsigned int ta_reset = 2;	/* 0: as before; 1: reset the TA context before each scene (0x81c); 2: and alternate the context id */
+module_param(ta_reset, uint, 0644);
+MODULE_PARM_DESC(ta_reset, "debug: 1 = reset the TA context (0x81c) before each scene, 2 = and alternate the hardware context id");
 unsigned int kick_delay_us;
 module_param(kick_delay_us, uint, 0644);
 MODULE_PARM_DESC(kick_delay_us, "debug: wait this long after TA_COMPLETE before the render (the stock daemon waits about 2500)");
@@ -180,6 +183,7 @@ static int mbx_job_run(struct mbx_job *job)
 	struct drm_mbx_submit *a = &job->a;
 	unsigned long ms = job->ms;
 	ktime_t t_ta = 0, t_render = 0;
+	u32 ctx, i;
 	int ret;
 
 	mutex_lock(&m->job_lock);
@@ -206,7 +210,21 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_TA_HEIGHT, a->ta_height);
 	mbx_write(m, MBX_REG_TA_REGIONS, a->ta_regions);
 	mbx_write(m, MBX_REG_TA_TAILS, a->ta_tails);
-	mbx_write(m, MBX_REG_TA_CONTEXT_ID, a->ta_context);
+	ctx = ta_reset == 2 ? (m->ctx_seq++ & 1) : a->ta_context;
+	mbx_write(m, MBX_REG_TA_CONTEXT_ID, ctx);
+	if (ta_reset) {
+		/* the stock services' reset_context: 0x810 = the context id, 0x81c = 1, wait for TA_CONTEXT, clear it */
+		mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_TA_CONTEXT);
+		mbx_write(m, MBX_REG_TA_RESET, 1);
+		for (i = 0; i < 500; i++) {
+			if (mbx_read(m, MBX_REG_INT_STATUS) & MBX_INT_TA_CONTEXT)
+				break;
+			usleep_range(100, 200);
+		}
+		mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_TA_CONTEXT);
+		if (unlikely(mbx_trace))
+			printk(KERN_DEBUG "mbx: S after the TA context reset (%u polls) %08x\n", i, mbx_read(m, MBX_REG_INT_STATUS));
+	}
 	t_ta = ktime_get();
 	mbx_write(m, MBX_REG_TA_START, 1);
 	mbx_feed(m, job->stream, a->stream_words);
@@ -250,7 +268,7 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_R_ZBUF, a->r_zbuf);
 	mbx_write(m, MBX_REG_PB_BASE, MBX_PB_VA);
 	mbx_write(m, MBX_REG_R_6DC, a->r_6dc);
-	mbx_write(m, MBX_REG_R_HW_CONTEXT, a->ta_context);
+	mbx_write(m, MBX_REG_R_HW_CONTEXT, ctx);
 	if (unlikely(mbx_trace))
 		printk(KERN_DEBUG "mbx: R before the kick: 0860 %08x 0614 %08x 0618 %08x 0854 %08x 085c %08x 0610 %08x\n",
 		       mbx_read(m, MBX_REG_TILES), mbx_read(m, 0x614), mbx_read(m, 0x618), mbx_read(m, MBX_REG_TA_854),

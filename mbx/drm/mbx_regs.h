@@ -30,6 +30,7 @@
 #define MBX_REG_TA_START	0x800
 #define MBX_REG_TA_CONTEXT_ID	0x810
 #define MBX_REG_TA_STORE	0x818	/* 1: the context's scene to the TA context memory */
+#define MBX_REG_TA_RESET	0x81c	/* 1: start an empty scene in the TA context (TA_CONTEXT follows) */
 #define MBX_REG_TA_CTX		0x820	/* the TA context memory (the model's name) */
 #define MBX_REG_EVM_CTX		0x864	/* the EVM context */
 #define MBX_REG_CE0		0xce0	/* 1 with the free list */

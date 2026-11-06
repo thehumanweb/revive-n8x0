@@ -576,3 +576,16 @@ circuit.
     bit of `0x648`, `0x64c` and `0x6d0` flipped one at a time changes nothing; bits 0 and 1 of `0x644` and bits
     12-25 of `0x60c` change which pixels are drawn; the render format `0x650` values other than `0xe` (and
     `0xd`) give garbage. Without a depth-only clear object nothing is drawn (the NaN depth).
+
+
+37. **What a client does before every scene** (found during device testing; the driver does it, `mbx/drm/`). The TA
+    context is reset for each scene: `0x810` = a hardware context id (0 or 1, alternating between scenes, the same
+    value in `0x6ec` at the render), `0x81c` = 1 (an empty scene in that context), wait for `TA_CONTEXT` (bit 8 of
+    `INT_STATUS`), clear it, then `0x800` = 1. The TA and EVM contexts are zeroed and loaded before every scene, not once
+    (the EVM context holds each macro tile's list state: left over from the last scene, the TA goes on in pages the
+    render has given back, and scenes of several macro tiles then hang or draw wrong tiles at random). The MMU's enable
+    handshake (`mmu_seq`) is done whenever the address space changes: without it the TLB keeps the previous client's
+    pages and one client's job renders into the other's buffers. With all three on the unit, 52 of 52 runs of 256x256,
+    400x240 and 800x480 draw the model's pixel counts, `gbm_tri` runs 12 frames on the panel's 800x480 target with no
+    failed job, and two clients at once give each its own picture. Not needed: a delay between `TA_COMPLETE` and the
+    kick, rebuilding the free list per scene, bit 18 of `0x85c`.
