@@ -20,7 +20,7 @@ a device.
 | M0: test loop | Done. `scripts/run-qemu.sh` boots the guest; the DT node, config and rootfs wiring are in; the driver probes and reads `CORE_ID` 0x01010003. QEMU is built from this repo. |
 | M1: kernel driver | Mostly done: probe and power-up, IRQ, per-file MBX address spaces with page tables, shmem GEM buffers and PRIME import code, a blocking submit that feeds the TA stream by CPU PIO. Missing: asynchronous submit with fences, DMA feeding, parameter-buffer and free-list setup, partial render on overflow, runtime PM. |
 | M2: triangle without Mesa | Done in QEMU: the host `mbxtri` and the guest `mbxtri-drm` (through the kernel driver) draw byte-identical pictures. Not done: showing it on the panel. |
-| M3: Gallium driver | In progress. Mesa 26.1.8 builds with an `mbx` driver; there is a host sim (drm-shim) and a context that records and submits frames. Missing: the NIR-to-VGP vertex compiler and the fragment-shader matcher (so `draw_vbo` currently skips), textures, blending and alpha test, scissor, scanout through kmsro, the CPU fallback. |
+| M3: Gallium driver | In progress. A GLES2 triangle (EGL, an FBO, GLSL with a uniform matrix and a varying colour) renders on the host sim and is byte-identical to the emulator-only picture at four angles. Done: the vertex compiler (NIR to VGP, scalar), the fragment matcher for varying and constant colour, the context, the sim. Missing: richer fragment shaders (textures, fog, blending, alpha test), scissor, scanout through kmsro, the CPU fallback, uniforms in constant buffers beyond what the matcher handles, the shaders' trigonometry. |
 | M4: animated triangle in the guest | Not started (needs Mesa cross-built through Buildroot, EGL/GBM, omapdrm flips). |
 | M5: real N810 | Not started. See section 4 for what is unverified. |
 
@@ -110,6 +110,11 @@ Checked, on the emulator:
 - `t_vgp`: 128,034 randomised checks of the encoder against the model's own
   `vgp_exec` (not covered: LIT, EXPP, LOGP).
 - Mesa 26.1.8 builds with the mbx driver; libgallium carries it.
+- `mesa/scripts/test-sim.sh`: the GLES2 triangle on the host sim (real EGL, GLSL
+  compiler, NIR, the mbx compiler and context, the DRM winsys, the shim and the
+  emulator) equals `mbx/mbxtri`'s picture byte for byte at 0, 30, 90 and 200
+  degrees. It uses a uniform `mat4`, a varying colour, a depth buffer and a
+  float vertex array.
 
 Checked on a real N810 (a probe the user ran on the device and reported in the
 session; I have not run anything on a device):
@@ -141,7 +146,7 @@ Not checked, or only the model's word for it:
   relies on the model reading the target's own pixels when no background
   object is set (README assumption 6).
 - PRIME import of omapdrm scanout buffers and the kmsro path: written, never run.
-- Draws through Mesa: nothing runs through `draw_vbo` until the compiler exists.
+- Mesa draws beyond that one shape: only varying and constant colour fragment shaders are matched; indexed draws, strips, fans, other vertex formats, blending and textures have not been run.
 
 Sources: `mbx/README.md` (assumptions 4, 5, 6, 7, 8, 13, 23 and "Known gaps");
 `mbx/core.c`, `mbx/pb.c`, `mbx/ta.c` (`TA_PRIM_SECTIONS`), `mbx/render.c`
@@ -149,23 +154,19 @@ Sources: `mbx/README.md` (assumptions 4, 5, 6, 7, 8, 13, 23 and "Known gaps");
 
 ## 5. Next
 
-1. The vertex compiler: NIR to VGP as a scalar backend (the ISA is vec4 with a
-   write mask, so any scalar op can run in any lane through a source swizzle and
-   a one-lane mask; a per-component register allocator over 14 temporaries x 4
-   lanes; r13 reserved to stage the position; `o7.x = z + w` and
-   `o7.y = w - z` for near and far clip, since the model has no depth clip;
-   varyings linked to `o1`..`o4` by what the fragment side does with them).
-2. The fragment matcher for varying colour, texture times colour, constants and
-   fog; alpha test from `discard`; blend and depth from state.
-3. A GLES2 test through EGL (surfaceless) on the host sim, compared with the
-   emulator's own picture.
-4. Textures; scissor as user clip planes; the CPU fallback.
-5. Mesa cross-built through Buildroot, EGL/GBM and omapdrm flips for the
-   animated triangle (M4); then the real device (M5).
+1. Fragment shaders on the fixed pipe: texture times colour, constants through the
+   word-C combiner, fog, alpha test from `discard`, blend and depth from state;
+   what does not reduce falls back to the CPU.
+2. More of the vertex side: indirect uniform reads (AMV and `c[a0+n]`), a source
+   swizzle optimisation (DP4 on whole vec4 operands instead of scalar MADs: the
+   matrix transform is 23 instructions now where four DP4s would do), LIT, trig
+   approximations, more than 128 constants (a constant window).
+3. Scissor as user clip planes; points and lines; textures and their formats.
+4. Mesa cross-built through Buildroot, EGL/GBM and omapdrm flips for the animated
+   triangle (M4), then the real device (M5).
 
-Sources: the VGP's constraints: `mbx/vgp.c`, `mbx/ta.c` (`vertex()`: clip
-planes, o7, outputs), `mbx/lib/mbx_vgp.h`; no depth clip: `mbx/README.md`
-assumption 14.
+Sources: the VGP's constraints: `mbx/vgp.c`, `mbx/ta.c` (`vertex()`), `mbx/lib/mbx_vgp.h`; the instruction count of the
+matrix transform: the disassembly `MBX_DEBUG=2` prints.
 
 ## 6. Log
 
@@ -382,3 +383,43 @@ comes from `mbx/*.c` and its README.
   `build/mesa-host.log`. TA stream, header blocks, state-word bits, region array size,
   `0x6dc` and the render registers: `mbx/ta.c`, `mbx/render.c` (`render_kick`,
   `depth_pass`), `mbx/emu.h`, README assumptions 4, 5, 6, 7.
+
+### 2026-11-06: a GLES2 triangle on the host sim
+
+- Mesa found the mbx driver through the shim ("using driver mbx") and EGL came up
+  once the screen set `blend_equation_separate` (GLES 2.0 needs
+  `ARB_vertex_shader`, `ARB_fragment_shader`, `ARB_texture_non_power_of_two`
+  and `EXT_blend_equation_separate`; the rest come from `u_init_pipe_screen_caps`).
+- The vertex compiler (`mbx_compile.c`, `mbx_nir.c`): NIR is prepared as vc4
+  does (`nir_lower_io` in vec4 slots, scalar ALU, constants folded, loops
+  unrolled, booleans as floats). Pass one turns scalar SSA into operations on
+  virtual scalar registers; pass two gives them lanes of r0-r12 (r13 stages
+  `gl_Position`), obeys the one-constant and one-input register rule by
+  copying, and encodes with `mbx_vgp.h`. Any scalar operation can run in any
+  lane (the source swizzle picks the lane, the write mask the lane written),
+  so one allocator over 13 x 4 lanes suffices. `o0` is the position, `o7.x =
+  z + w` and `o7.y = w - z` give the near and far clip the hardware lacks, `o1`
+  takes the colour in BGRA order.
+- The fragment matcher (`mbx_fs_match`): `gl_FragColor` made of one varying's
+  components in order and constants; Gouraud unless declared flat or all
+  constant. Anything else logs that a CPU fallback is planned and skips the draw.
+- The test (`mesa/tests/gles2_tri.c`, `mesa/scripts/test-sim.sh`) matches the
+  emulator-only picture at four angles, byte for byte.
+- Two bugs worth remembering, found with the debug aids (`MBX_DEBUG=1|2`,
+  `MBX_SIM_TRACE=1|2`, which turns on the emulator's own trace):
+  - `nir_intrinsic_component()` must not be called on `load_uniform`: it has no
+    such index and the accessor read another field (4), so every constant lane
+    was 4-7; the symptom was a degenerate triangle ("TA end: 0 triangles"). Found by
+    printing the raw instruction words and checking the encoder in a tiny standalone test.
+  - `index_bias` is only defined for indexed draws; on a plain `glDrawArrays` it
+    held garbage and the vertex gather read far outside the buffer (all zeros).
+- Sources: Mesa 26.1.8 `src/mesa/main/version.c` (`compute_version_es2`),
+  `src/mesa/state_tracker/st_extensions.c` (`EXT_CAP`, the GLSL level),
+  `src/gallium/auxiliary/util/u_screen.c` (cap defaults), `src/compiler/nir/nir.h`
+  (the `nir_scalar` helpers, `nir_intrinsic_*` accessors),
+  `src/compiler/nir/nir_lower_bool_to_float.c` (which ops it produces),
+  `src/compiler/nir/nir_shader_compiler_options.h` (the option names),
+  `src/gallium/drivers/vc4/vc4_program.c` (`vc4_shader_state_create`,
+  `vc4_optimize_nir`, the options block) as the pattern for the NIR pipeline;
+  hardware rules and the clip outputs: `mbx/vgp.c`, `mbx/ta.c` (`vertex()`),
+  `mbx/README.md` assumptions 13 and 14; the comparison picture: `mbx/mbxtri`.

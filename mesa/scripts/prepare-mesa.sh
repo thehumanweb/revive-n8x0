@@ -26,6 +26,8 @@ if [ "${1:-}" != --sync ] || [ ! -d $M ]; then
 fi
 cp -a -u mesa/src/. $M/src/
 cp -u mbx/drm/mbx_drm.h $M/include/drm-uapi/mbx_drm.h
+# the VGP encoder the vertex compiler uses (one copy, in mbx/lib)
+cp -u mbx/lib/mbx_vgp.h $M/src/gallium/drivers/mbx/mbx_vgp.h
 # the emulator core, for the host sim (drm-shim)
 E=$M/src/gallium/drivers/mbx/drm-shim/emu
 mkdir -p $E
