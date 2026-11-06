@@ -145,6 +145,19 @@ static const struct dma_fence_ops mbx_fence_ops = {
 	.get_timeline_name = mbx_fence_timeline_name,
 };
 
+/* debug: the render registers of unknown meaning and the format, changeable at run time (defaults: the stock values) */
+static unsigned int r60c, r614 = 0x1e3ce508, r618 = 0x1e3ce508, r644, r648 = 1, r64c, r6d0 = 1;
+static int r650_override = -1;
+module_param(r60c, uint, 0644);
+module_param(r614, uint, 0644);
+module_param(r618, uint, 0644);
+module_param(r644, uint, 0644);
+module_param(r648, uint, 0644);
+module_param(r64c, uint, 0644);
+module_param(r6d0, uint, 0644);
+module_param(r650_override, int, 0644);
+MODULE_PARM_DESC(r650_override, "debug: -1 keeps the target's format in 0x650, else this value");
+
 /* debug: bits ORed into 0x85c (the stock stack sets bit 18, 0x40000, when the target has no external Z) */
 static unsigned int ta_extra;
 module_param(ta_extra, uint, 0644);
@@ -204,20 +217,20 @@ static int mbx_job_run(struct mbx_job *job)
 
 		mbx_grid(a, &tx, &ty);
 		/* the render registers whose meaning is not known (README assumption 31), as the stock stack writes them */
-		mbx_write(m, 0x60c, 0);
-		mbx_write(m, 0x614, 0x1e3ce508);
-		mbx_write(m, 0x618, 0x1e3ce508);
-		mbx_write(m, 0x644, 0);
-		mbx_write(m, 0x648, 1);
-		mbx_write(m, 0x64c, 0);
-		mbx_write(m, 0x6d0, 1);
+		mbx_write(m, 0x60c, r60c);
+		mbx_write(m, 0x614, r614);
+		mbx_write(m, 0x618, r618);
+		mbx_write(m, 0x644, r644);
+		mbx_write(m, 0x648, r648);
+		mbx_write(m, 0x64c, r64c);
+		mbx_write(m, 0x6d0, r6d0);
 		mbx_write(m, MBX_REG_TILES, (ty - 1) << 16 | (tx - 1));	/* the tile grid again, as the TA has it */
 	}
 	mbx_write(m, MBX_REG_R_REGIONS, a->r_regions);
 	mbx_write(m, MBX_REG_R_CTL, a->r_ctl);
 	mbx_write(m, MBX_REG_R_SAMPLING, a->r_sampling);
 	mbx_write(m, MBX_REG_R_FOG, a->r_fog);
-	mbx_write(m, MBX_REG_R_FORMAT, a->r_format);
+	mbx_write(m, MBX_REG_R_FORMAT, r650_override >= 0 ? (u32)r650_override : a->r_format);
 	mbx_write(m, MBX_REG_R_WIDTH, a->r_width);
 	mbx_write(m, MBX_REG_R_HEIGHT, a->r_height);
 	mbx_write(m, MBX_REG_R_ADDR, a->r_addr);

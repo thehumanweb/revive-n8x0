@@ -121,4 +121,35 @@ for pg in range(4):
     p("  page %d: %d non-zero rows" % (pg, len(rows)))
     for r, x in rows[:30]:
         p("    +%04x  " % (r * 4) + " ".join("%08x" % v for v in x))
+
+# the device's picture against the emulator's (same stream, target filled with 0xff202020)
+def ppm_px(path):
+    d = open(os.path.join(d_dir, path), 'rb').read().split(b'\n', 3)[3]
+    return [tuple(d[i:i + 3]) for i in range(0, len(d), 3)]
+d_dir = d
+try:
+    dev = ppm_px('j1.ppm'); emu = ppm_px('sim.ppm')
+    grey = (0x20, 0x20, 0x20)
+    tri = [i for i in range(4096) if emu[i] != grey]
+    drawn = [i for i in range(4096) if dev[i] != grey]
+    exact = sum(1 for i in tri if dev[i] == emu[i])
+    anded = sum(1 for i in tri if dev[i] == tuple(c & 0x20 for c in emu[i]))
+    p()
+    p("=" * 100)
+    p("THE DEVICE'S PICTURE AGAINST THE EMULATOR'S (job 1; the target was filled with 0xff202020)")
+    p("=" * 100)
+    p("  pixels the emulator draws: %d; the device: %d (of which outside the emulator's triangle: %d)"
+      % (len(tri), len(drawn), len(set(drawn) - set(tri))))
+    p("  triangle pixels with exactly the emulator's colour: %d; with the emulator's colour AND 0x20 (the fill): %d"
+      % (exact, anded))
+    p("  map (E exact, a = colour AND the fill, o other, . outside the emulator's triangle), 16-pixel tiles separated:")
+    for y in range(64):
+        row = ''
+        for x in range(64):
+            i = y * 64 + x
+            row += '.' if emu[i] == grey else 'E' if dev[i] == emu[i] else 'a' if dev[i] == tuple(c & 0x20 for c in emu[i]) else 'o'
+        p("    " + ' '.join(row[k:k + 16] for k in range(0, 64, 16)))
+        if y % 16 == 15: p()
+except Exception as ex:
+    p("(no picture comparison: %s)" % ex)
 open(out, 'w').write("\n".join(L) + "\n")
