@@ -135,6 +135,11 @@ int mbx_ioctl_pb_dump(struct drm_device *dev, void *data, struct drm_file *file)
 	return 0;
 }
 
+/* debug: 1 flips the background triangle's winding (v1 and v2 swapped, with their texture coordinates) */
+static int bg_mode;
+module_param(bg_mode, int, 0644);
+MODULE_PARM_DESC(bg_mode, "debug: 1 flips the background triangle's winding");
+
 /* debug: bytes added to the background texture's address (to see that the chip reads it) */
 static int bg_shift;
 module_param(bg_shift, int, 0644);
@@ -234,6 +239,17 @@ void mbx_pb_set_background(struct mbx_device *m, const struct drm_mbx_submit *a)
 	o[10] = f32_from_u32(2 * pad_h);
 	o[21] = f32_from_u32(pad_w) - (10u << 23);		/* the texture coordinates: pad / 1024 */
 	o[25] = f32_from_u32(pad_h) - (10u << 23);
+	if (bg_mode == 1) {
+		/* v1 = (0, 2 pad_h), v2 = (2 pad_w, 0): positions at words 7-10, u at 20-22, v at 23-25 */
+		o[7] = 0;
+		o[8] = f32_from_u32(2 * pad_h);
+		o[9] = f32_from_u32(2 * pad_w);
+		o[10] = 0;
+		o[21] = 0;
+		o[22] = f32_from_u32(pad_w) - (10u << 23);
+		o[24] = f32_from_u32(pad_h) - (10u << 23);
+		o[25] = 0;
+	}
 	p = kmap_local_page(shmem->pages[MBX_PB_TABLE_SIZE >> PAGE_SHIFT]);
 	for (i = 0; i < ARRAY_SIZE(o); i++)
 		p[i] = o[i];

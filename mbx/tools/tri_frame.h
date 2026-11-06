@@ -41,6 +41,7 @@ static inline void tri_taf(struct tri_sw *s, float f) { uint32_t u; memcpy(&u, &
 /* The ISP/TSP state word of the triangle's object (Gouraud, depth test LESS); mbxtri-drm -S overrides it */
 static uint32_t tri_state_word = 1u << 22 | 1u << 9;
 static int tri_with_clear = 1;		/* 0: leave out the depth-only clear (tests) */
+static int tri_with_triangle = 1;	/* 0: leave out the triangle (experiments) */
 
 /* VGP instruction encoding (mbx/vgp.c's header comment) */
 enum { VOP_MOV = 1, VOP_DP4 = 8 };
@@ -121,38 +122,40 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 		tri_put(&s, CH_CTL, 1);			/* the object ends */
 	}
 
-	/* the object header: state, alpha test, layout, viewport, depth */
-	tri_ta(&s, 0x10000000 | 0x1 | 0x2 | 0x20 | 0x80 | 0x100);
-	tri_ta(&s, tri_state_word);		/* Gouraud, depth test LESS (by default) */
-	tri_ta(&s, 0);				/* alpha test (off) */
-	tri_ta(&s, 0x53);			/* v0: three floats, v1: four bytes packed */
-	tri_taf(&s, TRI_W / 2.0f); tri_taf(&s, TRI_W / 2.0f);
-	tri_taf(&s, TRI_H / 2.0f); tri_taf(&s, -TRI_H / 2.0f);	/* x scale, x off, y off, y scale */
-	tri_taf(&s, 0.5f); tri_taf(&s, 0.5f); tri_taf(&s, 1e-5f);	/* depth: z * 0.5 + 0.5 */
+	if (tri_with_triangle) {
+		/* the object header: state, alpha test, layout, viewport, depth */
+		tri_ta(&s, 0x10000000 | 0x1 | 0x2 | 0x20 | 0x80 | 0x100);
+		tri_ta(&s, tri_state_word);		/* Gouraud, depth test LESS (by default) */
+		tri_ta(&s, 0);				/* alpha test (off) */
+		tri_ta(&s, 0x53);			/* v0: three floats, v1: four bytes packed */
+		tri_taf(&s, TRI_W / 2.0f); tri_taf(&s, TRI_W / 2.0f);
+		tri_taf(&s, TRI_H / 2.0f); tri_taf(&s, -TRI_H / 2.0f);	/* x scale, x off, y off, y scale */
+		tri_taf(&s, 0.5f); tri_taf(&s, 0.5f); tri_taf(&s, 1e-5f);	/* depth: z * 0.5 + 0.5 */
 
-	for (i = 0; i < 4; i++) {
-		p0[1].idx = i;
-		tri_enc(code[i], VOP_DP4, VOUT(0), 1 << i, p0, 2);
-	}
-	tri_enc(code[4], VOP_MOV, VOUT(1), 0xf, col, 1);
-	tri_ta(&s, 0x80000000 | 0x4);		/* a section: bit 2 */
-	tri_ta(&s, 0u << 16 | 4u << 8 | 0);	/* flags 0 (once, window 0), instructions 0..4 */
-	tri_ta(&s, 0x90000000 | 0u << 16 | 4);
-	for (i = 0; i < 5; i++) {
-		tri_ta(&s, code[i][0]);
-		tri_ta(&s, code[i][1]);
-	}
-	tri_ta(&s, 0xa0000000 | 0u << 16 | 3);	/* c0-c3: the matrix rows, as DP4 takes them */
-	for (i = 0; i < 16; i++)
-		tri_taf(&s, m[i]);
+		for (i = 0; i < 4; i++) {
+			p0[1].idx = i;
+			tri_enc(code[i], VOP_DP4, VOUT(0), 1 << i, p0, 2);
+		}
+		tri_enc(code[4], VOP_MOV, VOUT(1), 0xf, col, 1);
+		tri_ta(&s, 0x80000000 | 0x4);		/* a section: bit 2 */
+		tri_ta(&s, 0u << 16 | 4u << 8 | 0);	/* flags 0 (once, window 0), instructions 0..4 */
+		tri_ta(&s, 0x90000000 | 0u << 16 | 4);
+		for (i = 0; i < 5; i++) {
+			tri_ta(&s, code[i][0]);
+			tri_ta(&s, code[i][1]);
+		}
+		tri_ta(&s, 0xa0000000 | 0u << 16 | 3);	/* c0-c3: the matrix rows, as DP4 takes them */
+		for (i = 0; i < 16; i++)
+			tri_taf(&s, m[i]);
 
-	tri_ta(&s, 0x70000000);			/* a triangle list, no culling */
-	tri_ta(&s, sections);			/* run section bit 2; bit 17 is needed on the chip (README 30) */
-	for (i = 0; i < 3; i++) {
-		tri_taf(&s, v[i][0]); tri_taf(&s, v[i][1]); tri_taf(&s, v[i][2]);
-		tri_ta(&s, rgba[i]);
-	}
+		tri_ta(&s, 0x70000000);			/* a triangle list, no culling */
+		tri_ta(&s, sections);			/* run section bit 2; bit 17 is needed on the chip (README 30) */
+		for (i = 0; i < 3; i++) {
+			tri_taf(&s, v[i][0]); tri_taf(&s, v[i][1]); tri_taf(&s, v[i][2]);
+			tri_ta(&s, rgba[i]);
+		}
 	tri_put(&s, CH_CTL, 1);			/* the object ends */
+	}
 	tri_put(&s, CH_TA, 0xf0000000);		/* the scene ends */
 	return (uint32_t)(s.p - s.base);
 }

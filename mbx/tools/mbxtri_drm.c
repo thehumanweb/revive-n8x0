@@ -4,7 +4,7 @@
  * DRM_IOCTL_MBX_BO_CREATE/INFO, the same stream (tri_frame.h) in one
  * DRM_IOCTL_MBX_SUBMIT, the picture read back through the buffer's mmap.
  *
- *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-G] [-R prefix] [-C r_ctl] [-M r_sampling] [-S state_word]
+ *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-G] [-X mode] [-R prefix] [-C r_ctl] [-M r_sampling] [-S state_word]
  *
  * -D dumps what the job left in the region array, the tail pointers and the
  * background-object buffer (nonzero words), to see where the TA binned the triangle.
@@ -103,12 +103,12 @@ int main(int argc, char **argv)
 	float deg = 0;
 	int o, fd, i, x, y, lit = 0, ret, dump = 0;
 	const char *pbfile = NULL;
-	int empty = 0, gradient = 0;
+	int empty = 0, gradient = 0, xmode = 0;
 	const char *regprefix = NULL;
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -116,6 +116,7 @@ int main(int argc, char **argv)
 		else if (o == 'P') pbfile = optarg;
 		else if (o == 'E') empty = 1;
 		else if (o == 'G') gradient = 1;
+		else if (o == 'X') xmode = atoi(optarg);	/* 1: the clear only; 2: the triangle only */
 		else if (o == 'R') regprefix = optarg;
 		else if (o == 'C') r_ctl = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'M') r_samp = (uint32_t)strtoul(optarg, NULL, 0);
@@ -138,6 +139,8 @@ int main(int argc, char **argv)
 	stream = calloc(128, 4);
 
 	memset(&s, 0, sizeof(s));
+	tri_with_clear = xmode != 2;
+	tri_with_triangle = xmode != 1;
 	s.stream_words = tri_stream(stream, deg);
 	if (empty) {			/* -E: no triangle, only the end of the scene */
 		stream[0] = 1;			/* a chunk of type 0 (the TA port), one word */
