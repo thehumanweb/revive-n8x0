@@ -14,6 +14,7 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_ioctl.h>
 
 #include <drm/mbx_drm.h>
@@ -85,7 +86,7 @@ static irqreturn_t mbx_irq(int irq, void *data)
 	if (!st)
 		return IRQ_NONE;
 	mbx_write(m, MBX_REG_INT_CLEAR, st);
-	dev_dbg(m->dev, "irq %#x\n", st);
+	mbx_job_irq(m, st);
 	return IRQ_HANDLED;
 }
 
@@ -108,14 +109,46 @@ static int mbx_ioctl_get_param(struct drm_device *drm, void *data, struct drm_fi
 	return -EINVAL;
 }
 
+static int mbx_open(struct drm_device *drm, struct drm_file *file)
+{
+	struct mbx_file *f = kzalloc(sizeof(*f), GFP_KERNEL);
+
+	if (!f)
+		return -ENOMEM;
+	f->vm = mbx_vm_create(to_mbx(drm));
+	if (IS_ERR(f->vm)) {
+		int ret = PTR_ERR(f->vm);
+
+		kfree(f);
+		return ret;
+	}
+	file->driver_priv = f;
+	return 0;
+}
+
+static void mbx_postclose(struct drm_device *drm, struct drm_file *file)
+{
+	struct mbx_file *f = file->driver_priv;
+
+	mbx_vm_destroy(f->vm);
+	kfree(f);
+}
+
 static const struct drm_ioctl_desc mbx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(MBX_GET_PARAM, mbx_ioctl_get_param, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(MBX_BO_CREATE, mbx_ioctl_bo_create, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(MBX_BO_INFO, mbx_ioctl_bo_info, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(MBX_BO_UNMAP, mbx_ioctl_bo_unmap, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(MBX_SUBMIT, mbx_ioctl_submit, DRM_RENDER_ALLOW),
 };
 
 DEFINE_DRM_GEM_FOPS(mbx_fops);
 
 static const struct drm_driver mbx_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_RENDER,
+	.open = mbx_open,
+	.postclose = mbx_postclose,
+	.gem_prime_import_sg_table = drm_gem_shmem_prime_import_sg_table,
 	.ioctls = mbx_ioctls,
 	.num_ioctls = ARRAY_SIZE(mbx_ioctls),
 	.fops = &mbx_fops,
@@ -135,11 +168,17 @@ static int mbx_probe(struct platform_device *pdev)
 	if (IS_ERR(m))
 		return PTR_ERR(m);
 	m->dev = dev;
+	mutex_init(&m->job_lock);
+	spin_lock_init(&m->irq_lock);
+	init_waitqueue_head(&m->wq);
 	platform_set_drvdata(pdev, m);
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
 		return ret;
+	m->dummy = dmam_alloc_coherent(dev, MBX_PAGE, &m->dummy_dma, GFP_KERNEL);
+	if (!m->dummy)
+		return -ENOMEM;
 	m->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(m->regs))
 		return PTR_ERR(m->regs);

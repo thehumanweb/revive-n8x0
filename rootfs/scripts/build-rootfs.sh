@@ -10,6 +10,7 @@ V=2026.08.1
 scripts/fetch-buildroot.sh
 [ -d build/buildroot-$V ] || { mkdir -p build && tar -xJf src/buildroot-$V.tar.xz -C build; }
 scripts/stage-modules.sh
+scripts/stage-tools.sh
 mkdir -p build/dl out
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work n810-buildroot sh -c "cd /work &&
 	make -C build/buildroot-$V O=/work/build/br-out-armel BR2_EXTERNAL=/work BR2_DL_DIR=/work/build/dl n810_defconfig &&
