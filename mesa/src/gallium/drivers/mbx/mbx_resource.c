@@ -13,9 +13,11 @@
 #include "drm-uapi/drm_fourcc.h"
 
 #include "util/format/u_format.h"
+#include "util/log.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_surface.h"
 #include "util/u_transfer.h"
 #include "frontend/winsys_handle.h"
 
@@ -241,6 +243,19 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 	FREE(ptrans);
 }
 
+/* The window system is about to use a resource (a swap): what was drawn into it is rendered first */
+static void mbx_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
+{
+	mbx_flush_for_resource(mbx_context(pctx), mbx_resource(prsc));
+}
+
+/* Same-format, unscaled copies only, through the CPU; the rest is not done yet */
+static void mbx_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
+{
+	if (!util_try_blit_via_copy_region(pctx, info, false))
+		mesa_loge("mbx: a blit that is not a plain copy (scaling, conversion, masks) is not supported yet");
+}
+
 void mbx_resource_screen_init(struct pipe_screen *pscreen)
 {
 	pscreen->resource_create = mbx_resource_create;
@@ -260,4 +275,7 @@ void mbx_resource_context_init(struct pipe_context *pctx)
 	pctx->transfer_flush_region = u_default_transfer_flush_region;
 	pctx->buffer_subdata = u_default_buffer_subdata;
 	pctx->texture_subdata = u_default_texture_subdata;
+	pctx->resource_copy_region = util_resource_copy_region;
+	pctx->blit = mbx_blit;
+	pctx->flush_resource = mbx_flush_resource;
 }

@@ -84,7 +84,7 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 		return NULL;
 	}
 	p->gouraud = !ctx->fs->fs_info.flat;
-	p->sections = 0xf0020000 | 0x4;	/* the VGP section bit the program is loaded in */
+	p->sections = 0xf0020000 | 0x4;	/* the VGP section the program is loaded in (bit 2); bit 17 is needed on the chip (observed on an N810), the model ignores it */
 	if (!mbx_compile_vs(ctx->vs->nir, &ctx->fs->fs_info, p)) {
 		p->ninsn = 0;
 		return NULL;

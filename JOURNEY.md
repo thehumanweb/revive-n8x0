@@ -226,7 +226,7 @@ comes from `mbx/*.c` and its README.
      scale/offset/1e-5); a VGP section `0x80000000 | bit`, a flags/range word, a
      code header `0x90000000 | first << 16 | last` and two words an instruction,
      constants `0xa0000000 | first << 16 | last` and four floats each; the
-     primitive word (`0x70000000`: triangle list), the sections word (`0xf0020000 | mask`; the chip needs bit 17, observed on a real N810 by the user's probe), vertices as
+     primitive word (`0x70000000`: triangle list), the sections word (`0xf0020000 | mask`; the chip needs bit 17, the model does not look at it: section 4), vertices as
      the layout names them, TA control port 1 (object ends), `0xf0000000` (scene
      ends).
   3. Render: `0x608` regions, `0x610` = `0x30000` (depth on chip), `0x61c`, `0x650`

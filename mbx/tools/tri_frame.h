@@ -107,7 +107,7 @@ static inline uint32_t tri_stream(uint32_t *out, float deg)
 		tri_taf(&s, m[i]);
 
 	tri_ta(&s, 0x70000000);			/* a triangle list, no culling */
-	tri_ta(&s, 0xf0020000 | 0x4);		/* run section bit 2 */
+	tri_ta(&s, 0xf0020000 | 0x4);		/* run section bit 2; bit 17 is needed on the chip (observed), the model ignores it */
 	for (i = 0; i < 3; i++) {
 		tri_taf(&s, v[i][0]); tri_taf(&s, v[i][1]); tri_taf(&s, v[i][2]);
 		tri_ta(&s, rgba[i]);
