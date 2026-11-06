@@ -332,7 +332,7 @@ int mbx_job_prepare_buffers(struct mbx_vm *vm, const struct drm_mbx_submit *a)
 	ret = mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), region_init_fn, &r);
 	if (ret)
 		return ret;
-	return mbx_vm_cpu(vm, a->ta_tails, 0x10000, zero_fn, NULL);
+	return mbx_vm_cpu(vm, a->ta_tails, tails_zero, zero_fn, NULL);
 }
 
 /* Bit 30 on every region entry: after the TA, before the render */

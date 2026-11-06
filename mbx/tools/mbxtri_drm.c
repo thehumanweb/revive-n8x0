@@ -96,6 +96,7 @@ static void reg_dump(int fd, const char *prefix, const char *when)
 
 int main(int argc, char **argv)
 {
+	uint32_t tails_bytes = 65536;	/* -T: the tail buffer's size (the driver zeroes tails_zero bytes of it) */
 	const char *out = "mbxtri-drm.ppm", *dev = NULL;
 	struct bo surf, regions, tails;
 	struct drm_mbx_submit s;
@@ -110,7 +111,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -119,6 +120,7 @@ int main(int argc, char **argv)
 		else if (o == 'E') empty = 1;
 		else if (o == 'G') gradient = 1;
 		else if (o == 'W') rawfile = optarg;
+		else if (o == 'T') tails_bytes = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'A') tri_alpha_word = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'B') tri_clear_alpha = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'K') tri_clear_state = (uint32_t)strtoul(optarg, NULL, 0);
@@ -137,7 +139,7 @@ int main(int argc, char **argv)
 	}
 	/* the tails: 64 KB aligned and 64 KB (the TA rounds the address down); the driver zeroes them */
 	if ((ret = bo_new(fd, &surf, TRI_W * TRI_H * 4 * (dbl ? 2 : 1), 1, 0)) || (ret = bo_new(fd, &regions, TRI_W * TRI_H > 4096 ? 65536 : 4096, dump, 0)) ||
-	    (ret = bo_new(fd, &tails, 65536, dump, MBX_BO_INFO_ALIGN_64K))) {
+	    (ret = bo_new(fd, &tails, tails_bytes, dump, MBX_BO_INFO_ALIGN_64K))) {
 		fprintf(stderr, "mbxtri-drm: buffers: %s\n", strerror(-ret));
 		return 1;
 	}

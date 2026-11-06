@@ -86,6 +86,8 @@ static void mbx_feed(struct mbx_device *m, const u32 *w, u32 n)
 
 /* debug: 1 resets the cores sixteen times, interrupts off, 0x85c = 0x80, as the stock daemon's bring-up does */
 static int reset16;
+unsigned int tails_zero = 0x10000;
+module_param(tails_zero, uint, 0644);
 module_param(reset16, int, 0644);
 MODULE_PARM_DESC(reset16, "debug: 1 resets the cores sixteen times as the stock daemon does");
 
@@ -362,7 +364,7 @@ int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
 		goto err;
 	/* the buffers the contract needs (mbx/README.md assumption 31): the tail pointers 64 KB aligned and
 	 * 64 KB, room for the region array, a target row the background texture can address */
-	if ((a->ta_tails & 0xffff) || mbx_vm_room(f->vm, a->ta_tails) < 0x10000 ||
+	if ((a->ta_tails & 0xffff) || mbx_vm_room(f->vm, a->ta_tails) < tails_zero ||
 	    mbx_vm_room(f->vm, a->ta_regions) < mbx_region_bytes(a) ||
 	    ((a->r_stride * (a->r_format == 9 ? 2 : 1)) & 15)) {
 		ret = -EINVAL;

@@ -112,6 +112,7 @@ static inline u32 mbx_read(struct mbx_device *m, u32 reg)
 	return readl(m->regs + reg);
 }
 
+extern unsigned int tails_zero;	/* debug: bytes of the tail area zeroed per scene (default 64 KB) */
 extern bool mbx_trace;	/* debug: log every register write and TA word (KERN_DEBUG, in dmesg) */
 
 static inline void mbx_write(struct mbx_device *m, u32 reg, u32 v)
