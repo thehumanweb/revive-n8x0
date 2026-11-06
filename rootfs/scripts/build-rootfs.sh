@@ -33,6 +33,7 @@ if [ "${DEVICE:-0}" = 1 ]; then
 	    -e 's|^BR2_ROOTFS_OVERLAY="\(.*\)"|BR2_ROOTFS_OVERLAY="\1 $(BR2_EXTERNAL_N810_PATH)/board/n810-device/overlay $(BR2_EXTERNAL_N810_PATH)/build/boot-overlay"|' \
 	    configs/n810_defconfig > build/n810_device_defconfig
 	echo 'BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_N810_PATH)/board/n810-device/busybox.fragment"' >> build/n810_device_defconfig
+	echo 'BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt $(BR2_EXTERNAL_N810_PATH)/board/n810-device/device_table.txt"' >> build/n810_device_defconfig
 	DEFCONFIG=defconfig
 fi
 mkdir -p build/dl out
