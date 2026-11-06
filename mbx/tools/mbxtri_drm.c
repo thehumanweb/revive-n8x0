@@ -4,7 +4,10 @@
  * DRM_IOCTL_MBX_BO_CREATE/INFO, the same stream (tri_frame.h) in one
  * DRM_IOCTL_MBX_SUBMIT, the picture read back through the buffer's mmap.
  *
- *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm]
+ *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D]
+ *
+ * -D dumps what the job left in the region array, the tail pointers and the
+ * background-object buffer (nonzero words), to see where the TA binned the triangle.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -77,21 +80,22 @@ int main(int argc, char **argv)
 	struct drm_mbx_submit s;
 	uint32_t *stream, *px;
 	float deg = 0;
-	int o, fd, i, x, y, lit = 0, ret;
+	int o, fd, i, x, y, lit = 0, ret, dump = 0;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:D")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
+		else if (o == 'D') dump = 1;
 		else return 2;
 	}
 	if ((fd = open_node(dev)) < 0) {
 		perror("mbxtri-drm: no MBX render node");
 		return 1;
 	}
-	if ((ret = bo_new(fd, &surf, TRI_W * TRI_H * 4, 1)) || (ret = bo_new(fd, &regions, 4096, 0)) ||
-	    (ret = bo_new(fd, &tails, 4096, 0)) || (ret = bo_new(fd, &pb, 4096, 0))) {
+	if ((ret = bo_new(fd, &surf, TRI_W * TRI_H * 4, 1)) || (ret = bo_new(fd, &regions, 4096, dump)) ||
+	    (ret = bo_new(fd, &tails, 4096, dump)) || (ret = bo_new(fd, &pb, 4096, dump))) {
 		fprintf(stderr, "mbxtri-drm: buffers: %s\n", strerror(-ret));
 		return 1;
 	}
@@ -120,6 +124,20 @@ int main(int argc, char **argv)
 	if (ioctl(fd, DRM_IOCTL_MBX_SUBMIT, &s)) {
 		fprintf(stderr, "mbxtri-drm: submit: %s\n", strerror(errno));
 		return 1;
+	}
+	if (dump) {
+		struct { const char *name; struct bo *b; } bufs[] = { { "regions", &regions }, { "tails", &tails }, { "pb", &pb } };
+
+		for (i = 0; i < 3; i++) {
+			uint32_t *w = bufs[i].b->map;
+			int n = 0, k;
+
+			fprintf(stderr, "mbxtri-drm: %s (va %#x):", bufs[i].name, bufs[i].b->va);
+			for (k = 0; k < 1024; k++)
+				if (w[k] && n++ < 64)
+					fprintf(stderr, " [%d]=%08x", k, w[k]);
+			fprintf(stderr, "%s (%d nonzero words)\n", n > 64 ? " ..." : "", n);
+		}
 	}
 	if (!(f = fopen(out, "wb")))
 		return 1;
