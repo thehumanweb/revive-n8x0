@@ -38,6 +38,9 @@ static inline void tri_put(struct tri_sw *s, unsigned int type, uint32_t v)
 static inline void tri_ta(struct tri_sw *s, uint32_t v) { tri_put(s, CH_TA, v); }
 static inline void tri_taf(struct tri_sw *s, float f) { uint32_t u; memcpy(&u, &f, 4); tri_ta(s, u); }
 
+/* The ISP/TSP state word of the triangle's object (Gouraud, depth test LESS); mbxtri-drm -S overrides it */
+static uint32_t tri_state_word = 1u << 22 | 1u << 9;
+
 /* VGP instruction encoding (mbx/vgp.c's header comment) */
 enum { VOP_MOV = 1, VOP_DP4 = 8 };
 enum { VF_IN = 0, VF_CONST = 1, VF_TEMP = 2 };
@@ -86,7 +89,7 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 
 	/* the object header: state, alpha test, layout, viewport, depth */
 	tri_ta(&s, 0x10000000 | 0x1 | 0x2 | 0x20 | 0x80 | 0x100);
-	tri_ta(&s, 1u << 22 | 1u << 9);		/* Gouraud, depth test LESS */
+	tri_ta(&s, tri_state_word);		/* Gouraud, depth test LESS (by default) */
 	tri_ta(&s, 0);				/* alpha test (off) */
 	tri_ta(&s, 0x53);			/* v0: three floats, v1: four bytes packed */
 	tri_taf(&s, TRI_W / 2.0f); tri_taf(&s, TRI_W / 2.0f);

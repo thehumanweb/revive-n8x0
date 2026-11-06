@@ -4,7 +4,7 @@
  * DRM_IOCTL_MBX_BO_CREATE/INFO, the same stream (tri_frame.h) in one
  * DRM_IOCTL_MBX_SUBMIT, the picture read back through the buffer's mmap.
  *
- *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-B addr] [-K] [-E]
+ *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-B addr] [-K] [-E] [-C r_ctl] [-M r_sampling] [-S state_word]
  *
  * -D dumps what the job left in the region array, the tail pointers and the
  * background-object buffer (nonzero words), to see where the TA binned the triangle.
@@ -86,15 +86,19 @@ int main(int argc, char **argv)
 	const char *pbfile = NULL;
 	uint32_t r_pb_override = 0, sflags = 0;
 	int empty = 0;
+	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:B:KE")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:B:KEC:M:S:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
 		else if (o == 'D') dump = 1;
 		else if (o == 'P') pbfile = optarg;
 		else if (o == 'E') empty = 1;
+		else if (o == 'C') r_ctl = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'M') r_samp = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'S') tri_state_word = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'K') sflags = MBX_SUBMIT_BG_TARGET;
 		else if (o == 'B') r_pb_override = (uint32_t)strtoul(optarg, NULL, 0);
 		else return 2;
@@ -127,14 +131,15 @@ int main(int argc, char **argv)
 	s.ta_regions = regions.va;
 	s.ta_tails = tails.va;
 	s.r_regions = regions.va;
-	s.r_ctl = 0x30000;			/* depth on chip */
-	s.r_sampling = 0x00020007;
+	s.r_ctl = r_ctl;			/* depth on chip (0x30000) */
+	s.r_sampling = r_samp;
 	s.r_format = 0xe;			/* ARGB8888 */
 	s.r_width = (uint32_t)(TRI_W - 1) << 16;
 	s.r_height = (uint32_t)(TRI_H - 1) << 16;
 	s.r_addr = surf.va;
 	s.r_stride = TRI_W;			/* words */
 	s.flags = sflags;
+	s.r_6dc = 0x3f800001;			/* clear depth 1.0, as GLES writes it (0 on the chip is not 1.0) */
 	s.r_pb = r_pb_override ? r_pb_override : pb.va;	/* -B: the parameter buffer's own base instead of a separate background object */
 	if (ioctl(fd, DRM_IOCTL_MBX_SUBMIT, &s)) {
 		fprintf(stderr, "mbxtri-drm: submit: %s\n", strerror(errno));
