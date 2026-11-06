@@ -2,11 +2,12 @@
 # Boot the N810 in the patched QEMU (see NOTES.md): JFFS2 rootfs on OneNAND,
 # console on the third UART at tcp:127.0.0.1:$PORT (log in as root, no password).
 # Usage: scripts/run-qemu.sh [-k zImage] [-r rootfs.jffs2] [extra qemu args...]
-#   QEMU=path/to/qemu-system-arm  PORT=5577  FLASH=flash.img (rebuilt from the rootfs)
+#   QEMU=path/to/qemu-system-arm (default: build/qemu-src/build/, see qemu/README.md and
+#   NOTES.md "Rebuild" for building it from this repo)  PORT=5577  FLASH=flash.img (rebuilt from the rootfs)
 #   MBX_TRACE=1|2  logs MBX register accesses (2: every TA and 2D word too)
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
-QEMU=${QEMU:-$HOME/qemu-mbx/build/qemu-system-arm}
+QEMU=${QEMU:-$here/build/qemu-src/build/qemu-system-arm}
 PORT=${PORT:-5577}
 KERNEL=$here/kernel/out/zImage-6.18
 ROOTFS=$here/rootfs/out/rootfs.jffs2
@@ -16,6 +17,7 @@ while getopts k:r: o; do
 done
 shift $((OPTIND - 1))
 
+[ -x "$QEMU" ] || { echo "run-qemu.sh: no QEMU at $QEMU; build it from qemu/ (NOTES.md, Rebuild) or set QEMU=" >&2; exit 1; }
 mkdir -p "$(dirname "$FLASH")"
 if [ ! -e "$FLASH" ] || [ "$ROOTFS" -nt "$FLASH" ]; then
 	# OneNAND keeps its spare area after the main data: 256 MB + 8 MB, all 0xff

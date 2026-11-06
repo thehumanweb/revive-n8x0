@@ -71,3 +71,84 @@ For the setup snapshot see `NOTES.md`.
   (0xf10) is not zero in the model; NOTES.md had only noted the product-ID
   registers at 0xfe0-0xffc reading 0.
 - Next: M2, the no-Mesa triangle (`mbxtri`), host first through libmbxemu.
+
+### 2026-11-06: M2 step 1, `mbx/tools/mbxtri.c`
+
+Work is confined to this repo from here on (the user asked); everything below
+comes from `mbx/*.c` and its README, nothing from outside the tree.
+
+- `mbxtri` (`make -C mbx mbxtri`) drives `libmbxemu` on the host the way a
+  driver drives a frame, and renders a Gouraud triangle: 1 scene, 1 prim, 16
+  tiles, 0 stream errors, 1144 of 4096 pixels drawn, correct winding, vertex
+  colours red/green/blue where expected. `-a DEG` rotates it through the VGP
+  constants (the image changes).
+- The sequence that works, from the emulator source:
+  1. TA setup: `0x85c` config = `0x80 | (tiles_x-1) << 20 | (tiles_y-1) << 10`
+     (bit 7 makes the end word end the scene), `0x84c`/`0x850` size << 16,
+     `0x844` region array, `0x840` tails, `0x810` context 0, `0x800` start.
+  2. Stream: object header `0x10000000 | mask` with blocks in bit order
+     (state, alpha test, layout, viewport x-scale/x-off/y-off/y-scale, depth
+     scale/offset/1e-5); a VGP section `0x80000000 | bit`, a flags/range
+     word, a code header `0x90000000 | first << 16 | last` and two words an
+     instruction, constants `0xa0000000 | first << 16 | last` and four floats
+     each; then the primitive word (`0x70000000` triangle list), the sections
+     word (`0xf0020000 | mask`), vertices as the layout names them, TA control
+     port 1 (object ends), and `0xf0000000` (scene ends).
+  3. Render: `0x608` regions, `0x610` = `0x30000` (depth on chip), `0x61c`,
+     `0x650` format (0xe ARGB8888), `0x654`/`0x658` (size-1) << 16, `0x65c`
+     address, `0x660` stride in words, `0x83c` background object (zero:
+     the target's own pixels), `0x6ec` context, `0x680` kick.
+- VGP facts used: `o1` is BGRA (a `.zyxw` swizzle brings packed RGBA right),
+  inputs missing components default to 0 with w = 1, DP4 writes a scalar to
+  the lanes of its write mask, so a 4x4 transform is four DP4s with masks
+  X, Y, Z, W against the matrix rows in c0-c3. The TA does the divide and
+  viewport: o0 stays clip space.
+- Not exercised yet: the free list and parameter buffer (the model's writer
+  is off without one; the real chip needs it), `0x85c`'s other bits (the
+  model only reads the grid and bit 7), the ISP/TSP state bits the real chip
+  may need set (the model needs none for Gouraud + depth), the MMU.
+- Next: the kernel side (GEM objects, the MBX address space and page tables,
+  an interrupt-driven submit with a fence) so the same stream can go through
+  `/dev/dri/renderD129` in the guest.
+
+### 2026-11-06: M2 step 2, the kernel path (`mbxtri-drm`)
+
+- `mbx/drm` grew from a probe into a render node that can run a frame:
+  - `mbx_mmu.c`: an address space a DRM file, 32 MB of 4 KB pages through
+    the eight page tables (bare physical page addresses, README assumption 8),
+    allocated coherent; pages with no buffer point at a scratch page, never
+    physical 0. `drm_mm` places buffers from 64 KB up. The MMU holds one space
+    at a time; a job switches it (tables written, which also flushes the TLB).
+  - `mbx_gem.c`: shmem GEM objects mapped write-combined for the CPU
+    (`BO_CREATE`), `BO_INFO` maps one into the file's MBX space and returns the
+    device address and the mmap offset, `BO_UNMAP`. PRIME import goes through
+    `drm_gem_shmem_prime_import_sg_table`, so omapdrm scanout buffers can be
+    rendered into (untested yet).
+  - `mbx_job.c`: `SUBMIT` is one blocking frame: TA registers, `0x800` start,
+    the stream as chunks (type << 28 | count; TA words to the TA port, control
+    words to the control port, by CPU PIO), wait for TA_COMPLETE, render
+    registers, kick, wait for RENDER_COMPLETE. The interrupt handler clears
+    the bits and wakes the waiter; TA_OFLOW and TA_STREAM end a wait as
+    -ENOMEM and -EINVAL; a timeout or error resets the cores (`0x080` =
+    `0x111`). One frame at a time under a mutex.
+- Shared test code: `mbx/tools/tri_frame.h` builds the stream for both
+  `mbxtri` (host emulator) and `mbxtri-drm` (guest, ioctls), so both run
+  the same words.
+- Tooling: `kernel/scripts/build-mbx-module.sh` (module-only rebuild, about a
+  minute), `rootfs/scripts/stage-tools.sh` (cross-builds `mbxtri-drm` with
+  Buildroot's host gcc into an overlay). A rootfs rebuild plus boot is about
+  two minutes.
+- **Result:** in the QEMU guest, `mbxtri-drm` found `/dev/dri/renderD129`,
+  made four buffers, submitted, and drew 1144 of 4096 pixels; the render ran
+  through the real kernel driver, the page tables, the interrupt and the PIO
+  feed. With QEMU built from this repo (`qemu/prepare-tree.sh build/qemu-src
+  --mbx`, then the docker build of NOTES.md), the guest's picture is
+  byte-identical to the host `mbxtri` picture (all 12,301 bytes of the PPM).
+- A first run used a QEMU binary from outside the repo and differed in 8 bytes
+  (one colour step at four mirror-image pixel pairs): that binary embeds a
+  different emulator core. Lesson: `scripts/run-qemu.sh` now defaults to the
+  in-repo build (`build/qemu-src/build/qemu-system-arm`) and refuses to start
+  without one; the guest tests only count against the repo's own emulator.
+- Not yet: asynchronous submit and fences, the parameter buffer and free list
+  (the model does without; the real chip needs it), partial render on
+  overflow, DMA feeding, runtime PM, and the real N810.
