@@ -184,7 +184,9 @@ int main(int argc, char **argv)
 
 		if (ioctl(fd, DRM_IOCTL_MBX_WAIT_FENCE, &w)) {
 			fprintf(stderr, "mbxtri-drm: wait for the job: %s\n", strerror(errno));
-			return 1;
+			if (!dump)
+				return 1;
+			/* -D: look at what the TA left even though the render did not finish */
 		}
 	}
 	if (regprefix)
@@ -214,6 +216,25 @@ int main(int argc, char **argv)
 			uint32_t *w = bufs[i].b->map;
 			int n = 0, k;
 
+			if (i == 0) {	/* the region array whole: entries without a list (bit 25), end marks (bit 31), bit 26 */
+				uint32_t nent = TRI_W * TRI_H > 4096 ? 65536 / 8 : 4096 / 8, e0, no_list = 0, b26 = 0, b31 = 0, last = 0;
+
+				for (e0 = 0; e0 < nent; e0++) {
+					uint32_t v = w[2 * e0];
+
+					if (!v && !w[2 * e0 + 1])
+						continue;
+					last = e0;
+					no_list += !!(v & 0x02000000);
+					b26 += !!(v & 0x04000000);
+					if (v & 0x80000000)
+						b31++, fprintf(stderr, "mbxtri-drm: region entry %u has bit 31: %08x %08x\n", e0, v, w[2 * e0 + 1]);
+				}
+				fprintf(stderr, "mbxtri-drm: region array: last used entry %u, %u without a list (bit 25), %u with bit 26, %u with bit 31\n",
+					last, no_list, b26, b31);
+				for (e0 = last > 3 ? last - 3 : 0; e0 <= last; e0++)
+					fprintf(stderr, "mbxtri-drm: region [%u] = %08x %08x\n", e0, w[2 * e0], w[2 * e0 + 1]);
+			}
 			fprintf(stderr, "mbxtri-drm: %s (va %#x):", bufs[i].name, bufs[i].b->va);
 			for (k = 0; k < 1024; k++)
 				if (w[k] && n++ < 64)
