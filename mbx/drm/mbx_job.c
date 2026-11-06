@@ -8,6 +8,7 @@
  * display flip) wait for it. The registers and what they mean are mbx/README.md's and
  * the model's.
  */
+#include <linux/delay.h>
 #include <linux/jiffies.h>
 #include <linux/dma-fence.h>
 #include <linux/dma-resv.h>
@@ -86,6 +87,9 @@ static void mbx_feed(struct mbx_device *m, const u32 *w, u32 n)
 
 /* debug: 1 resets the cores sixteen times, interrupts off, 0x85c = 0x80, as the stock daemon's bring-up does */
 static int reset16;
+unsigned int kick_delay_us;
+module_param(kick_delay_us, uint, 0644);
+MODULE_PARM_DESC(kick_delay_us, "debug: wait this long after TA_COMPLETE before the render (the stock daemon waits about 2500)");
 bool pb_every;
 module_param(pb_every, bool, 0644);
 bool ctx_every = true;	/* the stock daemon zeroes the EVM context before every scene (found during device testing) */
@@ -214,6 +218,8 @@ static int mbx_job_run(struct mbx_job *job)
 		       ktime_to_us(ktime_sub(ktime_get(), t_ta)));
 	if (ret)
 		goto reset;
+	if (kick_delay_us)
+		usleep_range(kick_delay_us, kick_delay_us + 200);
 
 	ret = mbx_job_region_bit30(job->vm, a);
 	if (ret)
@@ -362,6 +368,20 @@ int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
 		ret = PTR_ERR(job->stream);
 		job->stream = NULL;
 		goto err;
+	}
+	if (unlikely(mbx_trace)) {
+		u32 k;
+
+		printk(KERN_DEBUG "mbx: submit: ta cfg %08x w %08x h %08x regions %08x tails %08x ctx %u | r regions %08x ctl %08x samp %08x fog %08x fmt %08x w %08x h %08x addr %08x stride %u zbuf %08x 6dc %08x | words %u bos %u\n",
+		       a->ta_config, a->ta_width, a->ta_height, a->ta_regions, a->ta_tails, a->ta_context, a->r_regions, a->r_ctl,
+		       a->r_sampling, a->r_fog, a->r_format, a->r_width, a->r_height, a->r_addr, a->r_stride, a->r_zbuf, a->r_6dc,
+		       a->stream_words, a->n_bos);
+		for (k = 0; k < a->stream_words; k += 8)
+			printk(KERN_DEBUG "mbx: stream[%u]: %08x %08x %08x %08x %08x %08x %08x %08x\n", k,
+			       job->stream[k], k + 1 < a->stream_words ? job->stream[k + 1] : 0, k + 2 < a->stream_words ? job->stream[k + 2] : 0,
+			       k + 3 < a->stream_words ? job->stream[k + 3] : 0, k + 4 < a->stream_words ? job->stream[k + 4] : 0,
+			       k + 5 < a->stream_words ? job->stream[k + 5] : 0, k + 6 < a->stream_words ? job->stream[k + 6] : 0,
+			       k + 7 < a->stream_words ? job->stream[k + 7] : 0);
 	}
 	ret = mbx_check_stream(job->stream, a->stream_words);
 	if (ret)
