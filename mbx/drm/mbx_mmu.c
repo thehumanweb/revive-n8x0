@@ -37,8 +37,10 @@ static int mbx_fixed_map(struct mbx_vm *vm, struct drm_gem_object *obj, u32 va, 
 
 static int mbx_pb_map(struct mbx_vm *vm, struct mbx_device *m)
 {
-	int ret = mbx_fixed_map(vm, m->pb, MBX_PB_TABLE_VA, MBX_PB_TABLE_SIZE / MBX_PAGE + MBX_PB_PAGES);
+	int ret = mbx_fixed_map(vm, m->pb, MBX_PB_VA, MBX_PB_PAGES);
 
+	if (!ret)
+		ret = mbx_fixed_map(vm, m->tbl, MBX_PB_TABLE_VA, MBX_PB_TABLE_SIZE / MBX_PAGE);
 	return ret ? ret : mbx_fixed_map(vm, m->ctx, MBX_CTX_VA, MBX_CTX_SIZE / MBX_PAGE);
 }
 

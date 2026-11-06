@@ -27,15 +27,23 @@ int mbx_pb_create(struct mbx_device *m)
 	struct drm_gem_shmem_object *shmem;
 
 	/* the table and the pages are contiguous in device addresses, so one object holds both */
-	shmem = drm_gem_shmem_create(&m->drm, MBX_PB_TABLE_SIZE + (size_t)MBX_PB_PAGES * MBX_PAGE);
+	shmem = drm_gem_shmem_create(&m->drm, (size_t)MBX_PB_PAGES * MBX_PAGE);
 	if (IS_ERR(shmem))
 		return PTR_ERR(shmem);
 	shmem->map_wc = true;
 	m->pb = &shmem->base;
-	shmem = drm_gem_shmem_create(&m->drm, MBX_CTX_SIZE);
+	shmem = drm_gem_shmem_create(&m->drm, MBX_PB_TABLE_SIZE);
 	if (IS_ERR(shmem)) {
 		drm_gem_object_put(m->pb);
 		m->pb = NULL;
+		return PTR_ERR(shmem);
+	}
+	m->tbl = &shmem->base;
+	shmem = drm_gem_shmem_create(&m->drm, MBX_CTX_SIZE);
+	if (IS_ERR(shmem)) {
+		drm_gem_object_put(m->tbl);
+		drm_gem_object_put(m->pb);
+		m->tbl = m->pb = NULL;
 		return PTR_ERR(shmem);
 	}
 	m->ctx = &shmem->base;
@@ -47,6 +55,9 @@ void mbx_pb_destroy(struct mbx_device *m)
 	if (m->ctx)
 		drm_gem_object_put(m->ctx);
 	m->ctx = NULL;
+	if (m->tbl)
+		drm_gem_object_put(m->tbl);
+	m->tbl = NULL;
 	if (m->pb)
 		drm_gem_object_put(m->pb);
 	m->pb = NULL;
@@ -57,7 +68,7 @@ static void mbx_pb_fill(struct mbx_device *m)
 {
 	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(m->pb);
 	struct sg_table *sgt = drm_gem_shmem_get_pages_sgt(shmem);
-	u32 i, j, first = MBX_PB_TABLE_SIZE >> PAGE_SHIFT;
+	u32 i, j, first = 0;
 
 	if (IS_ERR(sgt))
 		return;
@@ -99,29 +110,33 @@ int mbx_pb_build(struct mbx_device *m, unsigned long ms)
 	return 0;
 }
 
-/* DRM_IOCTL_MBX_PB_DUMP: a window of the parameter buffer, for comparing it with the model's */
+/* DRM_IOCTL_MBX_PB_DUMP: a window of the table (16 KB) and then the parameter buffer's pages, for comparing them with the model's */
 int mbx_ioctl_pb_dump(struct drm_device *dev, void *data, struct drm_file *file)
 {
 	struct mbx_device *m = to_mbx(dev);
 	struct drm_mbx_pb_dump *d = data;
-	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(m->pb);
 	size_t total = MBX_PB_TABLE_SIZE + (size_t)MBX_PB_PAGES * MBX_PAGE, done = 0;
-	struct sg_table *sgt;
+	struct sg_table *sgt_t, *sgt_p;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 	if (d->offset > total || d->size > total - d->offset)
 		return -EINVAL;
-	sgt = drm_gem_shmem_get_pages_sgt(shmem);
-	if (IS_ERR(sgt))
-		return PTR_ERR(sgt);
+	sgt_t = drm_gem_shmem_get_pages_sgt(to_drm_gem_shmem_obj(m->tbl));
+	sgt_p = drm_gem_shmem_get_pages_sgt(to_drm_gem_shmem_obj(m->pb));
+	if (IS_ERR(sgt_t) || IS_ERR(sgt_p))
+		return -ENOMEM;
 	/* the chip wrote these pages; the CPU's lines for them are stale */
 	mutex_lock(&m->job_lock);
-	dma_sync_sgtable_for_cpu(m->dev, sgt, DMA_FROM_DEVICE);
+	dma_sync_sgtable_for_cpu(m->dev, sgt_t, DMA_FROM_DEVICE);
+	dma_sync_sgtable_for_cpu(m->dev, sgt_p, DMA_FROM_DEVICE);
 	while (done < d->size) {
 		size_t pos = d->offset + done, in_page = pos & (PAGE_SIZE - 1);
 		size_t n = min_t(size_t, d->size - done, PAGE_SIZE - in_page);
-		void *p = kmap_local_page(shmem->pages[pos >> PAGE_SHIFT]);
+		struct drm_gem_shmem_object *shmem = pos < MBX_PB_TABLE_SIZE ? to_drm_gem_shmem_obj(m->tbl) :
+						     to_drm_gem_shmem_obj(m->pb);
+		size_t idx = (pos < MBX_PB_TABLE_SIZE ? pos : pos - MBX_PB_TABLE_SIZE) >> PAGE_SHIFT;
+		void *p = kmap_local_page(shmem->pages[idx]);
 		unsigned long left = copy_to_user(u64_to_user_ptr(d->ptr) + done, p + in_page, n);
 
 		kunmap_local(p);
@@ -250,11 +265,11 @@ void mbx_pb_set_background(struct mbx_device *m, const struct drm_mbx_submit *a)
 		o[24] = f32_from_u32(pad_h) - (10u << 23);
 		o[25] = 0;
 	}
-	p = kmap_local_page(shmem->pages[MBX_PB_TABLE_SIZE >> PAGE_SHIFT]);
+	p = kmap_local_page(shmem->pages[0]);
 	for (i = 0; i < ARRAY_SIZE(o); i++)
 		p[i] = o[i];
 	kunmap_local(p);
-	dma_sync_single_range_for_device(m->dev, sg_dma_address(sgt->sgl), MBX_PB_TABLE_SIZE, sizeof(o), DMA_TO_DEVICE);
+	dma_sync_single_range_for_device(m->dev, sg_dma_address(sgt->sgl), 0, sizeof(o), DMA_TO_DEVICE);
 }
 
 /* The region array before the TA: 0x22000000 | the macro tile's origin, word 1 clear (assumption 31) */

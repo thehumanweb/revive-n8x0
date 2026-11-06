@@ -24,30 +24,31 @@
 
 /* An address space: 32 MB of 4 KB pages through eight page tables */
 #define MBX_VM_SIZE		(32u << 20)
-#define MBX_VM_START		0x400000	/* clients' buffers go above 4 MB; the parameter buffer, its table and the contexts are below */
+#define MBX_VM_START		0x810000	/* clients' buffers go in the second arena, above the table and contexts at 0x800000 */
 #define MBX_PAGE		4096
 
 /*
  * The parameter buffer: the TA bins its triangles into pages it takes off a free list the driver
- * builds. Page p is at device address p << 12 and the list's table is 16-bit entries in device
- * memory. A list item's pointer is a word offset from the buffer's base (0x83c): 0x40800500 for
- * an object at base + 0x1400 (seen on the N810). The buffer, its table and the contexts are
- * low in the device space, as the stock stack has them, mapped (the same pages) in every
- * file's space. One buffer serves all jobs because they run one at a time and a render gives
- * its pages back.
+ * builds. Page p is at device address p << 12. As the stock stack has it (found during device
+ * testing), the buffer is at device address 0 (its first page the background object's), in the first
+ * arena (0-8 MB); the free list's table and the contexts are at the start of the second (0x800000),
+ * clients' buffers after them. A list item's pointer is a word offset from the buffer's base (0x83c),
+ * the region entries' list addresses absolute: at base 0 the two coincide. The same pages are mapped
+ * in every file's space. One buffer serves all jobs because they run one at a time and a render
+ * gives its pages back.
  */
 #define MBX_PB_PAGES		768			/* 3 MB */
-#define MBX_PB_FIRST_PAGE	0x100			/* the buffer at 1 MB: page 0 of it is the background object's */
-#define MBX_PB_LAST_PAGE	(MBX_PB_FIRST_PAGE + MBX_PB_PAGES - 1)	/* 0x3ff */
-#define MBX_PB_TABLE_SIZE	0x4000			/* 16 KB, 16 KB aligned */
+#define MBX_PB_FIRST_PAGE	0
+#define MBX_PB_LAST_PAGE	(MBX_PB_FIRST_PAGE + MBX_PB_PAGES - 1)
 #define MBX_PB_VA		(MBX_PB_FIRST_PAGE << 12)
-#define MBX_PB_TABLE_VA		(MBX_PB_VA - MBX_PB_TABLE_SIZE)
+#define MBX_PB_TABLE_SIZE	0x4000			/* 16 KB, 16 KB aligned */
+#define MBX_PB_TABLE_VA		0x800000
 /*
  * The TA and EVM contexts, zeroed and padded (the chip writes past their nominal sizes: a page,
- * 520 bytes): 16 KB each, in one object mapped in every space just below the free list's table.
+ * 520 bytes): 16 KB each, in one object mapped in every space after the free list's table.
  */
 #define MBX_CTX_SIZE		0x8000u
-#define MBX_CTX_VA		(MBX_PB_TABLE_VA - MBX_CTX_SIZE)
+#define MBX_CTX_VA		(MBX_PB_TABLE_VA + MBX_PB_TABLE_SIZE)
 
 struct mbx_device;
 
@@ -80,7 +81,8 @@ struct mbx_device {
 	int irq;
 	u32 core_id, revision;
 
-	struct drm_gem_object *pb;	/* the free list's table, then the parameter buffer's pages */
+	struct drm_gem_object *pb;	/* the parameter buffer's pages */
+	struct drm_gem_object *tbl;	/* the free list's table */
 	struct drm_gem_object *ctx;	/* the TA and EVM contexts */
 	bool pb_built;		/* the free list is built (not after a reset) */
 	bool ctx_loaded;	/* the contexts are zeroed and loaded (not after a reset) */
