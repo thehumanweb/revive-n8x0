@@ -17,7 +17,7 @@ libmbxemu.a: $(CORE)
 $(CORE): emu.h mbxemu.h
 
 clean:
-	rm -f *.o *.a mbxtri mbxtri-drm tests/t_vgp tests/t_ta tests/t_pb
+	rm -f *.o *.a mbxtri mbxtri-drm tests/t_vgp tests/t_ta tests/t_pb tests/t_contract
 
 # mbxtri-drm: the same triangle through the render node (cross-built for the guest: make CC=arm-... mbxtri-drm CFLAGS="-I<kernel uapi>")
 mbxtri-drm: tools/mbxtri_drm.c tools/tri_frame.h drm/mbx_drm.h
@@ -30,12 +30,16 @@ tests/t_vgp: tests/t_vgp.c lib/mbx_vgp.h libmbxemu.a
 tests/t_ta: tests/t_ta.c tools/tri_frame.h libmbxemu.a
 	$(CC) $(CFLAGS) -I. -o $@ tests/t_ta.c libmbxemu.a -lm
 
-tests/t_pb: tests/t_pb.c tools/tri_frame.h libmbxemu.a
+tests/t_pb: tests/t_pb.c tools/tri_frame.h lib/mbx_contract.h libmbxemu.a
 	$(CC) $(CFLAGS) -I. -o $@ tests/t_pb.c libmbxemu.a -lm
 
-test: tests/t_vgp tests/t_ta tests/t_pb
+tests/t_contract: tests/t_contract.c tools/tri_frame.h lib/mbx_contract.h libmbxemu.a
+	$(CC) $(CFLAGS) -I. -o $@ tests/t_contract.c libmbxemu.a -lm
+
+test: tests/t_vgp tests/t_ta tests/t_pb tests/t_contract
 	tests/t_vgp
 	tests/t_ta
 	tests/t_pb
+	tests/t_contract
 
 .PHONY: all clean test

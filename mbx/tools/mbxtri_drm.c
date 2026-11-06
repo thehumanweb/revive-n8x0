@@ -4,7 +4,7 @@
  * DRM_IOCTL_MBX_BO_CREATE/INFO, the same stream (tri_frame.h) in one
  * DRM_IOCTL_MBX_SUBMIT, the picture read back through the buffer's mmap.
  *
- *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-B addr] [-K] [-E] [-C r_ctl] [-M r_sampling] [-S state_word]
+ *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-C r_ctl] [-M r_sampling] [-S state_word]
  *
  * -D dumps what the job left in the region array, the tail pointers and the
  * background-object buffer (nonzero words), to see where the TA binned the triangle.
@@ -30,10 +30,10 @@ struct bo {
 	void *map;
 };
 
-static int bo_new(int fd, struct bo *b, uint64_t size, int map)
+static int bo_new(int fd, struct bo *b, uint64_t size, int map, uint32_t info_flags)
 {
 	struct drm_mbx_bo_create c = { .size = size };
-	struct drm_mbx_bo_info i = { 0 };
+	struct drm_mbx_bo_info i = { .flags = info_flags };
 
 	if (ioctl(fd, DRM_IOCTL_MBX_BO_CREATE, &c))
 		return -errno;
@@ -78,18 +78,17 @@ static int open_node(const char *path)
 int main(int argc, char **argv)
 {
 	const char *out = "mbxtri-drm.ppm", *dev = NULL;
-	struct bo surf, regions, tails, pb;
+	struct bo surf, regions, tails;
 	struct drm_mbx_submit s;
 	uint32_t *stream, *px;
 	float deg = 0;
 	int o, fd, i, x, y, lit = 0, ret, dump = 0;
 	const char *pbfile = NULL;
-	uint32_t r_pb_override = 0, sflags = 0;
 	int empty = 0;
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:B:KEC:M:S:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EC:M:S:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -99,16 +98,15 @@ int main(int argc, char **argv)
 		else if (o == 'C') r_ctl = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'M') r_samp = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'S') tri_state_word = (uint32_t)strtoul(optarg, NULL, 0);
-		else if (o == 'K') sflags = MBX_SUBMIT_BG_TARGET;
-		else if (o == 'B') r_pb_override = (uint32_t)strtoul(optarg, NULL, 0);
 		else return 2;
 	}
 	if ((fd = open_node(dev)) < 0) {
 		perror("mbxtri-drm: no MBX render node");
 		return 1;
 	}
-	if ((ret = bo_new(fd, &surf, TRI_W * TRI_H * 4, 1)) || (ret = bo_new(fd, &regions, 4096, dump)) ||
-	    (ret = bo_new(fd, &tails, 4096, dump)) || (ret = bo_new(fd, &pb, 4096, dump))) {
+	/* the tails: 64 KB aligned and 64 KB (the TA rounds the address down); the driver zeroes them */
+	if ((ret = bo_new(fd, &surf, TRI_W * TRI_H * 4, 1, 0)) || (ret = bo_new(fd, &regions, 4096, dump, 0)) ||
+	    (ret = bo_new(fd, &tails, 65536, dump, MBX_BO_INFO_ALIGN_64K))) {
 		fprintf(stderr, "mbxtri-drm: buffers: %s\n", strerror(-ret));
 		return 1;
 	}
@@ -138,9 +136,7 @@ int main(int argc, char **argv)
 	s.r_height = (uint32_t)(TRI_H - 1) << 16;
 	s.r_addr = surf.va;
 	s.r_stride = TRI_W;			/* words */
-	s.flags = sflags;
 	s.r_6dc = 0x3f800001;			/* clear depth 1.0, as GLES writes it (0 on the chip is not 1.0) */
-	s.r_pb = r_pb_override ? r_pb_override : pb.va;	/* -B: the parameter buffer's own base instead of a separate background object */
 	if (ioctl(fd, DRM_IOCTL_MBX_SUBMIT, &s)) {
 		fprintf(stderr, "mbxtri-drm: submit: %s\n", strerror(errno));
 		return 1;
@@ -164,9 +160,9 @@ int main(int argc, char **argv)
 		}
 	}
 	if (dump) {
-		struct { const char *name; struct bo *b; } bufs[] = { { "regions", &regions }, { "tails", &tails }, { "pb", &pb } };
+		struct { const char *name; struct bo *b; } bufs[] = { { "regions", &regions }, { "tails", &tails } };
 
-		for (i = 0; i < 3; i++) {
+		for (i = 0; i < 2; i++) {
 			uint32_t *w = bufs[i].b->map;
 			int n = 0, k;
 

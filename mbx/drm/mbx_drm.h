@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 /* Bumped on incompatible changes; DRM_MBX_GET_PARAM MBX_PARAM_ABI returns it */
-#define MBX_ABI_VERSION		3
+#define MBX_ABI_VERSION		4
 
 #define MBX_PARAM_CORE_ID	0	/* CORE_ID register, 0x01010003 on the N810 */
 #define MBX_PARAM_REVISION	1
@@ -34,9 +34,12 @@ struct drm_mbx_bo_create {
  * MBX address space (32 MB, 4 KB pages; what the MBX sees), also for
  * dma-bufs imported by PRIME (omapdrm's scanout buffers).
  */
+/* Map the buffer at a 64 KB aligned address: the TA's tail pointers (0x840) must be */
+#define MBX_BO_INFO_ALIGN_64K	(1u << 0)
+
 struct drm_mbx_bo_info {
 	__u32 handle;		/* in */
-	__u32 pad;
+	__u32 flags;		/* in: MBX_BO_INFO_* (when the buffer is first mapped) */
 	__u64 size;		/* out: bytes */
 	__u64 offset;		/* out: mmap offset on the DRM fd */
 	__u32 va;		/* out: MBX (device) address */
@@ -78,12 +81,15 @@ struct drm_mbx_submit_bo {
  * (the TA overflows, a timeout) resets the cores and its fence reports -EIO.
  */
 /*
- * drm_mbx_submit.flags: the kernel builds the background object (the first words of the
- * parameter buffer: a linear texture of the render target itself, which the tiles start
- * from) and points 0x83c at the buffer; r_pb is then ignored.
+ * What the driver does for a job that the client need not (found during device testing, the
+ * contract in mbx/README.md assumption 31): the parameter buffer's registers and free list,
+ * the TA and EVM contexts, the background object (a triangle textured with the render
+ * target, the first words of the parameter buffer, 0x83c pointing at it: r_pb is ignored),
+ * the region array at ta_regions (initialised from ta_config's grid; the buffer must hold
+ * every entry, 8 bytes each), the tail pointers at ta_tails (a buffer mapped with
+ * MBX_BO_INFO_ALIGN_64K of at least 64 KB, zeroed) and bit 30 on every region entry before
+ * the render.
  */
-#define MBX_SUBMIT_BG_TARGET	(1u << 0)
-
 struct drm_mbx_submit {
 	__u64 stream;		/* in: user pointer to the chunks */
 	__u32 stream_words;
@@ -106,7 +112,7 @@ struct drm_mbx_submit {
 	__u32 r_addr;		/* 0x65c */
 	__u32 r_stride;		/* 0x660 */
 	__u32 r_zbuf;		/* 0x674 */
-	__u32 r_pb;		/* 0x83c */
+	__u32 r_pb;		/* ignored: the driver builds the background object */
 	__u32 r_6dc;		/* 0x6dc */
 	__u32 flags;		/* 0 */
 	__u32 pad;

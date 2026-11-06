@@ -31,5 +31,5 @@ cp -u mbx/lib/mbx_vgp.h $M/src/gallium/drivers/mbx/mbx_vgp.h
 # the emulator core, for the host sim (drm-shim)
 E=$M/src/gallium/drivers/mbx/drm-shim/emu
 mkdir -p $E
-cp -u mbx/core.c mbx/ta.c mbx/vgp.c mbx/render.c mbx/rcptab.c mbx/texture.c mbx/twod.c mbx/pb.c mbx/emu.h mbx/mbxemu.h $E/
+cp -u mbx/core.c mbx/ta.c mbx/vgp.c mbx/render.c mbx/rcptab.c mbx/texture.c mbx/twod.c mbx/pb.c mbx/emu.h mbx/mbxemu.h mbx/lib/mbx_contract.h $E/
 echo "prepared $M"

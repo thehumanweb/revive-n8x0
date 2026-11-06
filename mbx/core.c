@@ -20,6 +20,22 @@
 #define CORE_ID		0x01010003	/* MBX1, VGP and MMU present (seen on the N810) */
 #define REVISION	0x05010307
 
+/* A contract violation (emu.h V_*): counted every time, logged the first time in a scene */
+void emu_violation(struct mbxemu *e, uint32_t bit, const char *what)
+{
+	if (!(e->viol & bit))
+		emu_log(e, "contract: %s%s", what, e->strict ? " (the chip gives garbage)" : "");
+	e->viol |= bit;
+	e->viol_ever |= bit;
+	e->stats.violations++;
+	e->stats.violation_mask |= bit;
+}
+
+void mbxemu_set_strict(struct mbxemu *e, int strict)
+{
+	e->strict = strict;
+}
+
 void emu_log(struct mbxemu *e, const char *fmt, ...)
 {
 	char line[256];
@@ -559,13 +575,14 @@ void mbxemu_stats(const struct mbxemu *e, struct mbxemu_stats *s)
 void mbxemu_reset(struct mbxemu *e)
 {
 	struct mbxemu_host host = e->host;
-	int trace = e->trace;
+	int trace = e->trace, strict = e->strict;
 
 	soft_reset(e);
 	pcache_end(e);
 	memset(e, 0, sizeof(*e));
 	e->host = host;
 	e->trace = trace;
+	e->strict = strict;
 	e->regs[R_TA_CONFIG / 4] = 0x80;
 	e->scene_state = -1;
 	ta_reset(e);
@@ -582,6 +599,7 @@ struct mbxemu *mbxemu_new(const struct mbxemu_host *host)
 	if (!e)
 		return NULL;
 	e->host = *host;
+	e->strict = 1;
 	mbxemu_reset(e);
 	return e;
 }

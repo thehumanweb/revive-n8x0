@@ -73,8 +73,7 @@ static bool target_bos(struct mbx_context *ctx, unsigned w, unsigned h)
 		return true;
 	mbx_bo_unref(t->regions);
 	mbx_bo_unref(t->tails);
-	mbx_bo_unref(t->pb);
-	t->regions = t->tails = t->pb = NULL;
+	t->regions = t->tails = NULL;
 	tx = DIV_ROUND_UP(w, MBX_TILE);
 	ty = DIV_ROUND_UP(h, MBX_TILE);
 	mx = mt_size(tx);
@@ -85,11 +84,11 @@ static bool target_bos(struct mbx_context *ctx, unsigned w, unsigned h)
 	t->tiles_y = ty;
 	/* the region array is one entry (two words) for each tile of the macro-tile grid */
 	t->regions = mbx_bo_create(ctx->screen, align64((uint64_t)nx * mx * ny * my * 8, 4096));
-	t->tails = mbx_bo_create(ctx->screen, 4096);
-	t->pb = mbx_bo_create(ctx->screen, 4096);	/* the background object: zero, none */
+	/* the tail pointers: 64 KB aligned and 64 KB (the TA rounds the address down and the driver zeroes it) */
+	t->tails = mbx_bo_create_align64k(ctx->screen, 65536);
 	t->width = w;
 	t->height = h;
-	return t->regions && t->tails && t->pb;
+	return t->regions && t->tails;
 }
 
 bool mbx_job_begin(struct mbx_context *ctx)
@@ -142,7 +141,6 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.r_height = (uint32_t)(ctx->fb.height - 1) << 16;
 	s.r_addr = color->bo->va;
 	s.r_stride = color->stride / 4;		/* words */
-	s.r_pb = t->pb->va;
 	memcpy(&zclear, &z, 4);
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
 
@@ -166,7 +164,6 @@ void mbx_job_fini(struct mbx_context *ctx)
 {
 	mbx_bo_unref(ctx->tbos.regions);
 	mbx_bo_unref(ctx->tbos.tails);
-	mbx_bo_unref(ctx->tbos.pb);
 	free(ctx->job.stream);
 }
 

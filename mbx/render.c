@@ -41,7 +41,9 @@ struct rctx {
 	int zload_ok, zstore;
 	float zclear, fog[3];
 	struct texunit bg;
-	int bg_target;			/* no background object: the target's own pixels */
+	int bg_target;			/* no background object: the target's own pixels (not strict) */
+	int bg_bad;			/* strict: the background object is not whole: tiles start white */
+	uint32_t viol;			/* the scene's contract violations, with the render's own */
 	struct scene *s;
 	struct setup *su;		/* a setup per triangle */
 };
@@ -1422,7 +1424,11 @@ static void tile(struct mbxemu *e, struct rctx *rc, uint32_t entry)
 	for (j = 0; j < TILE; j++) {
 		uint8_t row[TILE * 4];
 
-		if (rc->bg_target) {
+		if (rc->bg_bad) {
+			for (i = 0; i < TILE; i++)
+				col[j * TILE + i][0] = col[j * TILE + i][1] = col[j * TILE + i][2] =
+					col[j * TILE + i][3] = 1.0f;
+		} else if (rc->bg_target) {
 			dev_read(e, rc->addr + (y0 + j) * rc->stride + x0 * (rc->fmt == 9 ? 2 : 4), row,
 				 TILE * (rc->fmt == 9 ? 2 : 4));
 			for (i = 0; i < TILE; i++)
@@ -1466,6 +1472,11 @@ static void tile(struct mbxemu *e, struct rctx *rc, uint32_t entry)
 				continue;
 			draw(e, rc, su, (int)x0, (int)y0, col, zb);
 		}
+	/* a scene the chip would not take: the tiles that hold objects come out white (the chip's
+	 * output there is noise, mostly ones; README assumption 31) */
+	if (e->strict && rc->viol && !(entry & 0x02000000))
+		for (i = 0; i < TILE * TILE; i++)
+			col[i][0] = col[i][1] = col[i][2] = col[i][3] = 1.0f;
 	if (rc->zstore)
 		for (j = 0; j < TILE; j++) {
 			uint32_t row[TILE];
@@ -1538,6 +1549,22 @@ void render_kick(struct mbxemu *e)
 		 * target's own pixels, which is what software points it at */
 		tex_decode(&rc.bg, w);
 		rc.bg_target = !rc.bg.stride || (rc.bg.fmt != 1 && rc.bg.fmt != 6);
+		/* the chip reads a whole object from the buffer's first words (README assumption 31):
+		 * the header, the texture words, the combiner and state words, three vertices */
+		{
+			uint32_t o[26];
+			int ok, v;
+
+			dev_read(e, pb, o, sizeof(o));
+			ok = !rc.bg_target && o[0] == 0xe0000000 && o[3] && o[4];
+			for (v = 11; v <= 16; v++)
+				ok = ok && o[v] == 0x3f800000;
+			if (!ok) {
+				emu_violation(e, V_BG, "the background object at 0x83c is not a whole object "
+					      "(a header, texture words A, B and C, a state word, three vertices)");
+				rc.bg_bad = e->strict;
+			}
+		}
 	}
 
 	rc.s = &e->ctx[R[R_HW_CONTEXT / 4] & 1];
@@ -1558,6 +1585,17 @@ void render_kick(struct mbxemu *e)
 
 	for (k = 0; k < MAX_REGIONS; k++) {
 		entry = dev_read32(e, regions + 8 * k);
+		if (!(entry & 0x40000000)) {
+			emu_violation(e, V_REGION_B30, "a region entry lacks bit 30 "
+				      "(software sets it on every entry before the render)");
+			break;
+		}
+		if (entry & 0x80000000)
+			break;
+	}
+	rc.viol = e->viol;
+	for (k = 0; k < MAX_REGIONS; k++) {
+		entry = dev_read32(e, regions + 8 * k);
 		tile(e, &rc, entry);
 		if (entry & 0x80000000)
 			break;
@@ -1569,6 +1607,8 @@ void render_kick(struct mbxemu *e)
 		emu_log(e, "render: no end mark in the region array at %#x: the 3D core hangs", regions);
 		return;
 	}
+	if (!rc.s || rc.s->complete)
+		e->viol = 0;		/* the scene is consumed: its violations with it */
 	if (rc.s) {
 		if (rc.s->complete)
 			scene_free(rc.s);

@@ -46,7 +46,7 @@ struct mbx_job {
 /* regions, tails and the parameter buffer for a render target's size, kept across jobs */
 struct mbx_target_bos {
 	unsigned width, height;
-	struct mbx_bo *regions, *tails, *pb;
+	struct mbx_bo *regions, *tails;
 	unsigned tiles_x, tiles_y;
 };
 

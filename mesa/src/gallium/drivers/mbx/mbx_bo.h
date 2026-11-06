@@ -18,6 +18,8 @@ struct mbx_bo {
 };
 
 struct mbx_bo *mbx_bo_create(struct mbx_screen *screen, uint64_t size);
+/* mapped at a 64 KB aligned address (the TA tail pointers need it) */
+struct mbx_bo *mbx_bo_create_align64k(struct mbx_screen *screen, uint64_t size);
 /* a dma-buf from another device (omapdrm's scanout buffers) */
 struct mbx_bo *mbx_bo_import(struct mbx_screen *screen, int prime_fd);
 void *mbx_bo_map(struct mbx_bo *bo);

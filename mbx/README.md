@@ -134,7 +134,9 @@ circuit.
    expects).
 6. **Tile start**: colour from the background object (the first words of the
    parameter buffer at 0x83c, texture words A and B: a linear texture read
-   texel for pixel) or, if none is set up, the colour buffer itself. Depth
+   texel for pixel); the chip needs a whole object there (assumption 31):
+   without one it flushes garbage, which the model shows in strict mode and,
+   forgiving, reads as the colour buffer itself. Depth
    from 0x6dc (`0x3f800001`, taken as the clear depth 1.0) unless loaded.
 7. **External Z buffer**: loaded when 0x610 bit 1 is set, bits 16-17 are
    clear and the entry has bit 29; stored only by a partial render (0x610
@@ -398,3 +400,40 @@ circuit.
     a TA start (`0x800`) or a soft reset gets it going again. What bit 17 selects is
     not known, and bits 16, 18 and 19 are still not looked at.
 
+31. **What a client must do before a scene** (found during device testing on an N810; the
+    model checks it in `ta.c` `check_contract()` and `render.c`, counts each miss in
+    `mbxemu_stats.violations` and logs it once a scene as `contract: ...`; `lib/mbx_contract.h`
+    does all of it for a client). The chip needs:
+    - the free list: `0x824` the table (16 KB aligned), `0x828` the first page, which is the
+      buffer's base page plus one (page 0 is the background object's), `0x82c` the last,
+      `0x838` = 1, `0x83c` the buffer's base, `0x6d8` = `0x09000000`, `0xce0` = 1;
+    - the TA and EVM contexts: zeroed, 16 KB aligned and padded (the chip writes past their
+      nominal sizes: a page, and 520 bytes), loaded with `0x820` and `0x864`, `0x810` = 0 and
+      `0x818` = 1 before a client's first TA (the model calls `0x820` the TA context memory and
+      `0x864` the EVM's);
+    - the background object, a whole object in the buffer's first words (the chip reserves
+      132 words for it), 26 words: `e0000000`, texture word A (`a8800000` with the format: `0x4000`
+      RGB565, `0x18000` ARGB8888), word B (`0x0e000000` with the stride in pixels / 16 in bits
+      18-24 and the target's address / 128), word C (`d6887610`), the state word `22220e80`, three
+      vertices as 6 position words (the far corners, a triangle twice the padded size, patched at
+      words 7 and 10), six 1.0 (z and 1/w), nine words of colour and texture coordinates
+      (patched at 21 and 25, in 1024ths): a texture of the render target itself, 2048 x 2048
+      clamped, so a tile starts from the pixels the target holds;
+    - the region array initialised: every entry `0x22000000 | the macro tile's origin (y << 8 |
+      x)`, word 1 clear; the TA clears bit 25 and writes the list address of tiles that get one;
+      and bit 30 (`0x40000000`) on every entry before the render (the stock daemon does it);
+    - the tail pointers (`0x840`) 64 KB aligned and zeroed: the TA rounds the address down and
+      uses what is there; at a 16 KB aligned allocation it zeroed the colour buffer's last rows
+      (about 7 KB); a wrong value can reach kernel memory;
+    - unmapped device pages pointing at one scratch page; the render's hardware context `0x6ec`.
+
+    Not known: which miss causes which effect. With all of it missing (what the first runs of the
+    driver did) the chip flushed noise (mostly ones with single bits cleared) in every tile with
+    an object and, once, wrote into the kernel's page tables; with only the background object
+    whole, an empty scene left the target untouched and one with an object still gave noise.
+    In strict mode (the default) the model gives white in the tiles that hold objects when any
+    check fails, and white as every tile's start when the background object is not whole
+    (instead of the target's own pixels, which assumption 6 used to say and the chip does not
+    do); `mbxemu_set_strict(e, 0)` restores the forgiving behaviour and still counts. The model's
+    render still draws from the TA's scene in memory and does not read the buffer's lists or
+    objects, so a wrong list or object word is not seen.

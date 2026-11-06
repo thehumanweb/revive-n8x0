@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "../emu.h"
+#include "../lib/mbx_contract.h"
 #include "../tools/tri_frame.h"
 
 #define RAM_BASE	0x80000000u
@@ -34,7 +35,7 @@
 #define SURF		0x10000u
 #define REGIONS		0x20000u
 #define TAILS		0x30000u
-#define BG		0x40000u
+#define CTX		0x50000u		/* the TA and EVM contexts: 32 KB, 16 KB aligned */
 
 static uint8_t *ram;
 static struct mbxemu *E;
@@ -64,11 +65,24 @@ static void mem_write(void *o, uint32_t phys, const void *buf, uint32_t len)
 		memcpy(ram + (phys - RAM_BASE), buf, len);
 }
 
+/* device memory as the MBX sees it: through the page tables the test set up */
+static uint32_t dev_phys(uint32_t va)
+{
+	const uint32_t *pt = (const uint32_t *)(ram + PT_PHYS + ((va >> 12) >> 10) * PAGE);
+
+	return (pt[(va >> 12) & 1023] - RAM_BASE) + (va & (PAGE - 1));
+}
+static void c_wr32(void *o, uint32_t va, uint32_t v) { memcpy(ram + dev_phys(va), &v, 4); }
+static uint32_t c_rd32(void *o, uint32_t va) { uint32_t v; memcpy(&v, ram + dev_phys(va), 4); return v; }
+static void c_reg(void *o, uint32_t reg, uint32_t v);
+static const struct mbx_io IO = { .wr32 = c_wr32, .rd32 = c_rd32, .reg = c_reg };
+
 static void irq(void *o, int level) { }
 static void log_line(void *o, const char *line) { if (getenv("T_PB_VERBOSE")) fprintf(stderr, "emu: %s\n", line); }
 
 static void wr(uint32_t reg, uint32_t v) { mbxemu_reg_write(E, reg, v); }
 static uint32_t rd(uint32_t reg) { return mbxemu_reg_read(E, reg); }
+static void c_reg(void *o, uint32_t reg, uint32_t v) { wr(reg, v); }
 
 static void map_page(uint32_t dev_page, uint32_t phys)
 {
@@ -81,7 +95,7 @@ static void setup_mmu(void)
 {
 	uint32_t i;
 
-	for (i = 0x10; i < 0x50; i++)			/* the small buffers: device 0x10000.. on RAM_BASE + the same */
+	for (i = 0x10; i < 0x58; i++)			/* the small buffers: device 0x10000.. on RAM_BASE + the same */
 		map_page(i, RAM_BASE + i * PAGE);
 	/* the free list's table and the parameter buffer's pages: one object, contiguous in both */
 	for (i = 0; i < PB_TABLE_SIZE / PAGE + PB_PAGES; i++)
@@ -95,9 +109,8 @@ static void setup_mmu(void)
 static int build_list(uint32_t first, uint32_t last)
 {
 	wr(R_INT_CLEAR, 0x7fff);
-	wr(R_FL_TABLE, PB_TABLE_VA);
+	mbx_contract_freelist(&IO, PB_TABLE_VA, PB_VA, last);
 	wr(R_FL_FIRST, first);
-	wr(R_FL_LAST, last);
 	wr(R_FL_BUILD, 1);
 	return !!(rd(R_INT_STATUS) & I_EVM_DALLOC);
 }
@@ -113,6 +126,10 @@ static uint32_t send_frame(void)
 	wr(R_TA_HEIGHT, (uint32_t)TRI_H << 16);
 	wr(R_TA_REGIONS, REGIONS);
 	wr(R_TA_TAILS, TAILS);
+	mbx_contract_contexts(&IO, CTX);	/* before the first TA: the TA and EVM contexts */
+	mbx_contract_background(&IO, PB_VA, SURF, TRI_W, TRI_W / 16, TRI_H / 16, 0);
+	mbx_contract_regions(&IO, REGIONS, TRI_W / 16, TRI_H / 16);
+	mbx_contract_tails(&IO, TAILS, 4096);
 	wr(R_TA_CONTEXT_ID, 0);
 	wr(R_TA_START, 1);
 	n = tri_stream(stream, 0);
@@ -140,7 +157,8 @@ static uint32_t kick_render(void)
 	wr(R_HEIGHT, (uint32_t)(TRI_H - 1) << 16);
 	wr(R_ADDR, SURF);
 	wr(R_STRIDE, TRI_W);
-	wr(R_PB_BASE, BG);
+	wr(R_PB_BASE, PB_VA);
+	mbx_contract_prerender(&IO, REGIONS, TRI_W / 16, TRI_H / 16);
 	wr(R_HW_CONTEXT, 0);
 	wr(R_KICK, 1);
 	return rd(R_INT_STATUS);
@@ -199,7 +217,7 @@ int main(void)
 	setup_mmu();
 
 	/* the list builds and the TA bins into it */
-	CHECK(build_list(PB_FIRST_PAGE, PB_LAST_PAGE), "EVM_DALLOC after the free list build");
+	CHECK(build_list(PB_FIRST_PAGE + 1, PB_LAST_PAGE), "EVM_DALLOC after the free list build");
 	clear_surface();
 	status = send_frame();
 	CHECK(status & I_TA_DONE && !(status & I_TA_OFLOW), "TA_COMPLETE, no overflow (status %08x)", status);
@@ -225,7 +243,7 @@ int main(void)
 	wr(R_SOFT_RESET, 0x111);
 	wr(R_SOFT_RESET, 0);
 	setup_mmu();
-	CHECK(build_list(PB_FIRST_PAGE, PB_FIRST_PAGE + 1), "a two page list builds");
+	CHECK(build_list(PB_FIRST_PAGE + 1, PB_FIRST_PAGE + 2), "a two page list builds");
 	status = send_frame();
 	CHECK(status & I_TA_OFLOW && !(status & I_TA_DONE), "TA_OFLOW on a list that is too short (status %08x)", status);
 

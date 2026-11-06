@@ -25,6 +25,7 @@
 #include "util/vma.h"
 
 #include "emu/mbxemu.h"
+#include "emu/mbx_contract.h"
 
 bool drm_shim_driver_prefers_first_render_node = true;
 
@@ -81,6 +82,8 @@ bool drm_shim_driver_prefers_first_render_node = true;
 #define PB_TABLE_SIZE	((VM_SIZE >> 12) * 2)
 #define PB_VA		(PB_FIRST_PAGE << 12)
 #define PB_TABLE_VA	(PB_VA - PB_TABLE_SIZE)
+#define CTX_SIZE	0x8000u			/* the TA and EVM contexts, padded: 16 KB each */
+#define CTX_VA		(PB_TABLE_VA - CTX_SIZE)
 
 struct sim_map {
 	struct sim_map *next;
@@ -101,6 +104,7 @@ static struct {
 	uint8_t *mem;		/* the shim's memfd: physical memory */
 	struct shim_bo dummy;
 	struct shim_bo pb;	/* the free list's table, then the parameter buffer's pages */
+	struct shim_bo ctx;	/* the TA and EVM contexts */
 	uint64_t seqno;		/* the last fence handed out: jobs run to completion inside the ioctl */
 	bool pb_built;
 	struct sim_fd *fds;
@@ -141,6 +145,7 @@ static void sim_init(void)
 	}
 	drm_shim_bo_init(&sim.dummy, PAGE);
 	drm_shim_bo_init(&sim.pb, PB_TABLE_SIZE + (size_t)PB_PAGES * PAGE);
+	drm_shim_bo_init(&sim.ctx, CTX_SIZE);
 	sim.emu = mbxemu_new(&host);
 	if (getenv("MBX_SIM_TRACE"))
 		mbxemu_set_trace(sim.emu, atoi(getenv("MBX_SIM_TRACE")));
@@ -157,7 +162,7 @@ static struct sim_fd *sim_fd_get(int fd)
 			return f;
 	f = calloc(1, sizeof(*f));
 	f->shim_fd = shim_fd;
-	util_vma_heap_init(&f->heap, VM_START, PB_TABLE_VA - VM_START);
+	util_vma_heap_init(&f->heap, VM_START, CTX_VA - VM_START);
 	for (i = 0; i < 8; i++) {
 		uint32_t *pt;
 
@@ -172,6 +177,12 @@ static struct sim_fd *sim_fd_get(int fd)
 		uint32_t pg = (PB_TABLE_VA >> 12) + j;
 
 		((uint32_t *)(sim.mem + f->pt[pg >> 10]->mem_addr))[pg & 1023] = (uint32_t)(sim.pb.mem_addr + (uint64_t)j * PAGE);
+	}
+	/* the contexts, just below the free list's table */
+	for (j = 0; j < (int)(CTX_SIZE / PAGE); j++) {
+		uint32_t pg = (CTX_VA >> 12) + j;
+
+		((uint32_t *)(sim.mem + f->pt[pg >> 10]->mem_addr))[pg & 1023] = (uint32_t)(sim.ctx.mem_addr + (uint64_t)j * PAGE);
 	}
 	f->next = sim.fds;
 	sim.fds = f;
@@ -229,12 +240,16 @@ static int ioctl_bo_info(int fd, unsigned long request, void *arg)
 
 	if (!bo)
 		return -ENOENT;
+	if (i->flags & ~MBX_BO_INFO_ALIGN_64K) {
+		drm_shim_bo_put(bo);
+		return -EINVAL;
+	}
 	mtx_lock(&sim.lock);
 	f = sim_fd_get(fd);
 	m = find_map(f, bo);
 	if (!m) {
 		uint32_t pg, k;
-		uint64_t va = util_vma_heap_alloc(&f->heap, bo->size, PAGE);
+		uint64_t va = util_vma_heap_alloc(&f->heap, bo->size, i->flags & MBX_BO_INFO_ALIGN_64K ? 0x10000 : PAGE);
 
 		if (!va) {
 			ret = -ENOSPC;
@@ -296,6 +311,30 @@ static int ioctl_bo_unmap(int fd, unsigned long request, void *arg)
 
 static void rw(uint32_t reg, uint32_t v) { mbxemu_reg_write(sim.emu, reg, v); }
 
+/* device memory through the active file's page tables, for the contract's steps (mbx_contract.h) */
+static uint32_t *sim_dev_ptr(uint32_t va)
+{
+	uint32_t pg = va >> 12;
+	uint32_t phys = ((uint32_t *)(sim.mem + sim.active->pt[pg >> 10]->mem_addr))[pg & 1023];
+
+	return (uint32_t *)(sim.mem + phys + (va & (PAGE - 1)));
+}
+static void sim_c_wr32(void *o, uint32_t va, uint32_t v) { *sim_dev_ptr(va) = v; }
+static uint32_t sim_c_rd32(void *o, uint32_t va) { return *sim_dev_ptr(va); }
+static void sim_c_reg(void *o, uint32_t reg, uint32_t v) { rw(reg, v); }
+static const struct mbx_io SIM_IO = { .wr32 = sim_c_wr32, .rd32 = sim_c_rd32, .reg = sim_c_reg };
+
+/* the mapping a device address lies in, and how far it goes: what a client's buffer holds */
+static uint32_t sim_map_room(struct sim_fd *f, uint32_t va)
+{
+	struct sim_map *m;
+
+	for (m = f->maps; m; m = m->next)
+		if (va >= m->va && va < m->va + m->pages * PAGE)
+			return m->va + m->pages * PAGE - va;
+	return 0;
+}
+
 static int ioctl_submit(int fd, unsigned long request, void *arg)
 {
 	struct drm_mbx_submit *a = arg;
@@ -304,7 +343,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	uint32_t i, st;
 	int ret = 0;
 
-	if ((a->flags & ~MBX_SUBMIT_BG_TARGET) || a->stream_words > (256u << 10) || a->n_bos > 64)
+	if (a->flags || a->stream_words > (256u << 10) || a->n_bos > 64)
 		return -EINVAL;
 	/* chunks whole and of a known type, as the kernel checks them */
 	for (i = 0; i < a->stream_words;) {
@@ -317,6 +356,17 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	}
 	mtx_lock(&sim.lock);
 	f = sim_fd_get(fd);
+	/* the contract's buffers: the tails 64 KB aligned and 64 KB, the regions big enough */
+	{
+		uint32_t tx = (a->ta_config >> 20 & 0x3ff) + 1, ty = (a->ta_config >> 10 & 0x3ff) + 1;
+		uint32_t stride_px = a->r_stride * (a->r_format == 9 ? 2 : 1);
+
+		if ((a->ta_tails & 0xffff) || sim_map_room(f, a->ta_tails) < 0x10000 ||
+		    sim_map_room(f, a->ta_regions) < mbx_region_entries(tx, ty) * 8 || (stride_px & 15)) {
+			mtx_unlock(&sim.lock);
+			return -EINVAL;
+		}
+	}
 	for (i = 0; i < 8; i++)
 		rw(R_MMU_TABLE(i), (uint32_t)f->pt[i]->mem_addr);
 	rw(R_MMU_CTRL, 1);
@@ -325,16 +375,24 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	rw(R_INT_CLEAR, 0x7fff);
 
 	if (!sim.pb_built) {
-		rw(R_FL_TABLE, PB_TABLE_VA);
-		rw(R_FL_FIRST, PB_FIRST_PAGE);
-		rw(R_FL_LAST, PB_LAST_PAGE);
+		mbx_contract_freelist(&SIM_IO, PB_TABLE_VA, PB_VA, PB_LAST_PAGE);
 		rw(R_FL_BUILD, 1);
 		if (!(mbxemu_reg_read(sim.emu, R_INT_STATUS) & I_EVM_DALLOC)) {
 			ret = -ETIMEDOUT;
 			goto reset;
 		}
 		rw(R_INT_CLEAR, I_EVM_DALLOC);
+		mbx_contract_contexts(&SIM_IO, CTX_VA);	/* once, before the first TA after a reset */
 		sim.pb_built = true;
+	}
+	{
+		uint32_t tx = (a->ta_config >> 20 & 0x3ff) + 1, ty = (a->ta_config >> 10 & 0x3ff) + 1;
+
+		/* the background object, the region array and the tails, for this frame */
+		mbx_contract_background(&SIM_IO, PB_VA, a->r_addr, a->r_stride * (a->r_format == 9 ? 2 : 1), tx, ty,
+					a->r_format == 9);
+		mbx_contract_regions(&SIM_IO, a->ta_regions, tx, ty);
+		mbx_contract_tails(&SIM_IO, a->ta_tails, 0x10000);
 	}
 	rw(R_TA_CONFIG, a->ta_config);
 	rw(R_TA_WIDTH, a->ta_width);
@@ -369,21 +427,11 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	rw(R_ADDR, a->r_addr);
 	rw(R_STRIDE, a->r_stride);
 	rw(R_ZBUF, a->r_zbuf);
-	if (a->flags & MBX_SUBMIT_BG_TARGET) {
-		/* as the kernel driver (mbx_pb.c, mbx_pb_set_background): the background object */
-		uint32_t w = (a->r_width >> 16 & 0x7ff) + 1, h = (a->r_height >> 16 & 0x7ff) + 1;
-		uint32_t fmt = a->r_format == 9 ? 1 : 6, stride = a->r_stride * (fmt == 1 ? 2 : 1);
-		uint32_t lw = 3, lh = 3, field = (stride + 7) / 8;
-		uint32_t *bg = (uint32_t *)(sim.mem + sim.pb.mem_addr + PB_TABLE_SIZE);
+	rw(R_PB_BASE, PB_VA);
+	{
+		uint32_t tx = (a->ta_config >> 20 & 0x3ff) + 1, ty = (a->ta_config >> 10 & 0x3ff) + 1;
 
-		while ((1u << lw) < w) lw++;
-		while ((1u << lh) < h) lh++;
-		bg[0] = 0;
-		bg[1] = (lw - 3) << 24 | (lh - 3) << 20 | fmt << 14 | (field & 1);
-		bg[2] = (field >> 1) << 18 | (a->r_addr >> 7);
-		rw(R_PB_BASE, PB_VA);
-	} else {
-		rw(R_PB_BASE, a->r_pb);
+		mbx_contract_prerender(&SIM_IO, a->ta_regions, tx, ty);	/* bit 30 on every region entry */
 	}
 	rw(R_6DC, a->r_6dc);
 	rw(R_HW_CONTEXT, a->ta_context);

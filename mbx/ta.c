@@ -172,6 +172,33 @@ static void write_regions(struct mbxemu *e, struct scene *s, int close)
  * the context holds one still open (a resume after a partial render or an
  * overflow, or a scene loaded back). Its setup registers are taken now.
  */
+/*
+ * The contract at TA start (README assumption 31), as found during device testing of what a client
+ * does before a scene (found during device testing; the effects are only known
+ * for all of it missing at once, which the chip turns into garbage).
+ */
+static void check_contract(struct mbxemu *e, const struct scene *s)
+{
+	const uint32_t *R = e->regs;
+	uint32_t base = R[R_PB_BASE / 4], first = R[R_FL_FIRST / 4];
+
+	if (!base)
+		emu_violation(e, V_PB_BASE, "0x83c (the parameter buffer's base) is not set");
+	else if (first && first <= base >> 12)
+		emu_violation(e, V_FL_OVERLAP, "the free list starts at or below the buffer's base page "
+			      "(its first page is the background object's)");
+	if (R[0x6d8 / 4] != 0x09000000 || R[0xce0 / 4] != 1)
+		emu_violation(e, V_FL_REGS, "0x6d8 is not 0x09000000 or 0xce0 is not 1");
+	if (s->tails & 0xffff)
+		emu_violation(e, V_TAILS_ALIGN, "the tail pointers (0x840) are not 64 KB aligned: the TA uses "
+			      "the address rounded down");
+	if (!R[R_TA_CTX_BASE / 4] || !R[R_EVM_CTX_BASE / 4])
+		emu_violation(e, V_CTX, "the TA or EVM context (0x820, 0x864) is not set");
+	if (s->regions && (dev_read32(e, s->regions) & 0x22000000) != 0x22000000)
+		emu_violation(e, V_REGION_INIT, "the region array was not initialised "
+			      "(0x22000000 | the macro tile's origin)");
+}
+
 void ta_start(struct mbxemu *e)
 {
 	struct scene *s = &e->ctx[e->regs[R_TA_CONTEXT_ID / 4] & 1];
@@ -186,6 +213,9 @@ void ta_start(struct mbxemu *e)
 		e->stats.scenes++;
 	s->regions = e->regs[R_TA_REGIONS / 4];
 	s->tails = e->regs[R_TA_TAILS / 4];
+	if (fresh)
+		e->viol = 0;
+	check_contract(e, s);
 	s->config = e->regs[R_TA_CONFIG / 4];
 	s->width = e->regs[R_TA_WIDTH / 4] >> 16;
 	s->height = e->regs[R_TA_HEIGHT / 4] >> 16;

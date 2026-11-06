@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 /*
  * mbxtri: a Gouraud triangle through the MBX model on the host, no kernel.
- * It does what a driver does for one frame: the TA's setup registers, the
- * stream (object header, a VGP program and its constants, the vertices), the
- * end word, then the render registers and the kick. Every word below is one
+ * It does what a driver does for one frame: the MMU, the contract's setup (lib/mbx_contract.h:
+ * the free list's registers, the contexts, the background object, the region array, the tails),
+ * the TA's setup registers, the stream (object header, a VGP program and its constants, the
+ * vertices), the end word, bit 30 on the region entries, then the render registers and the kick. Every word below is one
  * mbx/ta.c, core.c and render.c read; see mbx/README.md for what is assumed.
  *
  *   mbxtri [-a degrees] [-v] [-o out.ppm]
@@ -14,6 +15,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "../lib/mbx_contract.h"
 #include "../mbxemu.h"
 
 #define RAM_BASE	0x80000000u
@@ -38,6 +40,8 @@
 #define R_STRIDE	0x660
 #define R_KICK		0x680
 #define R_HW_CONTEXT	0x6ec
+#define R_MMU_TABLE(i)	(0x1000 + 4 * (i))
+#define R_MMU_CTRL	0x1020
 #define R_TA_START	0x800
 #define R_TA_CONTEXT_ID	0x810
 #define R_PB_BASE	0x83c
@@ -75,6 +79,19 @@ static struct mbxemu *E;
 
 static void wr(uint32_t reg, uint32_t v) { mbxemu_reg_write(E, reg, v); }
 static uint32_t rd(uint32_t reg) { return mbxemu_reg_read(E, reg); }
+
+/* device addresses (the MMU maps them one to one on RAM_BASE) and the page tables' place in RAM */
+#define SURF		0x10000u
+#define REGIONS		0x20000u
+#define TAILS		0x30000u		/* 64 KB aligned */
+#define CTX		0x50000u		/* the TA and EVM contexts: 32 KB, 16 KB aligned */
+#define PB		0x60000u		/* the parameter buffer: its first words are the background object */
+#define PT_OFF		0x180000u
+
+static void c_wr32(void *o, uint32_t va, uint32_t v) { (void)o; memcpy(ram + va, &v, 4); }
+static uint32_t c_rd32(void *o, uint32_t va) { uint32_t v; (void)o; memcpy(&v, ram + va, 4); return v; }
+static void c_reg(void *o, uint32_t reg, uint32_t v) { (void)o; wr(reg, v); }
+static const struct mbx_io IO = { .wr32 = c_wr32, .rd32 = c_rd32, .reg = c_reg };
 static void ta(uint32_t v) { mbxemu_ta_write(E, 0, v); }
 
 int main(int argc, char **argv)
@@ -83,8 +100,7 @@ int main(int argc, char **argv)
 	const char *out = "mbxtri.ppm";
 	float deg = 0;
 	int o, verbose = 0;
-	uint32_t surf = RAM_BASE + 0x10000, regions = RAM_BASE + 0x100000, tails = RAM_BASE + 0x110000;
-	uint32_t pb = RAM_BASE + 0x120000;
+	uint32_t surf = SURF, regions = REGIONS, tails = TAILS, pb = PB;
 	uint32_t stream[128], words, status;
 	int i, x, y;
 
@@ -102,9 +118,24 @@ int main(int argc, char **argv)
 	if (verbose)
 		mbxemu_set_trace(E, 1);
 
-	/* the colour buffer: cleared by the CPU (no background object is set up) */
+	/* the MMU: pages 0x10..0x7f one to one on RAM (the buffers below), the rest of the space nothing */
+	for (i = 0x10; i < 0x80; i++)
+		((uint32_t *)(ram + PT_OFF))[i] = RAM_BASE + (uint32_t)i * 4096;
+	for (i = 0; i < 8; i++)
+		wr(R_MMU_TABLE(i), RAM_BASE + PT_OFF + (i ? 0x1000 : 0));
+	wr(R_MMU_CTRL, 1);
+
+	/* the colour buffer: cleared by the CPU */
 	for (i = 0; i < W * H; i++)
-		((uint32_t *)(ram + (surf - RAM_BASE)))[i] = TRI_CLEAR;
+		((uint32_t *)(ram + surf))[i] = TRI_CLEAR;
+
+	/* the contract: the free list's registers (not built: this frame needs no parameter pages), the
+	 * contexts, the background object (the target itself), the region array, the tails */
+	mbx_contract_freelist(&IO, PB + 0x10000, PB, (PB >> 12) + 8);
+	mbx_contract_contexts(&IO, CTX);
+	mbx_contract_background(&IO, PB, SURF, W, W / 16, H / 16, 0);
+	mbx_contract_regions(&IO, REGIONS, W / 16, H / 16);
+	mbx_contract_tails(&IO, TAILS, 4096);
 
 	/* 1. the TA: tile grid (16-pixel tiles), regions, size, then start */
 	wr(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE);
@@ -147,7 +178,8 @@ int main(int argc, char **argv)
 	wr(R_HEIGHT, (uint32_t)(H - 1) << 16);
 	wr(R_ADDR, surf);
 	wr(R_STRIDE, W);		/* in 32-bit words */
-	wr(R_PB_BASE, pb);		/* its background object: zero, none */
+	wr(R_PB_BASE, pb);		/* the buffer: its first words are the background object */
+	mbx_contract_prerender(&IO, REGIONS, W / 16, H / 16);
 	wr(R_HW_CONTEXT, 0);
 	wr(R_KICK, 1);
 
@@ -166,7 +198,7 @@ int main(int argc, char **argv)
 
 	{
 		FILE *f = fopen(out, "wb");
-		const uint32_t *p = (const uint32_t *)(ram + (surf - RAM_BASE));
+		const uint32_t *p = (const uint32_t *)(ram + surf);
 		int lit = 0;
 
 		if (!f)

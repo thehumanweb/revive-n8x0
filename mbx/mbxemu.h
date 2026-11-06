@@ -8,8 +8,8 @@
  * No QEMU dependency: a host (the QEMU device in qemu/) gives physical
  * memory, the interrupt line and a log through struct mbxemu_host, and calls
  * in with register and slave port accesses. README.md lists what the model
- * assumes where the chip's behaviour hasn't been observed; it is not an
- * oracle.
+ * assumes where the chip's behaviour hasn't been observed; it is not a
+ * reference for what the chip does there.
  */
 #ifndef MBXEMU_H
 #define MBXEMU_H
@@ -60,6 +60,9 @@ void mbxemu_ta_write(struct mbxemu *e, uint32_t off, uint32_t v);	/* off: the la
 void mbxemu_ta_ctl_write(struct mbxemu *e, uint32_t v);
 void mbxemu_2d_write(struct mbxemu *e, uint32_t v);
 
+/* 1 (the default): a scene the chip would not take comes out as garbage; 0: the model forgives it */
+void mbxemu_set_strict(struct mbxemu *e, int strict);
+
 /* 1: log every TA word, register access and render; 0: only problems */
 void mbxemu_set_trace(struct mbxemu *e, int level);
 
@@ -70,6 +73,8 @@ struct mbxemu_stats {
 	unsigned int blits;
 	unsigned int stream_errors;	/* TA words it couldn't parse */
 	unsigned int ta_hangs;		/* sections words without bit 17: the TA took nothing */
+	unsigned int violations;	/* contract violations counted (emu.h, V_*) */
+	unsigned int violation_mask;	/* which kinds have happened */
 };
 void mbxemu_stats(const struct mbxemu *e, struct mbxemu_stats *s);
 

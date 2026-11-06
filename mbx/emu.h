@@ -230,8 +230,27 @@ struct pbw {
 	int nrim, fan;
 };
 
+/*
+ * What a client must have done for the chip to work (README assumption 31): each is a
+ * check at TA start or at the render kick, counted and logged once a scene. In strict mode
+ * (the default) a scene with any of them, or a background object that is not whole,
+ * comes out as the chip's does: white garbage in the tiles that hold objects (and, for a
+ * bad background object, in every tile's start).
+ */
+#define V_FL_OVERLAP	(1u << 0)	/* the free list's first page is not above the buffer's base page */
+#define V_FL_REGS	(1u << 1)	/* 0x6d8 is not 0x09000000 or 0xce0 is not 1 */
+#define V_PB_BASE	(1u << 2)	/* 0x83c, the parameter buffer's base, is not set */
+#define V_TAILS_ALIGN	(1u << 3)	/* 0x840 is not 64 KB aligned */
+#define V_CTX		(1u << 4)	/* 0x820 or 0x864 (the TA and EVM contexts) is not set */
+#define V_REGION_INIT	(1u << 5)	/* the region array was not initialised (0x22000000 | origin) */
+#define V_REGION_B30	(1u << 6)	/* the render's region entries lack bit 30 */
+#define V_BG		(1u << 7)	/* the background object is not a whole object */
+
 struct mbxemu {
 	struct mbxemu_host host;
+	int strict;			/* violations have the chip's consequences (default) */
+	uint32_t viol;			/* this scene's violations */
+	uint32_t viol_ever;
 	int trace;
 	uint32_t regs[0x4000 / 4];
 	uint32_t status, enable;	/* INT_STATUS's low bits, INT_ENABLE */
@@ -280,6 +299,7 @@ struct mbxemu {
 
 /* core.c */
 void emu_log(struct mbxemu *e, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void emu_violation(struct mbxemu *e, uint32_t bit, const char *what);
 #define emu_trace(e, ...) do { if ((e)->trace) emu_log(e, __VA_ARGS__); } while (0)
 void emu_raise(struct mbxemu *e, uint32_t bits);
 /* Device memory through the MMU; out of range or unmapped reads 0 */
