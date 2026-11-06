@@ -1,0 +1,50 @@
+drm/omap: no manual update with no plane to show
+
+When a client's framebuffer is removed while it is shown (a KMS client
+exiting), a commit disables the primary plane, and a manually updated
+display was still sent an update. With no overlay enabled DISPC sends
+nothing, FRAMEDONE never came, and after 250 ms the RFBI driver gave up
+and dropped the tearing effect trigger for good ("FRAMEDONE not received
+for 250ms", "no tearing effect signal"); the next commit (the console's
+restore) re-enabled the plane. Intermittent, depending on how the
+removal and the restore interleave. The display keeps its last frame:
+complete such an update at once without sending anything.
+
+diff -ruN a/drivers/gpu/drm/omapdrm/omap_crtc.c b/drivers/gpu/drm/omapdrm/omap_crtc.c
+--- a/drivers/gpu/drm/omapdrm/omap_crtc.c	2026-10-26 10:40:30.753299512 +0100
++++ b/drivers/gpu/drm/omapdrm/omap_crtc.c	2026-10-26 10:40:30.753299512 +0100
+@@ -56,6 +56,8 @@
+ 	 */
+ 	struct drm_rect rect_next, rect;
+ 	bool partial_next, partial, cropped;
++	/* the commit left no plane to show: nothing to send */
++	bool blank;
+ };
+ 
+ /* -----------------------------------------------------------------------------
+@@ -440,6 +442,17 @@
+ 		return;
+ 
+ 	/*
++	 * With no plane enabled (a client's framebuffer removed while shown)
++	 * DISPC sends nothing and FRAMEDONE never comes: after 250 ms RFBI
++	 * gave up and dropped the tearing effect for good. The display keeps
++	 * the last frame; complete the update without sending one.
++	 */
++	if (omap_crtc->blank) {
++		omap_crtc_complete_update(&omap_crtc->base);
++		return;
++	}
++
++	/*
+ 	 * No update, no FRAMEDONE: complete the flip here. Clearing pending
+ 	 * alone dropped the flip's event, and the commit waiting for it was
+ 	 * never done, so every later one got -EBUSY.
+@@ -737,6 +750,7 @@
+ 		 * The output's size follows the rectangle the plane was cropped
+ 		 * to, or goes back to the whole frame
+ 		 */
++		omap_crtc->blank = !crtc->state->plane_mask;
+ 		omap_crtc->partial = omap_crtc->partial_next;
+ 		omap_crtc->rect = omap_crtc->rect_next;
+ 		omap_crtc->partial_next = false;

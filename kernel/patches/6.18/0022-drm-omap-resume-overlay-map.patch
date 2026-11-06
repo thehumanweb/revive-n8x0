@@ -1,0 +1,33 @@
+drm/omap: claim overlays again for the plane state restored on resume
+
+drm_atomic_helper_suspend() duplicates the plane states, overlay
+pointers included, and then disables the planes, which releases their
+overlays from the global hwoverlay_to_plane map. On resume the saved
+state is committed again: omap_plane_atomic_check() finds an overlay in
+the plane state and keeps it without assigning it in the map. The plane
+then uses an overlay the map calls free (another plane could get it),
+and the next disable warns in omap_overlay_release() (seen on the N810
+on the second suspend to RAM). Drop overlay pointers the global state
+doesn't map to the plane, so they're assigned again.
+
+--- a/drivers/gpu/drm/omapdrm/omap_plane.c
++++ b/drivers/gpu/drm/omapdrm/omap_plane.c
+@@ -221,6 +221,18 @@
+ 	if (IS_ERR(omap_overlay_global_state))
+ 		return PTR_ERR(omap_overlay_global_state);
+ 
++	/*
++	 * The state drm_atomic_helper_resume() restores was duplicated
++	 * before suspend and still names the overlays the plane had then,
++	 * which suspend released from the global map: claim new ones.
++	 */
++	if (omap_state->overlay &&
++	    omap_overlay_global_state->hwoverlay_to_plane[omap_state->overlay->idx] != plane)
++		omap_state->overlay = NULL;
++	if (omap_state->r_overlay &&
++	    omap_overlay_global_state->hwoverlay_to_plane[omap_state->r_overlay->idx] != plane)
++		omap_state->r_overlay = NULL;
++
+ 	dispc_ovl_get_max_size(priv->dispc, &width, &height);
+ 	max_width = width << 16;
+ 	max_height = height << 16;

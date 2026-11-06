@@ -1,0 +1,156 @@
+ARM: OMAP2420: N800/N810 rate table sets (19.2 MHz) and cpufreq
+
+The OMAP2420 rate table only has sets for 12 and 13 MHz crystals (as had
+Nokia's 2.6.21 kernel); the N800/N810 run from 19.2 MHz, so virt_prcm_set
+found no current set (rate 0) and there could be no cpufreq. A real N810
+boots at "Clocking rate (Crystal/DPLL/MPU): 19.2/658/329 MHz".
+
+- A set matching what NOLO leaves (QEMU's n8x0 copies its register
+  values): DPLL M 120 N 6, CORE 658 MHz, MPU 329 MHz, L3 110 MHz,
+  CM_CLKSEL1_CORE 0x04360626; DSP and IVA as PRCM I.
+- With CONFIG_OMAP2420_N8X0_400MHZ (default n, experimental): 400 MHz
+  ARM, DPLL M 125 N 5 (CORE 800 MHz), L3 /8 = 100 MHz so the SDRAM stays
+  within the timings NOLO programmed (the rate switch rewrites the
+  refresh, not ACTIM), DSP 200 MHz. Derived, not Nokia's; VCORE is not
+  raised; untested on hardware.
+- cpu_mask, which every rate table lookup tests, was never set (lost
+  in an earlier rework), so virt_prcm_set matched no set on any
+  OMAP2xxx; set it from the SoC.
+- cpufreq: the table's MPU rates for the current crystal become OPPs of
+  CPU 0 and the omap-cpufreq device is registered (nothing did since the
+  board files went). Rates are rounded to kHz for cpufreq.
+  ARM_OMAP2PLUS_CPUFREQ selects PM_OPP, which omap-cpufreq uses (on
+  OMAP2 nothing selected it; dev_pm_opp_add() returned -EOPNOTSUPP).
+
+--- a/arch/arm/mach-omap2/opp2420_data.c
++++ b/arch/arm/mach-omap2/opp2420_data.c
+@@ -113,6 +113,35 @@
+ 		MX_CLKSEL2_PLL_2x_VAL, 0, SDRC_RFR_CTRL_133MHz,
+ 		RATE_IN_242X},
+ 
++#ifdef CONFIG_OMAP2420_N8X0_400MHZ
++	/*
++	 * Nokia N800/N810, 19.2 MHz crystal: 400 MHz ARM. Experimental,
++	 * untested on hardware, VCORE is not raised. DPLL 400 MHz
++	 * (M 125, N 5), CORE 800 MHz; L3 /8 = 100 MHz keeps the SDRAM at
++	 * or below the clock NOLO set its timings for (110 MHz); DSS1 /8,
++	 * VLYNQ /16, SSI /4, USB L3/2, L4 L3/1; DSP /4 (200 MHz), IVA /5.
++	 */
++	{19200000, 800000000, 400000000, (2 << 0),
++		(1 << 7) | (2 << 5) | (4 << 0) | (5 << 8), (1 << 0),
++		(2 << 25) | (4 << 20) | (16 << 15) | (8 << 8) | (1 << 5) | (8 << 0),
++		MX_APLLS_CLIKIN_19_2 | (5 << 8) | (125 << 12),
++		MX_CLKSEL2_PLL_2x_VAL, 0, SDRC_RFR_CTRL_100MHz,
++		RATE_IN_242X},
++#endif
++	/*
++	 * Nokia N800/N810, 19.2 MHz crystal: what NOLO sets up, 329 MHz ARM
++	 * (QEMU's n8x0 copies its register values; a real N810 boots at
++	 * "19.2/658/329"). DPLL M 120, N 6, CORE 658 MHz, MPU /2, L3 /6
++	 * (110 MHz SDRAM), CM_CLKSEL1_CORE 0x04360626, GFX L3/1; DSP and
++	 * IVA as PRCM I (CORE 660 MHz). The rates are rounded to kHz for
++	 * cpufreq; dpll_speed is what the clock code computes from M/N.
++	 */
++	{19200000, 658285714, 329142000, (2 << 0),
++		RI_CM_CLKSEL_DSP_VAL, (1 << 0), 0x04360626,
++		MX_APLLS_CLIKIN_19_2 | (6 << 8) | (120 << 12),
++		MX_CLKSEL2_PLL_2x_VAL, 0, SDRC_RFR_CTRL_110MHz,
++		RATE_IN_242X},
++
+ 	/* PRCM-VII (boot-bypass) */
+ 	{S12M, S12M, S12M, RVII_CM_CLKSEL_MPU_VAL,		/* 12MHz ARM*/
+ 		RVII_CM_CLKSEL_DSP_VAL, RVII_CM_CLKSEL_GFX_VAL,
+--- a/arch/arm/mach-omap2/clkt2xxx_virt_prcm_set.c
++++ b/arch/arm/mach-omap2/clkt2xxx_virt_prcm_set.c
+@@ -27,7 +27,10 @@
+ #include <linux/errno.h>
+ #include <linux/clk.h>
+ #include <linux/io.h>
++#include <linux/cpu.h>
+ #include <linux/cpufreq.h>
++#include <linux/platform_device.h>
++#include <linux/pm_opp.h>
+ #include <linux/slab.h>
+ 
+ #include "soc.h"
+@@ -210,7 +213,49 @@
+ 		sys_ck_rate = clk_get_rate(c);
+ 		clk_put(c);
+ 	}
++
++	/* Which rate table sets apply; nothing else set it, so none did */
++	cpu_mask = cpu_is_omap2420() ? RATE_IN_242X : RATE_IN_243X;
++}
++
++#ifdef CONFIG_ARM_OMAP2PLUS_CPUFREQ
++/*
++ * cpufreq: the MPU rates of the rate table sets usable with this crystal
++ * as OPPs of CPU 0, and the omap-cpufreq device, which sets them through
++ * virt_prcm_set ("cpufreq_ck").
++ */
++static int __init omap2xxx_clkt_vps_cpufreq_init(void)
++{
++	const struct prcm_config *prcm;
++	struct device *mpu_dev;
++	int n = 0;
++
++	if (!cpu_is_omap24xx() || !rate_table || !curr_prcm_set ||
++	    !curr_prcm_set->mpu_speed)
++		return 0;
++
++	mpu_dev = get_cpu_device(0);
++	if (!mpu_dev)
++		return 0;
++
++	for (prcm = rate_table; prcm->mpu_speed; prcm++) {
++		if (!(prcm->flags & cpu_mask) ||
++		    prcm->xtal_speed != sys_ck_rate ||
++		    prcm->dpll_speed == prcm->xtal_speed)	/* bypass */
++			continue;
++		if (!dev_pm_opp_add(mpu_dev, prcm->mpu_speed, 0))
++			n++;
++	}
++	if (!n)
++		return 0;
++
++	pr_info("OMAP2xxx: %d MPU rate(s) for cpufreq, now %lu MHz\n", n,
++		curr_prcm_set->mpu_speed / 1000000);
++	return PTR_ERR_OR_ZERO(platform_device_register_simple("omap-cpufreq",
++							       -1, NULL, 0));
+ }
++late_initcall(omap2xxx_clkt_vps_cpufreq_init);
++#endif
+ 
+ #ifdef CONFIG_OF
+ #include <linux/clk-provider.h>
+--- a/arch/arm/mach-omap2/Kconfig
++++ b/arch/arm/mach-omap2/Kconfig
+@@ -248,6 +248,18 @@
+ config MACH_NOKIA_N810_WIMAX
+ 	bool
+ 
++config OMAP2420_N8X0_400MHZ
++	bool "Nokia N800/N810: 400 MHz MPU rate (experimental)"
++	depends on MACH_NOKIA_N8X0 && ARM_OMAP2PLUS_CPUFREQ
++	help
++	  Add a 400 MHz MPU rate for the N800/N810's 19.2 MHz crystal to
++	  the OMAP2420 rate table, next to the 329 MHz NOLO sets up. The
++	  dividers keep the SDRAM at or below NOLO's 110 MHz, but the rate
++	  is derived, not Nokia's, VCORE is not raised, and it has not
++	  been tried on hardware: it may hang the device.
++
++	  If unsure, say N.
++
+ config NOKIA_N8X0_MAEMO_COMPAT
+ 	bool "Maemo userspace compatibility for N800/N810"
+ 	depends on MACH_NOKIA_N8X0 && PROC_FS
+--- a/drivers/cpufreq/Kconfig.arm
++++ b/drivers/cpufreq/Kconfig.arm
+@@ -145,6 +145,7 @@
+ 	bool "TI OMAP2+"
+ 	depends on ARCH_OMAP2PLUS || COMPILE_TEST
+ 	default ARCH_OMAP2PLUS
++	select PM_OPP
+ 
+ config ARM_QCOM_CPUFREQ_NVMEM
+ 	tristate "Qualcomm nvmem based CPUFreq"

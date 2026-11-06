@@ -1,0 +1,34 @@
+i2c: omap: don't run past the buffer on odd lengths with a 16-bit data register
+
+On OMAP1 and OMAP2420 (OMAP_I2C_FLAG_16BIT_DATA_REG) each data register
+access carries two bytes. omap_i2c_receive_data() and
+omap_i2c_transmit_data() always handle the second byte, so a transfer of
+odd length writes (receive) or reads (transmit) one byte past the
+message buffer. The pre-split code checked buf_len before the second
+byte. On the N810, menelaus_read_time()'s 7-byte read overflows its
+stack buffer: "stack-protector: Kernel stack is corrupted in:
+menelaus_read_time".
+
+diff -urN a/drivers/i2c/busses/i2c-omap.c b/drivers/i2c/busses/i2c-omap.c
+--- a/drivers/i2c/busses/i2c-omap.c
++++ b/drivers/i2c/busses/i2c-omap.c
+@@ -1010,7 +1010,8 @@
+ 		 * Data reg in 2430, omap3 and
+ 		 * omap4 is 8 bit wide
+ 		 */
+-		if (omap->flags & OMAP_I2C_FLAG_16BIT_DATA_REG) {
++		if ((omap->flags & OMAP_I2C_FLAG_16BIT_DATA_REG) &&
++		    omap->buf_len) {
+ 			*omap->buf++ = w >> 8;
+ 			omap->buf_len--;
+ 		}
+@@ -1030,7 +1031,8 @@
+ 		 * Data reg in 2430, omap3 and
+ 		 * omap4 is 8 bit wide
+ 		 */
+-		if (omap->flags & OMAP_I2C_FLAG_16BIT_DATA_REG) {
++		if ((omap->flags & OMAP_I2C_FLAG_16BIT_DATA_REG) &&
++		    omap->buf_len) {
+ 			w |= *omap->buf++ << 8;
+ 			omap->buf_len--;
+ 		}

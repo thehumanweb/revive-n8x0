@@ -1,0 +1,49 @@
+jffs2: accept Nokia's rpsize and rpuid mount options
+
+Maemo's stock initfs mounts the N800/N810 rootfs with
+rpsize=1024,rpuid=0,rpuid=30000 (Nokia's jffs2: reserved pool size in KiB
+and the users allowed to use it). With the fs_context parser these fail
+the mount with -EINVAL. Accept rpsize as rp_size, and accept and ignore
+rpuid: here the reserved pool is for privileged processes.
+
+diff -uN a/fs/jffs2/super.c b/fs/jffs2/super.c
+--- a/fs/jffs2/super.c
++++ b/fs/jffs2/super.c
+@@ -163,10 +163,12 @@
+  * Opt_source: The source device
+  * Opt_override_compr: override default compressor
+  * Opt_rp_size: size of reserved pool in KiB
++ * Opt_rpuid: Nokia's reserved-pool user list (Maemo), accepted and ignored
+  */
+ enum {
+ 	Opt_override_compr,
+ 	Opt_rp_size,
++	Opt_rpuid,
+ };
+ 
+ static const struct constant_table jffs2_param_compr[] = {
+@@ -183,6 +185,14 @@
+ static const struct fs_parameter_spec jffs2_fs_parameters[] = {
+ 	fsparam_enum	("compr",	Opt_override_compr, jffs2_param_compr),
+ 	fsparam_u32	("rp_size",	Opt_rp_size),
++	/*
++	 * Nokia's jffs2 (Maemo, N800/N810) spelled the reserved pool size
++	 * "rpsize" and added "rpuid", the users allowed into the pool; the
++	 * stock initfs mounts the rootfs with both. Here only privileged
++	 * processes use the pool.
++	 */
++	fsparam_u32	("rpsize",	Opt_rp_size),
++	fsparam_u32	("rpuid",	Opt_rpuid),
+ 	{}
+ };
+ 
+@@ -207,6 +217,9 @@
+ 		c->mount_opts.rp_size = result.uint_32 * 1024;
+ 		c->mount_opts.set_rp_size = true;
+ 		break;
++	case Opt_rpuid:
++		pr_info_once("jffs2: ignoring rpuid (reserved pool is for privileged users)\n");
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}

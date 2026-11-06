@@ -1,0 +1,51 @@
+drm/omap: s1d1374x: keep the controller's power-down line deasserted
+
+Request the controller's power-down GPIO (the N8x0's GPIO 15, active
+low, driven high by the bootloader and Nokia's board code) deasserted,
+so that the kernel owns the line and keeps the controller powered.
+
+--- a/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
++++ b/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
+@@ -17,6 +17,7 @@
+ #define DSS_SUBSYS_NAME "S1D1374X"
+ 
+ #include <linux/delay.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/jiffies.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+@@ -45,6 +46,7 @@
+ 	struct drm_bridge *next_bridge;
+ 	struct device *dev;
+ 	struct device_node *rfbi_node;
++	struct gpio_desc *powerdown;
+ 	struct rfbi_device *rfbi;
+ 	u8 data_source;
+ 	bool identified;
+@@ -182,6 +184,16 @@
+ 
+ 	ctrl->dev = &pdev->dev;
+ 
++	/*
++	 * Keep the controller powered (the bootloader drives the line; with
++	 * it low the controller loses its PLL, memory and panel setup)
++	 */
++	ctrl->powerdown = devm_gpiod_get_optional(&pdev->dev, "powerdown",
++						  GPIOD_OUT_LOW);
++	if (IS_ERR(ctrl->powerdown))
++		return dev_err_probe(&pdev->dev, PTR_ERR(ctrl->powerdown),
++				     "powerdown GPIO\n");
++
+ 	ctrl->next_bridge = devm_drm_of_get_bridge(&pdev->dev,
+ 						   pdev->dev.of_node, 1, 0);
+ 	if (IS_ERR(ctrl->next_bridge))
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
+@@ -150,6 +150,7 @@
+ / {
+ 	display-controller {
+ 		compatible = "epson,s1d13745";
++		powerdown-gpios = <&gpio1 15 GPIO_ACTIVE_LOW>;	/* high: on */
+ 
+ 		ports {
+ 			#address-cells = <1>;

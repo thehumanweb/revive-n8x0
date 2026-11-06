@@ -1,0 +1,656 @@
+drm/panel: Sharp LS041Y3 (Nokia N800/N810), chained after the S1D13745
+
+The LS041Y3 takes pixels from the Epson S1D13745; the host drives its
+MIPI DBI command interface on McSPI1 CS1 (9-bit words, 4 MHz). After
+Nokia's lcd_mipid.c:
+- detection by display ID (0x83 LS041Y3, 0x45 Philips LPH8923), and
+  whether the bootloader left it on (status: sleep out, display on);
+- enable: sleep out, init string (0xc2, then 24 data lines), display on;
+  disable: display off, sleep in; 120 ms between sleep in and out;
+- the LS041Y3 ESD check every 5 s while on: the self-diagnosis bit that
+  sleep out flips, and from revision 0x88 a register read through the
+  test commands; on failure sleep in and out again;
+- backlight through drm_panel_of_backlight (the Tahvo backlight).
+
+s1d1374x now attaches the next bridge on its port 1 (the panel, through
+the panel bridge) and no longer provides a fixed mode; the mode is the
+panel's, with the omapfb DISPC timings. DT: the panel on mcspi1 with
+nreset on gpio30 (NOLO's LCD tag), graph S1D13745 port 1 -> panel.
+
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
+@@ -123,8 +123,9 @@
+ };
+ 
+ /*
+- * Display: DISPC -> RFBI -> Epson S1D13745 (own frame memory) -> 800x480
+- * panel. Manual update; the bootloader initialises the controller and panel.
++ * Display: DISPC -> RFBI -> Epson S1D13745 (own frame memory) -> Sharp
++ * LS041Y3 800x480 panel, its commands over McSPI1. Manual update; the
++ * bootloader initialises the controller and panel.
+  */
+ &dss {
+ 	status = "okay";
+@@ -144,9 +145,45 @@
+ 	display-controller {
+ 		compatible = "epson,s1d13745";
+ 
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++
++				blizzard_in: endpoint {
++					remote-endpoint = <&rfbi_out>;
++				};
++			};
++
++			port@1 {
++				reg = <1>;
++
++				blizzard_out: endpoint {
++					remote-endpoint = <&lcd_in>;
++				};
++			};
++		};
++	};
++};
++
++&mcspi1 {
++	#address-cells = <1>;
++	#size-cells = <0>;
++	ti,spi-num-cs = <4>;
++
++	lcd@1 {
++		compatible = "sharp,ls041y3";
++		reg = <1>;
++		spi-max-frequency = <4000000>;
++		/* nreset, gpio30 (from NOLO's LCD tag) */
++		reset-gpios = <&gpio1 30 GPIO_ACTIVE_LOW>;
++		backlight = <&backlight>;
++
+ 		port {
+-			blizzard_in: endpoint {
+-				remote-endpoint = <&rfbi_out>;
++			lcd_in: endpoint {
++				remote-endpoint = <&blizzard_out>;
+ 			};
+ 		};
+ 	};
+--- a/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
++++ b/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
+@@ -8,7 +8,8 @@
+  * so the 16-bit pixels DISPC sends next land in the right place.
+  *
+  * The bootloader (NOLO on the N800/N810) sets up the controller's PLL,
+- * SDRAM and panel timings, and the panel itself; they are kept as found.
++ * SDRAM and panel timings; they are kept as found. The panel, on port 1,
++ * is the next bridge.
+  *
+  * Register use after Nokia's omapfb blizzard.c (Imre Deak, Juha Yrjölä).
+  */
+@@ -24,8 +25,7 @@
+ #include <linux/platform_device.h>
+ 
+ #include <drm/drm_bridge.h>
+-#include <drm/drm_connector.h>
+-#include <drm/drm_modes.h>
++#include <drm/drm_of.h>
+ 
+ #include "omapdss.h"
+ #include "dss.h"
+@@ -42,6 +42,7 @@
+ 
+ struct s1d1374x {
+ 	struct drm_bridge bridge;
++	struct drm_bridge *next_bridge;
+ 	struct device *dev;
+ 	struct device_node *rfbi_node;
+ 	struct rfbi_device *rfbi;
+@@ -137,6 +138,7 @@
+ {
+ 	struct s1d1374x *ctrl = drm_bridge_to_s1d1374x(bridge);
+ 	struct rfbi_device *rfbi;
++	int ret;
+ 
+ 	if (!(flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR))
+ 		return -EINVAL;
+@@ -145,6 +147,10 @@
+ 	if (IS_ERR(rfbi))
+ 		return PTR_ERR(rfbi);
+ 
++	ret = drm_bridge_attach(encoder, ctrl->next_bridge, bridge, flags);
++	if (ret)
++		return ret;
++
+ 	ctrl->rfbi = rfbi;
+ 	rfbi_set_client(rfbi, &s1d1374x_rfbi_ops, ctrl);
+ 
+@@ -160,47 +166,9 @@
+ 	ctrl->rfbi = NULL;
+ }
+ 
+-/*
+- * The N800/N810 panel (Sharp LS041Y3): 800x480 at about 51 Hz, as the
+- * bootloader programs the controller. The pixel clock only paces DISPC;
+- * the panel runs off the controller's own timing.
+- */
+-static const struct drm_display_mode s1d1374x_n8x0_mode = {
+-	.clock = 21940,
+-	.hdisplay = 800,
+-	.hsync_start = 800 + 28,
+-	.hsync_end = 800 + 28 + 4,
+-	.htotal = 800 + 28 + 4 + 49,
+-	.vdisplay = 480,
+-	.vsync_start = 480 + 3,
+-	.vsync_end = 480 + 3 + 2,
+-	.vtotal = 480 + 3 + 2 + 3,
+-	.width_mm = 89,
+-	.height_mm = 53,
+-	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+-};
+-
+-static int s1d1374x_bridge_get_modes(struct drm_bridge *bridge,
+-				     struct drm_connector *connector)
+-{
+-	struct drm_display_mode *mode;
+-
+-	mode = drm_mode_duplicate(connector->dev, &s1d1374x_n8x0_mode);
+-	if (!mode)
+-		return 0;
+-
+-	drm_mode_set_name(mode);
+-	drm_mode_probed_add(connector, mode);
+-	connector->display_info.width_mm = mode->width_mm;
+-	connector->display_info.height_mm = mode->height_mm;
+-
+-	return 1;
+-}
+-
+ static const struct drm_bridge_funcs s1d1374x_bridge_funcs = {
+ 	.attach = s1d1374x_bridge_attach,
+ 	.detach = s1d1374x_bridge_detach,
+-	.get_modes = s1d1374x_bridge_get_modes,
+ };
+ 
+ static int s1d1374x_probe(struct platform_device *pdev)
+@@ -213,6 +181,13 @@
+ 		return PTR_ERR(ctrl);
+ 
+ 	ctrl->dev = &pdev->dev;
++
++	ctrl->next_bridge = devm_drm_of_get_bridge(&pdev->dev,
++						   pdev->dev.of_node, 1, 0);
++	if (IS_ERR(ctrl->next_bridge))
++		return dev_err_probe(&pdev->dev, PTR_ERR(ctrl->next_bridge),
++				     "no panel on port 1\n");
++
+ 	ctrl->rfbi_node = of_graph_get_remote_node(pdev->dev.of_node, 0, 0);
+ 	if (!ctrl->rfbi_node) {
+ 		dev_err(&pdev->dev, "no RFBI port connection\n");
+@@ -220,8 +195,6 @@
+ 	}
+ 
+ 	ctrl->bridge.of_node = pdev->dev.of_node;
+-	ctrl->bridge.ops = DRM_BRIDGE_OP_MODES;
+-	ctrl->bridge.type = DRM_MODE_CONNECTOR_DPI;
+ 	platform_set_drvdata(pdev, ctrl);
+ 
+ 	return devm_drm_bridge_add(&pdev->dev, &ctrl->bridge);
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -923,6 +923,15 @@
+ 	  Say Y here if you want to enable support for Sharp LS037V7DW01 VGA
+ 	  (480x640) LCD panel (found on the TI SDP3430 board).
+ 
++config DRM_PANEL_SHARP_LS041Y3
++	tristate "Sharp LS041Y3 panel"
++	depends on GPIOLIB && OF && SPI
++	depends on BACKLIGHT_CLASS_DEVICE
++	help
++	  Say Y here if you want to enable support for the Sharp LS041Y3
++	  800x480 4.1" panel of the Nokia N800 and N810, behind their
++	  Epson S1D13745 display controller.
++
+ config DRM_PANEL_SHARP_LS043T1LE01
+ 	tristate "Sharp LS043T1LE01 qHD video mode panel"
+ 	depends on OF
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -93,6 +93,7 @@
+ obj-$(CONFIG_DRM_PANEL_SEIKO_43WVF1G) += panel-seiko-43wvf1g.o
+ obj-$(CONFIG_DRM_PANEL_SHARP_LQ101R1SX01) += panel-sharp-lq101r1sx01.o
+ obj-$(CONFIG_DRM_PANEL_SHARP_LS037V7DW01) += panel-sharp-ls037v7dw01.o
++obj-$(CONFIG_DRM_PANEL_SHARP_LS041Y3) += panel-sharp-ls041y3.o
+ obj-$(CONFIG_DRM_PANEL_SHARP_LS043T1LE01) += panel-sharp-ls043t1le01.o
+ obj-$(CONFIG_DRM_PANEL_SHARP_LS060T1SX01) += panel-sharp-ls060t1sx01.o
+ obj-$(CONFIG_DRM_PANEL_SITRONIX_ST7701) += panel-sitronix-st7701.o
+--- a/drivers/gpu/drm/panel/panel-sharp-ls041y3.c
++++ b/drivers/gpu/drm/panel/panel-sharp-ls041y3.c
+@@ -0,0 +1,424 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Sharp LS041Y3 (and Philips LPH8923) 800x480 panel of the Nokia N800/N810.
++ *
++ * The panel takes pixels from the Epson S1D13745 display controller; the
++ * host only talks to its MIPI DBI command interface over SPI, with 9-bit
++ * words (bit 8 set for data). The bootloader leaves it running.
++ *
++ * The LS041Y3 can latch up after an electrostatic discharge, so every
++ * 5 seconds while on its self-diagnosis is checked and on failure it is
++ * put to sleep and woken up again.
++ *
++ * Command sequences after Nokia's lcd_mipid.c (Imre Deak).
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/spi/spi.h>
++#include <linux/workqueue.h>
++#include <video/mipi_display.h>
++
++#include <drm/drm_connector.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++
++#define MIPID_CMD_SELF_DIAG		0x0f	/* RDDSDR */
++#define MIPID_SELF_DIAG_POFF		BIT(6)	/* flips on a good sleep out */
++
++#define MIPID_ESD_CHECK_PERIOD		msecs_to_jiffies(5000)
++
++struct ls041y3 {
++	struct drm_panel panel;
++	struct spi_device *spi;
++	struct gpio_desc *reset_gpio;
++
++	struct mutex mutex;
++	struct delayed_work esd_work;
++
++	const char *name;
++	u8 revision;
++	bool esd_check;
++	bool enabled;
++
++	/* Sleep in and out commands must be 120 ms apart */
++	unsigned long hw_guard_end;
++	unsigned long hw_guard_wait;
++};
++
++#define to_ls041y3(p) container_of(p, struct ls041y3, panel)
++
++static void ls041y3_transfer(struct ls041y3 *lcd, u8 cmd, const u16 *wbuf,
++			     int wlen, u8 *rbuf, int rlen)
++{
++	struct spi_transfer xfer[4] = { };
++	struct spi_transfer *x = xfer;
++	u16 word = cmd, first;
++	int ret;
++
++	x->tx_buf = &word;
++	x->len = 2;
++	x->bits_per_word = 9;
++
++	if (wlen) {
++		x++;
++		x->tx_buf = wbuf;
++		x->len = wlen * 2;
++		x->bits_per_word = 9;
++	}
++
++	if (rlen) {
++		/*
++		 * The first byte follows the command directly; a multi-byte
++		 * response has a dummy clock cycle before it, so read that
++		 * byte as a 9-bit word.
++		 */
++		x++;
++		if (rlen > 1) {
++			x->rx_buf = &first;
++			x->len = 2;
++			x->bits_per_word = 9;
++
++			x++;
++			x->rx_buf = &rbuf[1];
++			x->len = rlen - 1;
++			x->bits_per_word = 8;
++		} else {
++			x->rx_buf = rbuf;
++			x->len = 1;
++			x->bits_per_word = 8;
++		}
++	}
++
++	ret = spi_sync_transfer(lcd->spi, xfer, x - xfer + 1);
++	if (ret < 0)
++		dev_dbg(&lcd->spi->dev, "command %02x: %d\n", cmd, ret);
++
++	if (rlen > 1)
++		rbuf[0] = first & 0xff;
++}
++
++static void ls041y3_cmd(struct ls041y3 *lcd, u8 cmd)
++{
++	ls041y3_transfer(lcd, cmd, NULL, 0, NULL, 0);
++}
++
++static void ls041y3_write(struct ls041y3 *lcd, u8 cmd, const u16 *buf,
++			  int len)
++{
++	ls041y3_transfer(lcd, cmd, buf, len, NULL, 0);
++}
++
++static void ls041y3_read(struct ls041y3 *lcd, u8 cmd, u8 *buf, int len)
++{
++	ls041y3_transfer(lcd, cmd, NULL, 0, buf, len);
++}
++
++static void ls041y3_set_sleep_mode(struct ls041y3 *lcd, bool on)
++{
++	unsigned long wait = lcd->hw_guard_end - jiffies;
++
++	if ((long)wait > 0 && wait <= lcd->hw_guard_wait)
++		schedule_timeout_uninterruptible(wait);
++
++	ls041y3_cmd(lcd, on ? MIPI_DCS_ENTER_SLEEP_MODE :
++			      MIPI_DCS_EXIT_SLEEP_MODE);
++
++	lcd->hw_guard_wait = msecs_to_jiffies(120);
++	lcd->hw_guard_end = jiffies + lcd->hw_guard_wait;
++
++	/*
++	 * After sleep out the panel needs 120 ms before the init string;
++	 * after sleep in the controller has to keep the clocks and syncs
++	 * running for two frames.
++	 */
++	msleep(on ? 50 : 120);
++}
++
++static void ls041y3_send_init_string(struct ls041y3 *lcd)
++{
++	static const u16 initpar[] = { 0x0102, 0x0100, 0x0100 };
++	/* 24 data lines from the S1D13745 */
++	static const u16 colmod = 0x0170;
++
++	ls041y3_write(lcd, 0xc2, initpar, ARRAY_SIZE(initpar));
++	ls041y3_write(lcd, MIPI_DCS_SET_PIXEL_FORMAT, &colmod, 1);
++}
++
++static void ls041y3_esd_recover(struct ls041y3 *lcd)
++{
++	dev_err(&lcd->spi->dev, "performing LCD ESD recovery\n");
++	ls041y3_set_sleep_mode(lcd, true);
++	ls041y3_set_sleep_mode(lcd, false);
++}
++
++/* Each sleep out runs the self diagnosis, which flips a bit if it passes */
++static void ls041y3_esd_check_mode1(struct ls041y3 *lcd)
++{
++	u8 state1, state2;
++
++	ls041y3_read(lcd, MIPID_CMD_SELF_DIAG, &state1, 1);
++	ls041y3_set_sleep_mode(lcd, false);
++	ls041y3_read(lcd, MIPID_CMD_SELF_DIAG, &state2, 1);
++	dev_dbg(&lcd->spi->dev, "ESD mode 1 state1 %02x state2 %02x\n",
++		state1, state2);
++
++	if (!((state1 ^ state2) & MIPID_SELF_DIAG_POFF))
++		ls041y3_esd_recover(lcd);
++}
++
++/* Revision 0x88 on: a register read through Sharp's test commands */
++static void ls041y3_esd_check_mode2(struct ls041y3 *lcd)
++{
++	static const struct {
++		u8 cmd;
++		u8 wlen;
++		u16 wbuf[2];
++	} rd_ctrl[] = {
++		{ 0xb0, 2, { 0x0101, 0x01fe, } },
++		{ 0xb1, 2, { 0x01de, 0x0121, } },
++		{ 0xc2, 2, { 0x0100, 0x0100, } },
++		{ 0xbd, 1, { 0x0100, } },	/* read */
++		{ 0xc2, 2, { 0x01fc, 0x0103, } },
++		{ 0xb4, 0, },
++		{ 0x00, 0, },
++	};
++	u8 rbuf[2];
++	int i;
++
++	for (i = 0; i < 3; i++)
++		ls041y3_write(lcd, rd_ctrl[i].cmd, rd_ctrl[i].wbuf,
++			      rd_ctrl[i].wlen);
++
++	udelay(10);
++	ls041y3_read(lcd, rd_ctrl[3].cmd, rbuf, 2);
++
++	for (i = 4; i < ARRAY_SIZE(rd_ctrl); i++) {
++		udelay(10);
++		ls041y3_write(lcd, rd_ctrl[i].cmd, rd_ctrl[i].wbuf,
++			      rd_ctrl[i].wlen);
++	}
++
++	dev_dbg(&lcd->spi->dev, "ESD mode 2 state %02x\n", rbuf[1]);
++	if (rbuf[1] == 0x00)
++		ls041y3_esd_recover(lcd);
++}
++
++static void ls041y3_esd_work(struct work_struct *work)
++{
++	struct ls041y3 *lcd = container_of(work, struct ls041y3,
++					   esd_work.work);
++
++	mutex_lock(&lcd->mutex);
++	ls041y3_esd_check_mode1(lcd);
++	if (lcd->revision >= 0x88)
++		ls041y3_esd_check_mode2(lcd);
++	mutex_unlock(&lcd->mutex);
++
++	schedule_delayed_work(&lcd->esd_work, MIPID_ESD_CHECK_PERIOD);
++}
++
++static void ls041y3_esd_start(struct ls041y3 *lcd)
++{
++	if (lcd->esd_check)
++		schedule_delayed_work(&lcd->esd_work, MIPID_ESD_CHECK_PERIOD);
++}
++
++static void ls041y3_esd_stop(struct ls041y3 *lcd)
++{
++	if (lcd->esd_check)
++		cancel_delayed_work_sync(&lcd->esd_work);
++}
++
++static int ls041y3_enable(struct drm_panel *panel)
++{
++	struct ls041y3 *lcd = to_ls041y3(panel);
++
++	mutex_lock(&lcd->mutex);
++	if (!lcd->enabled) {
++		ls041y3_set_sleep_mode(lcd, false);
++		ls041y3_send_init_string(lcd);
++		ls041y3_cmd(lcd, MIPI_DCS_SET_DISPLAY_ON);
++		lcd->enabled = true;
++	}
++	mutex_unlock(&lcd->mutex);
++
++	ls041y3_esd_start(lcd);
++
++	return 0;
++}
++
++static int ls041y3_disable(struct drm_panel *panel)
++{
++	struct ls041y3 *lcd = to_ls041y3(panel);
++
++	/* A last ESD check may run before this returns, so without the lock */
++	ls041y3_esd_stop(lcd);
++
++	mutex_lock(&lcd->mutex);
++	if (lcd->enabled) {
++		ls041y3_cmd(lcd, MIPI_DCS_SET_DISPLAY_OFF);
++		ls041y3_set_sleep_mode(lcd, true);
++		lcd->enabled = false;
++	}
++	mutex_unlock(&lcd->mutex);
++
++	return 0;
++}
++
++/*
++ * The DISPC timings of Nokia's omapfb; the panel itself runs off the
++ * S1D13745's timing, so this mainly paces the RFBI updates (51 Hz).
++ */
++static const struct drm_display_mode ls041y3_mode = {
++	.clock = 21940,
++	.hdisplay = 800,
++	.hsync_start = 800 + 20,
++	.hsync_end = 800 + 20 + 50,
++	.htotal = 800 + 20 + 50 + 15,
++	.vdisplay = 480,
++	.vsync_start = 480 + 1,
++	.vsync_end = 480 + 1 + 2,
++	.vtotal = 480 + 1 + 2 + 3,
++	.width_mm = 89,
++	.height_mm = 53,
++	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
++};
++
++static int ls041y3_get_modes(struct drm_panel *panel,
++			     struct drm_connector *connector)
++{
++	struct drm_display_mode *mode;
++
++	mode = drm_mode_duplicate(connector->dev, &ls041y3_mode);
++	if (!mode)
++		return -ENOMEM;
++
++	drm_mode_set_name(mode);
++	drm_mode_probed_add(connector, mode);
++
++	connector->display_info.width_mm = ls041y3_mode.width_mm;
++	connector->display_info.height_mm = ls041y3_mode.height_mm;
++
++	return 1;
++}
++
++static const struct drm_panel_funcs ls041y3_funcs = {
++	.enable = ls041y3_enable,
++	.disable = ls041y3_disable,
++	.get_modes = ls041y3_get_modes,
++};
++
++static int ls041y3_detect(struct ls041y3 *lcd)
++{
++	u8 id[3];
++	__be32 status;
++	u32 st;
++
++	ls041y3_read(lcd, MIPI_DCS_GET_DISPLAY_STATUS, (u8 *)&status, 4);
++	st = be32_to_cpu(status);
++	/* Sleep out and display on */
++	lcd->enabled = (st & BIT(17)) && (st & BIT(10));
++
++	ls041y3_read(lcd, MIPI_DCS_GET_DISPLAY_ID, id, 3);
++
++	switch (id[0]) {
++	case 0x45:
++		lcd->name = "lph8923";
++		break;
++	case 0x83:
++		lcd->name = "ls041y3";
++		lcd->esd_check = true;
++		break;
++	default:
++		dev_err(&lcd->spi->dev, "unknown display ID %3phN\n", id);
++		return -ENODEV;
++	}
++	lcd->revision = id[1];
++
++	dev_info(&lcd->spi->dev, "%s rev %02x panel, %s by bootloader\n",
++		 lcd->name, lcd->revision, lcd->enabled ? "on" : "off");
++
++	return 0;
++}
++
++static int ls041y3_probe(struct spi_device *spi)
++{
++	struct ls041y3 *lcd;
++	int ret;
++
++	lcd = devm_drm_panel_alloc(&spi->dev, struct ls041y3, panel,
++				   &ls041y3_funcs, DRM_MODE_CONNECTOR_DPI);
++	if (IS_ERR(lcd))
++		return PTR_ERR(lcd);
++
++	spi_set_drvdata(spi, lcd);
++	lcd->spi = spi;
++	mutex_init(&lcd->mutex);
++	INIT_DELAYED_WORK(&lcd->esd_work, ls041y3_esd_work);
++
++	spi->mode = SPI_MODE_0;
++	ret = spi_setup(spi);
++	if (ret)
++		return ret;
++
++	/* Keep the panel out of reset, as the bootloader left it */
++	lcd->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset",
++						  GPIOD_OUT_LOW);
++	if (IS_ERR(lcd->reset_gpio))
++		return dev_err_probe(&spi->dev, PTR_ERR(lcd->reset_gpio),
++				     "failed to get reset GPIO\n");
++
++	ret = ls041y3_detect(lcd);
++	if (ret)
++		return ret;
++
++	ret = drm_panel_of_backlight(&lcd->panel);
++	if (ret)
++		return dev_err_probe(&spi->dev, ret, "failed to get backlight\n");
++
++	drm_panel_add(&lcd->panel);
++
++	/* DRM enables the panel at the first modeset; check it until then */
++	if (lcd->enabled)
++		ls041y3_esd_start(lcd);
++
++	return 0;
++}
++
++static void ls041y3_remove(struct spi_device *spi)
++{
++	struct ls041y3 *lcd = spi_get_drvdata(spi);
++
++	drm_panel_remove(&lcd->panel);
++	ls041y3_esd_stop(lcd);
++}
++
++static const struct of_device_id ls041y3_of_match[] = {
++	{ .compatible = "sharp,ls041y3" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, ls041y3_of_match);
++
++static const struct spi_device_id ls041y3_ids[] = {
++	{ "ls041y3" },
++	{ }
++};
++MODULE_DEVICE_TABLE(spi, ls041y3_ids);
++
++static struct spi_driver ls041y3_driver = {
++	.probe		= ls041y3_probe,
++	.remove		= ls041y3_remove,
++	.id_table	= ls041y3_ids,
++	.driver		= {
++		.name	= "panel-sharp-ls041y3",
++		.of_match_table = ls041y3_of_match,
++	},
++};
++module_spi_driver(ls041y3_driver);
++
++MODULE_DESCRIPTION("Sharp LS041Y3 panel of the Nokia N800/N810");
++MODULE_LICENSE("GPL");

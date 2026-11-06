@@ -16,7 +16,7 @@ software sends it, and what it does in return.
 | `render.c` | the 3D core: region array walk, background object, tile depth (on chip, or loaded from / stored to the external Z buffer), rasterizer, depth and alpha tests, texturing, offset colour, fog, blending, the colour buffer |
 | `texture.c` | texture words A/B, texel formats, twiddled/linear/mipmapped addressing, nearest/bilinear/trilinear sampling, the word-C combiner and DOT3 |
 | `twod.c` | the 2D core |
-| `kmod/` | the MBX kernel driver source (GPL-2.0, `kmod/COPYING`) |
+| `kmod/` | the MBX kernel driver source (GPL-2.0, `kmod/COPYING`), built against the 6.18 kernel by `../kernel/scripts/build-mbx.sh` |
 | `../qemu/device/mbx.c` | the QEMU device (SysBusDevice), for 9.1 |
 | `../qemu/device/install.py` | puts the device into a patched QEMU 9.1 tree |
 

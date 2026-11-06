@@ -1,0 +1,170 @@
+backlight: Nokia Tahvo LCD backlight (N800/N810)
+
+The N800/N810 LCD backlight is a PWM in the Tahvo ASIC (LEDPWM, 0x05):
+7 bits on Tahvo 3.x from revision 0x50 and on Betty, 4 bits on older
+Tahvo. A retu-mfd cell with a DT node, so the panel can refer to it.
+The bootloader's level is kept at probe (full if it left it off).
+Register use after Nokia's board-n8x0-lcd.c.
+
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
+@@ -33,6 +33,10 @@
+ 				interrupt-parent = <&gpio4>;
+ 				interrupts = <15 IRQ_TYPE_EDGE_RISING>;	/* gpio111 */
+ 				reg = <0x2>;
++
++				backlight: backlight {
++					compatible = "nokia,tahvo-backlight";
++				};
+ 			};
+ 		};
+ 	};
+--- a/drivers/mfd/retu-mfd.c
++++ b/drivers/mfd/retu-mfd.c
+@@ -124,6 +124,10 @@
+ 		.name		= "tahvo-usb",
+ 		.resources	= tahvo_usb_res,
+ 		.num_resources	= ARRAY_SIZE(tahvo_usb_res),
++	},
++	{
++		.name		= "tahvo-backlight",
++		.of_compatible	= "nokia,tahvo-backlight",
+ 	},
+ #if IS_ENABLED(CONFIG_MFD_RETU_USER)
+ 	{
+--- a/drivers/video/backlight/Kconfig
++++ b/drivers/video/backlight/Kconfig
+@@ -441,6 +441,13 @@
+ 	  To compile this driver as a module, choose M here: the module will
+ 	  be called sky81452-backlight
+ 
++config BACKLIGHT_TAHVO
++	tristate "Nokia Tahvo LCD backlight"
++	depends on MFD_RETU
++	help
++	  Say Y to control the LCD backlight of the Nokia N800 and N810
++	  through the PWM of their Tahvo ASIC.
++
+ config BACKLIGHT_TPS65217
+ 	tristate "TPS65217 Backlight"
+ 	depends on MFD_TPS65217
+--- a/drivers/video/backlight/Makefile
++++ b/drivers/video/backlight/Makefile
+@@ -55,6 +55,7 @@
+ obj-$(CONFIG_BACKLIGHT_RT4831)		+= rt4831-backlight.o
+ obj-$(CONFIG_BACKLIGHT_SAHARA)		+= kb3886_bl.o
+ obj-$(CONFIG_BACKLIGHT_SKY81452)	+= sky81452-backlight.o
++obj-$(CONFIG_BACKLIGHT_TAHVO)		+= tahvo_bl.o
+ obj-$(CONFIG_BACKLIGHT_TPS65217)	+= tps65217_bl.o
+ obj-$(CONFIG_BACKLIGHT_WM831X)		+= wm831x_bl.o
+ obj-$(CONFIG_BACKLIGHT_ARCXCNN) 	+= arcxcnn_bl.o
+--- a/drivers/video/backlight/tahvo_bl.c
++++ b/drivers/video/backlight/tahvo_bl.c
+@@ -0,0 +1,107 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * LCD backlight PWM of the Nokia Tahvo ASIC (N800/N810).
++ *
++ * Tahvo's LEDPWM register sets the backlight duty cycle: 7 bits on Tahvo
++ * 3.x from revision 0x50 and on Betty (0x0b), 4 bits on older Tahvo.
++ * Revision check and register use after Nokia's board-n8x0-lcd.c.
++ */
++
++#include <linux/backlight.h>
++#include <linux/mfd/retu.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#define TAHVO_REG_ASICR		0x00
++#define TAHVO_REG_LEDPWMR	0x05
++
++struct tahvo_bl {
++	struct retu_dev *rdev;
++	unsigned int max;
++};
++
++static int tahvo_bl_update_status(struct backlight_device *bd)
++{
++	struct tahvo_bl *bl = bl_get_data(bd);
++
++	return retu_write(bl->rdev, TAHVO_REG_LEDPWMR,
++			  backlight_get_brightness(bd));
++}
++
++static int tahvo_bl_get_brightness(struct backlight_device *bd)
++{
++	struct tahvo_bl *bl = bl_get_data(bd);
++	int val = retu_read(bl->rdev, TAHVO_REG_LEDPWMR);
++
++	return val < 0 ? val : val & bl->max;
++}
++
++static const struct backlight_ops tahvo_bl_ops = {
++	.options	= BL_CORE_SUSPENDRESUME,
++	.update_status	= tahvo_bl_update_status,
++	.get_brightness	= tahvo_bl_get_brightness,
++};
++
++static int tahvo_bl_probe(struct platform_device *pdev)
++{
++	struct backlight_properties props = {
++		.type = BACKLIGHT_RAW,
++		.scale = BACKLIGHT_SCALE_LINEAR,
++	};
++	struct backlight_device *bd;
++	struct tahvo_bl *bl;
++	int rev, level;
++
++	bl = devm_kzalloc(&pdev->dev, sizeof(*bl), GFP_KERNEL);
++	if (!bl)
++		return -ENOMEM;
++
++	bl->rdev = dev_get_drvdata(pdev->dev.parent);
++
++	rev = retu_read(bl->rdev, TAHVO_REG_ASICR);
++	if (rev < 0)
++		return rev;
++	if (((rev >> 8) == 0x03 && (rev & 0xff) >= 0x50) || (rev >> 8) == 0x0b)
++		bl->max = 0x7f;
++	else
++		bl->max = 0x0f;
++
++	level = retu_read(bl->rdev, TAHVO_REG_LEDPWMR);
++	if (level < 0)
++		return level;
++
++	/* Keep the bootloader's level; full brightness if it left it off */
++	props.max_brightness = bl->max;
++	props.brightness = (level & bl->max) ?: bl->max;
++
++	bd = devm_backlight_device_register(&pdev->dev, dev_name(&pdev->dev),
++					    &pdev->dev, bl, &tahvo_bl_ops,
++					    &props);
++	if (IS_ERR(bd))
++		return PTR_ERR(bd);
++
++	platform_set_drvdata(pdev, bd);
++	dev_info(&pdev->dev, "Tahvo rev %#06x, %u levels\n", rev, bl->max + 1);
++
++	return 0;
++}
++
++static const struct of_device_id tahvo_bl_of_match[] = {
++	{ .compatible = "nokia,tahvo-backlight" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, tahvo_bl_of_match);
++
++static struct platform_driver tahvo_bl_driver = {
++	.probe	= tahvo_bl_probe,
++	.driver	= {
++		.name		= "tahvo-backlight",
++		.of_match_table	= tahvo_bl_of_match,
++	},
++};
++module_platform_driver(tahvo_bl_driver);
++
++MODULE_ALIAS("platform:tahvo-backlight");
++MODULE_DESCRIPTION("Nokia Tahvo LCD backlight");
++MODULE_LICENSE("GPL");

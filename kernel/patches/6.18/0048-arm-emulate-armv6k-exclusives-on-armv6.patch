@@ -1,0 +1,404 @@
+ARM: emulate ARMv6K exclusive loads and stores for ARMv6 user space
+
+The ARM1136 r0 (OMAP2420) is plain ARMv6: LDREX and STREX for words
+only. ARMv6K added the byte, halfword and doubleword forms and CLREX,
+and code built for ARMv6 uses them all the same: LLVM emits them for 8-,
+16- and 64-bit atomics even for -mcpu=arm1136j-s, so Rust's prebuilt std
+for arm-unknown-linux-gnueabi has some 100 LDREXD and a dozen LDREXB,
+and any Rust program dies with SIGILL on its first such atomic.
+
+Emulate them for user space in ARM state with an undefined instruction
+hook, as SWP emulation does on ARMv7. The exclusive monitor is per task:
+the address, the size and the task's context switch count at the LDREX.
+A STREX stores only if the monitor matches and the task hasn't been
+switched out since, which on a uniprocessor means nothing else wrote
+there; the load with its monitor and the check with its store each run
+with preemption and page faults off. Signal delivery, fork, exec, CLREX
+and every STREX clear the monitor. Misaligned accesses raise SIGBUS,
+the UNPREDICTABLE register choices SIGILL. The ARMv6K hints (YIELD,
+WFE, WFI, SEV) are NOPs should they trap. Counts in
+/proc/cpu/v6k_emulation; a rate-limited note per task on first use.
+Thumb-1, the only Thumb on this core, has no exclusives.
+
+diff -urN a/arch/arm/include/asm/processor.h b/arch/arm/include/asm/processor.h
+--- a/arch/arm/include/asm/processor.h	2026-10-26 09:43:41.642153195 +0100
++++ b/arch/arm/include/asm/processor.h	2026-10-26 09:43:41.644153206 +0100
+@@ -35,6 +35,14 @@
+ 	unsigned long		error_code;
+ 							/* debugging	  */
+ 	struct debug_info	debug;
++#ifdef CONFIG_ARMV6K_EMULATE
++	/* the emulated exclusive monitor (kernel/v6k_emulate.c): the address,
++	 * the size (0: none) and the context switch count at the LDREX */
++	unsigned long		excl_addr;
++	unsigned long		excl_switches;
++	u8			excl_size;
++	u8			excl_noted;
++#endif
+ };
+ 
+ /*
+diff -urN a/arch/arm/kernel/Makefile b/arch/arm/kernel/Makefile
+--- a/arch/arm/kernel/Makefile	2026-10-26 09:43:41.643153201 +0100
++++ b/arch/arm/kernel/Makefile	2026-10-26 09:43:41.644153206 +0100
+@@ -72,6 +72,7 @@
+ obj-$(CONFIG_OF)		+= devtree.o
+ obj-$(CONFIG_CRASH_DUMP)	+= crash_dump.o
+ obj-$(CONFIG_SWP_EMULATE)	+= swp_emulate.o
++obj-$(CONFIG_ARMV6K_EMULATE)	+= v6k_emulate.o
+ obj-$(CONFIG_HAVE_HW_BREAKPOINT)	+= hw_breakpoint.o
+ 
+ obj-$(CONFIG_CPU_XSCALE)	+= xscale-cp0.o
+diff -urN a/arch/arm/kernel/process.c b/arch/arm/kernel/process.c
+--- a/arch/arm/kernel/process.c	2026-10-26 09:43:41.643153201 +0100
++++ b/arch/arm/kernel/process.c	2026-10-26 09:43:41.644153206 +0100
+@@ -224,6 +224,10 @@
+ 
+ 	memset(&tsk->thread.debug, 0, sizeof(struct debug_info));
+ 	memset(&thread->fpstate, 0, sizeof(union fp_state));
++#ifdef CONFIG_ARMV6K_EMULATE
++	tsk->thread.excl_size = 0;
++	tsk->thread.excl_noted = 0;
++#endif
+ 
+ 	flush_tls();
+ 
+@@ -241,6 +245,9 @@
+ 	struct pt_regs *childregs = task_pt_regs(p);
+ 
+ 	memset(&thread->cpu_context, 0, sizeof(struct cpu_context_save));
++#ifdef CONFIG_ARMV6K_EMULATE
++	p->thread.excl_size = 0;	/* the child has no exclusive access open */
++#endif
+ 
+ #ifdef CONFIG_CPU_USE_DOMAINS
+ 	/*
+diff -urN a/arch/arm/kernel/signal.c b/arch/arm/kernel/signal.c
+--- a/arch/arm/kernel/signal.c	2026-10-26 09:43:41.642153195 +0100
++++ b/arch/arm/kernel/signal.c	2026-10-26 09:43:41.644153206 +0100
+@@ -509,6 +509,11 @@
+ 	 */
+ 	rseq_signal_deliver(ksig, regs);
+ 
++#ifdef CONFIG_ARMV6K_EMULATE
++	/* a handler runs: the emulated exclusive access is over */
++	current->thread.excl_size = 0;
++#endif
++
+ 	/*
+ 	 * Set up the stack frame
+ 	 */
+diff -urN a/arch/arm/kernel/v6k_emulate.c b/arch/arm/kernel/v6k_emulate.c
+--- a/arch/arm/kernel/v6k_emulate.c	1970-01-01 01:00:00.000000000 +0100
++++ b/arch/arm/kernel/v6k_emulate.c	2026-10-26 09:43:41.644153206 +0100
+@@ -0,0 +1,287 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ *  linux/arch/arm/kernel/v6k_emulate.c
++ *
++ *  ARMv6K exclusive loads and stores for ARMv6 user space
++ *
++ * The ARM1136 r0 (OMAP2420: Nokia N800, N810) is plain ARMv6: it has
++ * LDREX and STREX for words only. ARMv6K added the byte, halfword and
++ * doubleword forms and CLREX, and code built for ARMv6 uses them all the
++ * same: LLVM does for 8-, 16- and 64-bit atomics, so Rust's prebuilt std
++ * for arm-unknown-linux-gnueabi has them. They are undefined here; this
++ * emulates them for user space in ARM state. (Thumb-1, the only Thumb
++ * this core has, has no exclusives.)
++ *
++ * The exclusive monitor is per task: the address, the size and the
++ * task's context switch count when the LDREX ran. A STREX succeeds only
++ * if the monitor is for that address and size and the task hasn't been
++ * switched out since: on a uniprocessor nothing else can then have
++ * written there (interrupt handlers don't write user memory). A load
++ * with its monitor, and a check with its store, each run with preemption
++ * and page faults off. Delivering a signal, fork, exec, CLREX and every
++ * STREX clear the monitor. A STREX may fail where the hardware's
++ * wouldn't (after a page fault, a context switch), as the architecture
++ * allows: callers retry.
++ *
++ * The hint instructions ARMv6K defined (YIELD, WFE, WFI, SEV) are treated
++ * as NOPs should they trap.
++ *
++ * Counts are in /proc/cpu/v6k_emulation.
++ */
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/mm.h>
++#include <linux/pagemap.h>
++#include <linux/perf_event.h>
++#include <linux/proc_fs.h>
++#include <linux/sched.h>
++#include <linux/sched/signal.h>
++#include <linux/seq_file.h>
++#include <linux/uaccess.h>
++
++#include <asm/opcodes.h>
++#include <asm/traps.h>
++
++enum { LDREXD, LDREXB, LDREXH, STREXD, STREXB, STREXH, STREX_FAILED, CLREX, HINT, NCOUNTS };
++static const char *const count_name[NCOUNTS] = {
++	"ldrexd", "ldrexb", "ldrexh", "strexd", "strexb", "strexh", "strex failed", "clrex",
++	"hint",
++};
++static unsigned long counts[NCOUNTS];
++
++/* The exclusive access size from bits 22:21 (0 is the word form, which
++ * this core has) */
++static const unsigned int op_size[4] = { 0, 8, 1, 2 };
++
++static unsigned long switches(void)
++{
++	return current->nvcsw + current->nivcsw;
++}
++
++static void note_user(const char *what)
++{
++	if (!current->thread.excl_noted) {
++		current->thread.excl_noted = 1;
++		pr_debug_ratelimited("%s[%d]: emulating ARMv6K %s and the like\n", current->comm,
++				     task_pid_nr(current), what);
++	}
++}
++
++/* 0 to emulate, 1 to step over (the condition failed), -1 if it isn't ours */
++static int condition(struct pt_regs *regs, unsigned int instr, int uncond)
++{
++	switch (arm_check_condition(instr, regs->ARM_cpsr)) {
++	case ARM_OPCODE_CONDTEST_PASS:
++		return uncond ? -1 : 0;
++	case ARM_OPCODE_CONDTEST_FAIL:
++		return 1;
++	case ARM_OPCODE_CONDTEST_UNCOND:
++		return uncond ? 0 : -1;
++	default:
++		return -1;
++	}
++}
++
++/* An address the access may not use: a signal for it, and 0 */
++static int bad_address(unsigned long addr, unsigned int size)
++{
++	if (addr & (size - 1))
++		force_sig_fault(SIGBUS, BUS_ADRALN, (void __user *)addr);
++	else
++		force_sig_fault(SIGSEGV, SEGV_MAPERR, (void __user *)addr);
++	return 0;
++}
++
++static int load(unsigned long addr, unsigned int size, u32 *lo, u32 *hi)
++{
++	u8 b;
++	u16 h;
++	int err;
++
++	switch (size) {
++	case 1:
++		err = __get_user(b, (u8 __user *)addr);
++		*lo = b;
++		return err;
++	case 2:
++		err = __get_user(h, (u16 __user *)addr);
++		*lo = h;
++		return err;
++	default:
++		return __get_user(*lo, (u32 __user *)addr) ||
++		       __get_user(*hi, (u32 __user *)(addr + 4)) ? -EFAULT : 0;
++	}
++}
++
++static int store(unsigned long addr, unsigned int size, u32 lo, u32 hi)
++{
++	switch (size) {
++	case 1:
++		return __put_user((u8)lo, (u8 __user *)addr);
++	case 2:
++		return __put_user((u16)lo, (u16 __user *)addr);
++	default:
++		/* both words are in one page: the doubleword is aligned */
++		return __put_user(lo, (u32 __user *)addr) ||
++		       __put_user(hi, (u32 __user *)(addr + 4)) ? -EFAULT : 0;
++	}
++}
++
++/* LDREXB, LDREXH, LDREXD Rt, [Rn] */
++static int ldrex_handler(struct pt_regs *regs, unsigned int instr)
++{
++	unsigned int rn = (instr >> 16) & 0xf, rt = (instr >> 12) & 0xf;
++	unsigned int size = op_size[(instr >> 21) & 3];
++	struct thread_struct *t = &current->thread;
++	unsigned long addr;
++	u32 lo = 0, hi = 0;
++	int c, err;
++
++	if (!size || (c = condition(regs, instr, 0)) < 0)
++		return 1;
++	perf_sw_event(PERF_COUNT_SW_EMULATION_FAULTS, 1, regs, regs->ARM_pc);
++	if (c) {
++		regs->ARM_pc += 4;
++		return 0;
++	}
++	/* UNPREDICTABLE: the PC, or for LDREXD an odd Rt or Rt2 = PC */
++	if (rn == 15 || rt == 15 || (size == 8 && ((rt & 1) || rt == 14)))
++		return 1;
++	addr = regs->uregs[rn];
++	if ((addr & (size - 1)) || !access_ok((void __user *)addr, size))
++		return bad_address(addr, size);
++
++	/* before the monitor: printing may switch tasks, which would clear it */
++	note_user(size == 8 ? "ldrexd" : size == 1 ? "ldrexb" : "ldrexh");
++
++	/* the value and the monitor together: nothing runs in between */
++	for (;;) {
++		preempt_disable();
++		pagefault_disable();
++		err = load(addr, size, &lo, &hi);
++		if (!err) {
++			t->excl_addr = addr;
++			t->excl_size = size;
++			t->excl_switches = switches();
++		}
++		pagefault_enable();
++		preempt_enable();
++		if (!err)
++			break;
++		/* bring the page in, which may sleep, and try again */
++		if (fault_in_readable((const char __user *)addr, size))
++			return bad_address(addr, 1);
++	}
++	regs->uregs[rt] = lo;
++	if (size == 8)
++		regs->uregs[rt + 1] = hi;
++	counts[size == 8 ? LDREXD : size == 1 ? LDREXB : LDREXH]++;
++	regs->ARM_pc += 4;
++	return 0;
++}
++
++/* STREXB, STREXH, STREXD Rd, Rt, [Rn]: Rd = 0 if stored, 1 if not */
++static int strex_handler(struct pt_regs *regs, unsigned int instr)
++{
++	unsigned int rn = (instr >> 16) & 0xf, rd = (instr >> 12) & 0xf, rt = instr & 0xf;
++	unsigned int size = op_size[(instr >> 21) & 3];
++	struct thread_struct *t = &current->thread;
++	unsigned long addr;
++	int c, ok, err = 0;
++
++	if (!size || (c = condition(regs, instr, 0)) < 0)
++		return 1;
++	perf_sw_event(PERF_COUNT_SW_EMULATION_FAULTS, 1, regs, regs->ARM_pc);
++	if (c) {
++		regs->ARM_pc += 4;
++		return 0;
++	}
++	/* UNPREDICTABLE: the PC; Rd the same as Rn or a source; for STREXD
++	 * an odd Rt or Rt2 = PC */
++	if (rn == 15 || rd == 15 || rt == 15 || rd == rn || rd == rt ||
++	    (size == 8 && ((rt & 1) || rt == 14 || rd == rt + 1)))
++		return 1;
++	addr = regs->uregs[rn];
++	if ((addr & (size - 1)) || !access_ok((void __user *)addr, size))
++		return bad_address(addr, size);
++
++	preempt_disable();
++	pagefault_disable();
++	ok = t->excl_size == size && t->excl_addr == addr && t->excl_switches == switches();
++	t->excl_size = 0;		/* any STREX ends the exclusive access */
++	if (ok)
++		err = store(addr, size, regs->uregs[rt], size == 8 ? regs->uregs[rt + 1] : 0);
++	pagefault_enable();
++	preempt_enable();
++	if (ok && err) {
++		/* not stored: bring the page in for the retry, which may sleep */
++		ok = 0;
++		if (fault_in_writeable((char __user *)addr, size))
++			return bad_address(addr, 1);
++	}
++	regs->uregs[rd] = !ok;
++	counts[size == 8 ? STREXD : size == 1 ? STREXB : STREXH]++;
++	if (!ok)
++		counts[STREX_FAILED]++;
++	note_user(size == 8 ? "strexd" : size == 1 ? "strexb" : "strexh");
++	regs->ARM_pc += 4;
++	return 0;
++}
++
++static int clrex_handler(struct pt_regs *regs, unsigned int instr)
++{
++	perf_sw_event(PERF_COUNT_SW_EMULATION_FAULTS, 1, regs, regs->ARM_pc);
++	current->thread.excl_size = 0;
++	counts[CLREX]++;
++	note_user("clrex");
++	regs->ARM_pc += 4;
++	return 0;
++}
++
++/* NOP, YIELD, WFE, WFI, SEV: nothing to do on one processor */
++static int hint_handler(struct pt_regs *regs, unsigned int instr)
++{
++	if ((instr & 0xff) > 4 || condition(regs, instr, 0) < 0)
++		return 1;
++	counts[HINT]++;
++	regs->ARM_pc += 4;
++	return 0;
++}
++
++/* User mode, ARM state */
++#define USER_ARM	.cpsr_mask = MODE_MASK | PSR_T_BIT | PSR_J_BIT, .cpsr_val = USR_MODE
++
++static struct undef_hook v6k_hooks[] = {
++	/* LDREX{B,H,D}: 0001 1op1 Rn Rt 1111 1001 1111 (the word form too) */
++	{ .instr_mask = 0x0f900fff, .instr_val = 0x01900f9f, USER_ARM, .fn = ldrex_handler },
++	/* STREX{B,H,D}: 0001 1op0 Rn Rd 1111 1001 Rt */
++	{ .instr_mask = 0x0f900ff0, .instr_val = 0x01800f90, USER_ARM, .fn = strex_handler },
++	{ .instr_mask = 0xffffffff, .instr_val = 0xf57ff01f, USER_ARM, .fn = clrex_handler },
++	{ .instr_mask = 0x0fffff00, .instr_val = 0x0320f000, USER_ARM, .fn = hint_handler },
++};
++
++#ifdef CONFIG_PROC_FS
++static int proc_status_show(struct seq_file *m, void *v)
++{
++	int i;
++
++	for (i = 0; i < NCOUNTS; i++)
++		seq_printf(m, "%-13s %lu\n", count_name[i], counts[i]);
++	return 0;
++}
++#endif
++
++static int __init v6k_emulation_init(void)
++{
++	int i;
++
++#ifdef CONFIG_PROC_FS
++	if (!proc_create_single("cpu/v6k_emulation", 0444, NULL, proc_status_show))
++		return -ENOMEM;
++#endif
++	pr_info("Registering ARMv6K exclusive access emulation handler\n");
++	for (i = 0; i < ARRAY_SIZE(v6k_hooks); i++)
++		register_undef_hook(&v6k_hooks[i]);
++	return 0;
++}
++late_initcall(v6k_emulation_init);
+diff -urN a/arch/arm/mm/Kconfig b/arch/arm/mm/Kconfig
+--- a/arch/arm/mm/Kconfig	2026-10-26 09:43:41.643153201 +0100
++++ b/arch/arm/mm/Kconfig	2026-10-26 09:43:41.644153206 +0100
+@@ -715,6 +715,19 @@
+ 	  use of this feature.  Refer to Documentation/arch/arm/booting.rst for
+ 	  details.
+ 
++config ARMV6K_EMULATE
++	bool "Emulate ARMv6K exclusive loads and stores for ARMv6 user space"
++	depends on CPU_V6 && !SMP
++	default y
++	select HAVE_PROC_CPU if PROC_FS
++	help
++	  ARMv6K added LDREXB, LDREXH, LDREXD, their STREX forms and CLREX,
++	  but the ARM1136 r0 (OMAP2420) is plain ARMv6 without them, and
++	  code built for ARMv6 uses them all the same (LLVM's atomics, so
++	  Rust's std). Say Y to emulate them for user space in ARM state,
++	  with a per-task exclusive monitor; correct on a uniprocessor
++	  only. Counts are in /proc/cpu/v6k_emulation.
++
+ config SWP_EMULATE
+ 	bool "Emulate SWP/SWPB instructions" if !SMP
+ 	depends on CPU_V7

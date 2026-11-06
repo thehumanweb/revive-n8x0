@@ -1,0 +1,87 @@
+drm/omap: s1d1374x: a refresh rate parameter
+
+omapdrm.refresh (Hz, writable at runtime) lowers the panel refresh rate
+from the bootloader's by adding vertical non-display lines (VNDP, 2..255
+lines). The controller then scans more slowly: a full 800x480 frame,
+which takes about 42 ms over RFBI, fits in two scans at about 46 Hz
+instead of 55, so the second scan doesn't overtake it. 0 restores the
+bootloader's value. A change is applied before the next update, and the
+tearing-effect timing is worked out again from the new period.
+
+--- a/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
++++ b/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
+@@ -75,12 +75,25 @@
+ 	unsigned int we_cycle;		/* ps, the RFBI write cycle */
+ 	int te_line;			/* updates start here; -1: no TE */
+ 	u64 pix_tx, line_upd;		/* ps to send a pixel, to scan a line */
++	int vndp_boot;			/* VNDP as the bootloader left it; -1 */
++	unsigned int refresh_set;	/* the refresh parameter last applied */
+ };
+ 
+ static bool tearsync = true;
+ module_param(tearsync, bool, 0444);
+ MODULE_PARM_DESC(tearsync, "Start updates on the S1D1374x tearing effect signal");
+ 
++/*
++ * The panel's refresh rate in Hz, lowered from the bootloader's by adding
++ * vertical non-display lines (VNDP, 2..255 lines): a full frame that takes
++ * longer than a scan to send can then go out in two scans without the
++ * second overtaking it. 0: as the bootloader set it. Applied before the
++ * next update.
++ */
++static unsigned int refresh;
++module_param(refresh, uint, 0644);
++MODULE_PARM_DESC(refresh, "Panel refresh rate in Hz (0: the bootloader's; only lowers it)");
++
+ #define drm_bridge_to_s1d1374x(b) container_of(b, struct s1d1374x, bridge)
+ 
+ /* With the RFBI bus held, 8 bits per cycle */
+@@ -212,6 +225,33 @@
+  * inverted sync polarities, the non-display periods drive TE) and the frame
+  * starts on line 1, right behind the scan. With the bus held, 8 bits.
+  */
++/* Apply the refresh parameter: VNDP for the rate, or the bootloader's */
++static void s1d1374x_set_refresh(struct s1d1374x *ctrl, unsigned int hz)
++{
++	unsigned int hdisp = s1d1374x_read_reg(ctrl, BLIZZARD_HDISP) * 8;
++	unsigned int hndp = s1d1374x_read_reg(ctrl, BLIZZARD_HNDP) & 0x3f;
++	unsigned int vdisp = s1d1374x_read_reg(ctrl, BLIZZARD_VDISP0) |
++		(s1d1374x_read_reg(ctrl, BLIZZARD_VDISP1) & 0x03) << 8;
++	unsigned int pix_div =
++		((s1d1374x_read_reg(ctrl, BLIZZARD_CLK_SRC) >> 3) & 0x1f) + 1;
++	unsigned long pix_clk = ctrl->sys_clk / pix_div;
++	unsigned long vndp;
++
++	if (ctrl->vndp_boot < 0)
++		ctrl->vndp_boot = s1d1374x_read_reg(ctrl, BLIZZARD_VNDP);
++	if (!hz || !pix_clk || !hdisp || !vdisp) {
++		vndp = ctrl->vndp_boot;
++	} else {
++		vndp = pix_clk / ((hdisp + hndp) * hz);
++		vndp = vndp > vdisp ? vndp - vdisp : 0;
++		vndp = clamp_t(unsigned long, vndp, max(2, ctrl->vndp_boot), 255);
++	}
++	s1d1374x_write_reg(ctrl, BLIZZARD_VNDP, vndp);
++	ctrl->refresh_set = hz;
++	dev_info(ctrl->dev, "refresh %u Hz asked: HNDP %u, VNDP %lu lines (bootloader %d)\n",
++		 hz, hndp, vndp, ctrl->vndp_boot);
++}
++
+ static void s1d1374x_setup_te(struct s1d1374x *ctrl)
+ {
+ 	u8 hsw = s1d1374x_read_reg(ctrl, BLIZZARD_HSW);
+@@ -313,6 +353,14 @@
+ 		if (r)
+ 			return r;
+ 		s1d1374x_identify(ctrl);
++		ctrl->vndp_boot = -1;
++		if (refresh)
++			s1d1374x_set_refresh(ctrl, refresh);
++		ctrl->te_line = -1;
++		if (tearsync)
++			s1d1374x_setup_te(ctrl);
++	} else if (refresh != ctrl->refresh_set) {
++		s1d1374x_set_refresh(ctrl, refresh);
+ 		ctrl->te_line = -1;
+ 		if (tearsync)
+ 			s1d1374x_setup_te(ctrl);

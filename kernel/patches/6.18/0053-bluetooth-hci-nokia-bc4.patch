@@ -1,0 +1,501 @@
+bluetooth: hci_nokia: CSR BlueCore4 (N810) with bc4fw.bin; n810 DT node
+
+The N800/N810 have a CSR BlueCore4 behind Nokia's H4+ UART protocol,
+which mainline's hci_nokia (N900/N950: BCM2048, TI WL1271) does not set
+up. Nokia's 2.6.21 hci_h4p (fw.c, fw-csr.c, core.c) did it from one
+file, bc4fw.bin, a list of complete H4+ packets, each after a length
+byte (zero ends it):
+
+  1. the negotiation request, sent as it is (06 0a 00 a0 01 00 00 4c 00
+     96 00 00: divider 416 for 921600 baud off 38.4 MHz, proto 0x4c,
+     sys_clk 150, not what hci_nokia computes for a 38.4 MHz sysclk);
+  2. the alive request (07 02 55 00);
+  3. BCCMD PS-key writes (HCI vendor command 0xfc00, channel 0xc2, varid
+     0x7003), PSKEY_BDADDR first, with a placeholder 11:11:11:11:11:11,
+     then patch and configuration keys (PSKEY_UART_BAUDRATE 0x3b14:
+     3692300 baud);
+  4. a BCCMD warm reset (varid 0x4002), the last packet.
+
+With "csr,bc4-nokia" in front of "nokia,h4p-bluetooth", hci_nokia now
+does what hci_h4p did: reset, the file's negotiation packet at 120000
+baud (the BC4 answers with the request's 10 bytes and the ack, no
+manufacturer or version id, so the reply length check is relaxed), RTS
+down, CTS down and up again (non-fatal wait for the down edge, as the
+chip drops CTS while it changes rate), 921600 baud, alive; then each
+BCCMD, waiting up to 1 s for its answer, a vendor event (0xff, not a
+Command Complete, so the driver takes these events itself while it
+loads the file and checks the BCCMD status in event bytes 11-12); no
+answer is awaited for the warm reset; once it has left the UART,
+3692300 baud, CTS, and alive requests (up to 10 s) until the restarted
+chip answers.
+
+The address: hci_h4p patched the PSKEY_BDADDR record with what Nokia's
+userspace (bt-cal, from CAL) wrote to sysfs, and refused to start
+without one. Here the controller starts with the placeholder, marked
+HCI_QUIRK_INVALID_BDADDR (unconfigured), and set_bdaddr (mgmt's
+public-addr) runs the whole setup again with the address in that
+record, in hci_h4p's word order (LAP[23:16], LAP[15:0], UAP, NAP).
+
+The firmware stays where Nokia's initfs has it
+(/usr/lib/hotplug/firmware/bc4fw.bin): request_firmware("bc4fw.bin"),
+the rootfs points firmware_class.path at that directory.
+
+N810 DT: the node on UART1 with NOLO's OMAP_TAG_NOKIA_BT GPIOs (reset
+92 active low, host wakeup 98 and BT wakeup 61 active high, as
+hci_h4p drove them) and a 38.4 MHz fixed clock for bt_sysclk 2 (QEMU's
+n8x0 tag says the same; the negotiation packet's divider agrees). The
+N800 DTB is unchanged: its tag may name another chip or GPIOs.
+
+On the N810 (tested): the BC4 loads bc4fw.bin, takes the address and comes
+up. Two things the hardware showed beyond Nokia's sequence:
+- After the warm reset bc4fw.bin's keys put the chip into deep sleep, and
+  raising BT wakeup just before a send loses the command (HCI Reset timed
+  out). The driver keeps the BC4 awake for now.
+- The BC4 (Bluetooth 2.0) rejects Read Page Scan Type:
+  HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE.
+
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n810.dts
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n810.dts
+@@ -23,8 +23,31 @@
+ 		regulator-min-microvolt = <2800000>;
+ 		regulator-max-microvolt = <2800000>;
+ 	};
++
++	/* The Bluetooth chip's system clock (NOLO's bt_sysclk 2: 38.4 MHz) */
++	bt_sysclk: clock-bt-sysclk {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <38400000>;
++	};
+ };
+ 
++/*
++ * Bluetooth: a CSR BlueCore4 on UART1 speaking Nokia's H4+, as NOLO's
++ * OMAP_TAG_NOKIA_BT describes it (chip_type 1, bt_uart 1, GPIOs 61, 98
++ * and 92). hci_nokia loads bc4fw.bin (Nokia's initfs has it).
++ */
++&uart1 {
++	bluetooth {
++		compatible = "csr,bc4-nokia", "nokia,h4p-bluetooth";
++		reset-gpios = <&gpio3 28 GPIO_ACTIVE_LOW>;		/* gpio92 */
++		host-wakeup-gpios = <&gpio4 2 GPIO_ACTIVE_HIGH>;	/* gpio98 */
++		bluetooth-wakeup-gpios = <&gpio2 29 GPIO_ACTIVE_HIGH>;	/* gpio61 */
++		clocks = <&bt_sysclk>;
++		clock-names = "sysclk";
++	};
++};
++
+ &omap2420_pmx {
+ 	mcbsp2_pins: mcbsp2-pins {
+ 		pinctrl-single,pins = <
+--- a/Documentation/devicetree/bindings/net/bluetooth/nokia,h4p-bluetooth.txt
++++ b/Documentation/devicetree/bindings/net/bluetooth/nokia,h4p-bluetooth.txt
+@@ -13,6 +13,8 @@
+  - compatible: should contain "nokia,h4p-bluetooth" as well as one of the following:
+    * "brcm,bcm2048-nokia"
+    * "ti,wl1271-bluetooth-nokia"
++   * "csr,bc4-nokia" (CSR BlueCore4, Nokia N800/N810; set up from bc4fw.bin,
++     the sysclk rate is not used)
+  - reset-gpios: GPIO specifier, used to reset the BT module (active low)
+  - bluetooth-wakeup-gpios: GPIO specifier, used to wakeup the BT module (active high)
+  - host-wakeup-gpios: GPIO specifier, used to wakeup the host processor (active high)
+--- a/drivers/bluetooth/hci_nokia.c
++++ b/drivers/bluetooth/hci_nokia.c
+@@ -34,6 +34,8 @@
+ 
+ #define FIRMWARE_BCM2048	"nokia/bcmfw.bin"
+ #define FIRMWARE_TI1271		"nokia/ti1273.bin"
++/* As Nokia's N800/N810 kernels named it (their initfs has it) */
++#define FIRMWARE_BC4		"bc4fw.bin"
+ 
+ #define HCI_NOKIA_NEG_PKT	0x06
+ #define HCI_NOKIA_ALIVE_PKT	0x07
+@@ -136,6 +138,11 @@
+ 	u8 man_id;
+ 	u8 ver_id;
+ 
++	/* CSR BlueCore4 (N800/N810): bc4fw.bin drives the whole setup */
++	bool bc4;
++	bool bc4_fw_loading;
++	int bc4_fw_status;
++
+ 	bool initialized;
+ 	bool tx_enabled;
+ 	bool rx_enabled;
+@@ -385,6 +392,256 @@
+ 	return err;
+ }
+ 
++/*
++ * CSR BlueCore4, as Nokia's hci_h4p set it up on the N800/N810.
++ *
++ * bc4fw.bin is a list of complete H4+ packets, each after a length byte
++ * (a zero length ends the list): the negotiation request (baud divider
++ * and system clock for the board, sent as it is), an alive request, then
++ * BCCMD PS-key writes (HCI vendor command 0xfc00, channel 0xc2) and a
++ * BCCMD warm reset as the last packet. The chip answers each BCCMD with
++ * a vendor event (no Command Complete), its status in event bytes 11-12;
++ * the warm reset gets no answer, and the chip comes back at the rate in
++ * its PSKEY_UART_BAUDRATE, 3692300 baud, where an alive exchange
++ * confirms it. The packets are padded to even lengths already.
++ *
++ * PSKEY_BDADDR (key 0x0001) holds a placeholder address. Nokia's driver
++ * patched in the address its userspace had written to sysfs; here the
++ * address comes from set_bdaddr (mgmt's public-addr), which runs the
++ * whole setup again with it, so the controller starts unconfigured.
++ */
++#define BC4_REPLY_TIMEOUT_MS	1000
++#define BC4_ALIVE_TRIES		10
++#define BC4_VARID_PS		0x7003
++#define BC4_PSKEY_BDADDR	0x0001
++
++static int nokia_setup(struct hci_uart *hu);
++
++/* Queue one of bc4fw.bin's packets (its first byte is the H4 type) */
++static int nokia_bc4_send(struct hci_uart *hu, const u8 *pkt, u8 len)
++{
++	struct sk_buff *skb;
++	int err;
++
++	skb = bt_skb_alloc(len, GFP_KERNEL);
++	if (!skb)
++		return -ENOMEM;
++
++	hci_skb_pkt_type(skb) = pkt[0];
++	skb_put_data(skb, pkt + 1, len - 1);
++
++	err = nokia_enqueue(hu, skb);
++	if (err)
++		return err;	/* skb_pad() freed it */
++
++	hci_uart_tx_wakeup(hu);
++
++	return 0;
++}
++
++static bool nokia_bc4_is_bdaddr(const u8 *pkt, u8 len)
++{
++	/* 01 00fc plen | c2 type len seq varid status | key len stores | value */
++	return len >= 29 && pkt[0] == HCI_COMMAND_PKT &&
++	       get_unaligned_le16(pkt + 11) == BC4_VARID_PS &&
++	       get_unaligned_le16(pkt + 15) == BC4_PSKEY_BDADDR;
++}
++
++/* PSKEY_BDADDR, little-endian words: LAP[23:16], LAP[15:0], UAP, NAP */
++static void nokia_bc4_put_bdaddr(u8 *v, const bdaddr_t *bdaddr)
++{
++	v[0] = bdaddr->b[2];
++	v[1] = 0x00;
++	v[2] = bdaddr->b[0];
++	v[3] = bdaddr->b[1];
++	v[4] = bdaddr->b[3];
++	v[5] = 0x00;
++	v[6] = bdaddr->b[4];
++	v[7] = bdaddr->b[5];
++}
++
++/* Wait until everything queued has left the UART (the warm reset) */
++static void nokia_bc4_wait_sent(struct hci_uart *hu)
++{
++	struct nokia_bt_dev *btdev = hu->priv;
++	int i;
++
++	for (i = 0; i < 100; i++) {
++		if (skb_queue_empty(&btdev->txq) && !hu->tx_skb &&
++		    !test_bit(HCI_UART_SENDING, &hu->tx_state))
++			break;
++		msleep(10);
++	}
++
++	serdev_device_wait_until_sent(btdev->serdev, msecs_to_jiffies(100));
++}
++
++static int nokia_bc4_negotiate(struct hci_uart *hu, const u8 *pkt, u8 len)
++{
++	struct nokia_bt_dev *btdev = hu->priv;
++	struct serdev_device *serdev = btdev->serdev;
++	struct device *dev = &serdev->dev;
++	int err;
++
++	btdev->init_error = 0;
++	init_completion(&btdev->init_completion);
++
++	err = nokia_bc4_send(hu, pkt, len);
++	if (err)
++		return err;
++
++	if (!wait_for_completion_timeout(&btdev->init_completion,
++					 msecs_to_jiffies(BC4_REPLY_TIMEOUT_MS))) {
++		dev_err(dev, "No negotiation reply");
++		return -ETIMEDOUT;
++	}
++
++	if (btdev->init_error < 0)
++		return btdev->init_error;
++
++	/*
++	 * Off to 921600 baud. The chip drops CTS while it changes its
++	 * rate (Nokia's driver waited for that), then raises it again.
++	 */
++	nokia_flow_control(serdev, false);
++	serdev_device_wait_for_cts(serdev, false, 100);
++	serdev_device_set_baudrate(serdev, SETUP_BAUD_RATE);
++	err = serdev_device_wait_for_cts(serdev, true, 200);
++	if (err < 0) {
++		dev_err(dev, "CTS not received: %d", err);
++		return err;
++	}
++	nokia_flow_control(serdev, true);
++
++	btdev->init_error = 0;
++	err = nokia_send_alive_packet(hu);
++	if (err < 0)
++		dev_err(dev, "Alive check failed: %d", err);
++
++	return err;
++}
++
++static int nokia_bc4_setup(struct hci_uart *hu)
++{
++	struct nokia_bt_dev *btdev = hu->priv;
++	struct serdev_device *serdev = btdev->serdev;
++	struct device *dev = &serdev->dev;
++	bool have_bdaddr = bacmp(&btdev->bdaddr, BDADDR_ANY);
++	const struct firmware *fw;
++	const u8 *p, *end, *last = NULL;
++	int err, n = 0, i;
++
++	err = request_firmware(&fw, FIRMWARE_BC4, dev);
++	if (err < 0) {
++		dev_err(dev, "%s: Failed to load Nokia firmware file (%d)",
++			hu->hdev->name, err);
++		return err;
++	}
++
++	/* Check the packet list; the last command is the warm reset */
++	end = fw->data + fw->size;
++	for (p = fw->data; p < end && *p; p += 1 + *p) {
++		if (p + 1 + *p > end || *p < 2)
++			break;
++		if (p[1] == HCI_COMMAND_PKT)
++			last = p;
++	}
++	if ((p < end && *p) || !last || fw->data[1] != HCI_NOKIA_NEG_PKT) {
++		dev_err(dev, "%s: corrupted firmware file", FIRMWARE_BC4);
++		err = -EINVAL;
++		goto out;
++	}
++
++	err = nokia_bc4_negotiate(hu, fw->data + 1, fw->data[0]);
++	if (err < 0)
++		goto out;
++
++	WRITE_ONCE(btdev->bc4_fw_loading, true);
++
++	for (p = fw->data; p < end && *p; p += 1 + *p) {
++		const u8 *pkt = p + 1;
++		u8 *patched = NULL;
++
++		/* The negotiation and alive packets are done */
++		if (pkt[0] != HCI_COMMAND_PKT)
++			continue;
++		n++;
++
++		if (have_bdaddr && nokia_bc4_is_bdaddr(pkt, *p)) {
++			patched = kmemdup(pkt, *p, GFP_KERNEL);
++			if (!patched) {
++				err = -ENOMEM;
++				goto out;
++			}
++			nokia_bc4_put_bdaddr(patched + 21, &btdev->bdaddr);
++			pkt = patched;
++		}
++
++		btdev->bc4_fw_status = 0;
++		init_completion(&btdev->init_completion);
++		err = nokia_bc4_send(hu, pkt, *p);
++		kfree(patched);
++		if (err)
++			goto out;
++
++		if (p == last)
++			break;
++
++		if (!wait_for_completion_timeout(&btdev->init_completion,
++				msecs_to_jiffies(BC4_REPLY_TIMEOUT_MS))) {
++			dev_err(dev, "No reply to firmware command %d", n);
++			err = -ETIMEDOUT;
++			goto out;
++		}
++		if (btdev->bc4_fw_status) {
++			dev_err(dev, "Firmware command %d failed: status %d",
++				n, btdev->bc4_fw_status);
++			err = -EPROTO;
++			goto out;
++		}
++	}
++
++	WRITE_ONCE(btdev->bc4_fw_loading, false);
++
++	/* The warm reset: the chip restarts at its final rate */
++	nokia_bc4_wait_sent(hu);
++	serdev_device_set_baudrate(serdev, MAX_BAUD_RATE);
++	err = serdev_device_wait_for_cts(serdev, true, 500);
++	if (err < 0) {
++		dev_err(dev, "CTS not received after warm reset: %d", err);
++		goto out;
++	}
++
++	for (i = 0; i < BC4_ALIVE_TRIES; i++) {
++		btdev->init_error = 0;
++		err = nokia_send_alive_packet(hu);
++		if (!err)
++			break;
++	}
++	if (err < 0) {
++		dev_err(dev, "No alive reply after warm reset: %d", err);
++		goto out;
++	}
++
++	dev_info(dev, "BC4 set up: %s, %d commands, %s address",
++		 FIRMWARE_BC4, n, have_bdaddr ? "with its" : "no");
++
++out:
++	WRITE_ONCE(btdev->bc4_fw_loading, false);
++	release_firmware(fw);
++	return err;
++}
++
++static int nokia_bc4_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr)
++{
++	struct hci_uart *hu = hci_get_drvdata(hdev);
++	struct nokia_bt_dev *btdev = hu->priv;
++
++	bacpy(&btdev->bdaddr, bdaddr);
++
++	return nokia_setup(hu);
++}
++
+ static int nokia_setup(struct hci_uart *hu)
+ {
+ 	struct nokia_bt_dev *btdev = hu->priv;
+@@ -412,6 +669,21 @@
+ 		goto out;
+ 	}
+ 
++	if (btdev->bc4) {
++		err = nokia_bc4_setup(hu);
++		if (err < 0) {
++			dev_err(dev, "BC4 setup failed: %d", err);
++			goto out;
++		}
++
++		/* bc4fw.bin's address is a placeholder */
++		hu->hdev->set_bdaddr = nokia_bc4_set_bdaddr;
++		hci_set_quirk(hu->hdev, HCI_QUIRK_INVALID_BDADDR);
++		/* the BC4 (Bluetooth 2.0) rejects Read Page Scan Type */
++		hci_set_quirk(hu->hdev, HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE);
++		goto done;
++	}
++
+ 	/* 1. negotiate speed etc */
+ 	err = nokia_send_negotiation(hu);
+ 	if (err < 0) {
+@@ -443,8 +715,21 @@
+ 		dev_dbg(dev, "bcm2048 has invalid bluetooth address!");
+ 	}
+ 
++done:
+ 	dev_dbg(dev, "protocol setup done!");
+ 
++	/*
++	 * bc4fw.bin's keys put the BC4 into deep sleep after its warm reset:
++	 * raising BT wakeup just before a send, as for the other chips, loses
++	 * the command (HCI Reset times out). Keep the BC4 awake until the
++	 * wakeup and CTS handshake for its deep sleep is done.
++	 */
++	if (btdev->bc4) {
++		gpiod_set_value_cansleep(btdev->wakeup_bt, 1);
++		btdev->tx_enabled = true;
++		btdev->initialized = true;
++		return 0;
++	}
+ 	gpiod_set_value_cansleep(btdev->wakeup_bt, 0);
+ 	pm_runtime_put(dev);
+ 	btdev->tx_enabled = false;
+@@ -534,7 +819,11 @@
+ 	int ret = 0;
+ 
+ 	hdr = (struct hci_nokia_neg_hdr *)skb->data;
+-	if (hdr->dlen != sizeof(*evt)) {
++	/*
++	 * The BC4 answers with the request's 10 bytes, the ack set, and no
++	 * manufacturer or version id (Nokia's driver read just the ack).
++	 */
++	if (btdev->bc4 ? hdr->dlen < 1 : hdr->dlen != sizeof(*evt)) {
+ 		btdev->init_error = -EIO;
+ 		ret = -EIO;
+ 		goto finish_neg;
+@@ -549,6 +838,11 @@
+ 		goto finish_neg;
+ 	}
+ 
++	if (btdev->bc4) {
++		dev_dbg(dev, "Negotiation received (BC4)");
++		goto finish_neg;
++	}
++
+ 	btdev->man_id = evt->man_id;
+ 	btdev->ver_id = evt->ver_id;
+ 
+@@ -605,11 +899,31 @@
+ 	return hci_recv_frame(hdev, skb);
+ }
+ 
++static int nokia_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
++{
++	struct hci_uart *hu = hci_get_drvdata(hdev);
++	struct nokia_bt_dev *btdev = hu->priv;
++
++	/* BC4 firmware download: the BCCMD answers are the driver's */
++	if (READ_ONCE(btdev->bc4_fw_loading) && skb->len &&
++	    skb->data[0] == HCI_EV_VENDOR) {
++		if (skb->len < 13)
++			btdev->bc4_fw_status = -1;
++		else
++			btdev->bc4_fw_status = get_unaligned_le16(skb->data + 11);
++		complete(&btdev->init_completion);
++		kfree_skb(skb);
++		return 0;
++	}
++
++	return hci_recv_frame(hdev, skb);
++}
++
+ /* Recv data */
+ static const struct h4_recv_pkt nokia_recv_pkts[] = {
+ 	{ H4_RECV_ACL,		.recv = hci_recv_frame },
+ 	{ H4_RECV_SCO,		.recv = hci_recv_frame },
+-	{ H4_RECV_EVENT,	.recv = hci_recv_frame },
++	{ H4_RECV_EVENT,	.recv = nokia_recv_event },
+ 	{ NOKIA_RECV_ALIVE,	.recv = nokia_recv_alive_packet },
+ 	{ NOKIA_RECV_NEG,	.recv = nokia_recv_negotiation_packet },
+ 	{ NOKIA_RECV_RADIO,	.recv = nokia_recv_radio },
+@@ -642,7 +956,7 @@
+ 	struct device *dev = &btdev->serdev->dev;
+ 	struct sk_buff *result = skb_dequeue(&btdev->txq);
+ 
+-	if (!btdev->initialized)
++	if (!btdev->initialized || btdev->bc4)	/* the BC4 stays awake */
+ 		return result;
+ 
+ 	if (btdev->tx_enabled == !!result)
+@@ -689,6 +1003,8 @@
+ 	btdev->hu.serdev = btdev->serdev = serdev;
+ 	serdev_device_set_drvdata(serdev, btdev);
+ 
++	btdev->bc4 = of_device_is_compatible(dev->of_node, "csr,bc4-nokia");
++
+ 	btdev->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+ 	if (IS_ERR(btdev->reset)) {
+ 		err = PTR_ERR(btdev->reset);

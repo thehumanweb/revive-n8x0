@@ -1,0 +1,47 @@
+ARM: kuser cmpxchg64 without ldrexd on ARMv6 (ARM1136 r0)
+
+ARCH_MULTI_V6 selects CPU_V6K as well as the platform's CPU_V6, so
+CPU_32v6K is set and __kuser_cmpxchg64 (0xffff0f60) used ldrexd and
+strexd, which are ARMv6K. The OMAP2420's ARM1136 r0 is plain ARMv6:
+every user-space 64-bit atomic that goes through the helper (libgcc's
+__kernel_cmpxchg64, so libatomic and anything built for armv5/v6) died
+with SIGILL, Mesa among them. The kernel's own 64-bit atomics already
+avoid ldrexd with CPU_V6 (GENERIC_ATOMIC64), as do its 8- and 16-bit
+cmpxchg.
+
+With CPU_V6 on a UP kernel, use the restartable sequence that pre-v6K
+kernels use (plain loads and stores, restarted by the IRQ and abort
+entry fixup when interrupted inside it), and hook that fixup in for the
+same configurations.
+
+--- a/arch/arm/kernel/entry-armv.S
++++ b/arch/arm/kernel/entry-armv.S
+@@ -410,8 +410,18 @@
+ 	.endif
+ 	.endm
+ 
++/*
++ * The 64-bit kuser cmpxchg uses ldrexd/strexd, which are ARMv6K. A kernel
++ * that also supports plain ARMv6 (CPU_V6, e.g. the ARM1136 r0 in OMAP2420:
++ * ARCH_MULTI_V6 selects CPU_V6K as well) uses the restartable sequence
++ * instead when it is UP, the only case where that sequence is atomic.
++ */
++#if defined(CONFIG_CPU_32v6K) && (defined(CONFIG_SMP) || !defined(CONFIG_CPU_V6))
++#define KUSER_CMPXCHG64_LDREXD
++#endif
++
+ 	.macro	kuser_cmpxchg_check
+-#if !defined(CONFIG_CPU_32v6K) && defined(CONFIG_KUSER_HELPERS)
++#if !defined(KUSER_CMPXCHG64_LDREXD) && defined(CONFIG_KUSER_HELPERS)
+ #ifndef CONFIG_MMU
+ #warning "NPTL on non MMU needs fixing"
+ #else
+@@ -692,7 +702,7 @@
+ 
+ __kuser_cmpxchg64:				@ 0xffff0f60
+ 
+-#if defined(CONFIG_CPU_32v6K)
++#if defined(KUSER_CMPXCHG64_LDREXD)
+ 
+ 	stmfd	sp!, {r4, r5, r6, r7}
+ 	ldrd	r4, r5, [r0]			@ load old val

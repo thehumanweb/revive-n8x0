@@ -1,0 +1,414 @@
+drm/omap: send only the damage to a manually updated display
+
+Every update of the N8x0's RFBI display sent the whole frame, 42 ms at
+800x480 over the bus to the S1D13745, which keeps its own copy of the
+frame. Send only what changed, as Nokia's omapfb did (blizzard.c,
+do_partial_update()):
+
+- the primary plane takes FB_DAMAGE_CLIPS; alone on a manually updated
+  CRTC, covering it unscaled and unrotated, it fetches just the merged
+  damage (whole 8-pixel columns) and the CRTC's output size follows it;
+- a DSI op, update_rect(), sends a rectangle; RFBI implements it, and
+  its client (the S1D1374x) sets its input window to the rectangle and
+  the output window to it, scaled in the half-size mode;
+- DIRTYFB goes through drm_atomic_helper_dirtyfb(), so its clips (and
+  fbdev's damage) become damage too; it used to send whole frames.
+
+diff -ruN a/drivers/gpu/drm/omapdrm/dss/dss.h b/drivers/gpu/drm/omapdrm/dss/dss.h
+--- a/drivers/gpu/drm/omapdrm/dss/dss.h	2026-10-26 10:18:08.149482737 +0100
++++ b/drivers/gpu/drm/omapdrm/dss/dss.h	2026-10-26 10:18:08.151482747 +0100
+@@ -210,8 +210,12 @@
+ struct rfbi_device;
+ 
+ struct rfbi_client_ops {
+-	/* Before each update, bus held at 8 bits per cycle: set the window */
+-	int (*prepare_update)(void *data, u16 w, u16 h);
++	/*
++	 * Before each update, bus held at 8 bits per cycle: set the window,
++	 * the rectangle (x, y, w, h) of a frame_w x frame_h frame
++	 */
++	int (*prepare_update)(void *data, u16 x, u16 y, u16 w, u16 h, u16 frame_w,
++			      u16 frame_h);
+ };
+ 
+ struct rfbi_device *rfbi_get(struct device_node *node);
+diff -ruN a/drivers/gpu/drm/omapdrm/dss/omapdss.h b/drivers/gpu/drm/omapdrm/dss/omapdss.h
+--- a/drivers/gpu/drm/omapdrm/dss/omapdss.h	2026-10-26 10:18:08.148482732 +0100
++++ b/drivers/gpu/drm/omapdrm/dss/omapdss.h	2026-10-26 10:18:08.151482747 +0100
+@@ -195,6 +195,8 @@
+ 
+ struct omapdss_dsi_ops {
+ 	int (*update)(struct omap_dss_device *dssdev);
++	/* optional: send only this rectangle of the frame */
++	int (*update_rect)(struct omap_dss_device *dssdev, u16 x, u16 y, u16 w, u16 h);
+ 	bool (*is_video_mode)(struct omap_dss_device *dssdev);
+ };
+ 
+diff -ruN a/drivers/gpu/drm/omapdrm/dss/rfbi.c b/drivers/gpu/drm/omapdrm/dss/rfbi.c
+--- a/drivers/gpu/drm/omapdrm/dss/rfbi.c	2026-10-26 10:18:08.149482737 +0100
++++ b/drivers/gpu/drm/omapdrm/dss/rfbi.c	2026-10-26 10:18:08.151482747 +0100
+@@ -348,18 +348,20 @@
+ 	dss_mgr_cancel_update(&rfbi->output);
+ }
+ 
+-static int rfbi_update(struct omap_dss_device *dssdev)
++/*
++ * Send the rectangle (x, y, w, h) of the frame: DISPC was set up to
++ * stream just that (omapdrm crops its plane and output to the damage)
++ */
++static int rfbi_send(struct rfbi_device *rfbi, u16 x, u16 y, u16 w, u16 h)
+ {
+-	struct rfbi_device *rfbi = container_of(dssdev, struct rfbi_device,
+-						output);
+-	u16 w = rfbi->vm.hactive;
+-	u16 h = rfbi->vm.vactive;
++	u16 frame_w = rfbi->vm.hactive;
++	u16 frame_h = rfbi->vm.vactive;
+ 	u32 l;
+ 	int r;
+ 
+ 	down(&rfbi->bus_sem);
+ 
+-	if (!rfbi->enabled || !w || !h) {
++	if (!rfbi->enabled || !w || !h || x + w > frame_w || y + h > frame_h) {
+ 		r = -EIO;
+ 		goto err_up;
+ 	}
+@@ -371,7 +373,8 @@
+ 	/* Tell the controller where the pixels go */
+ 	rfbi_set_bits_per_cycle(rfbi, 8);
+ 	if (rfbi->client_ops && rfbi->client_ops->prepare_update) {
+-		r = rfbi->client_ops->prepare_update(rfbi->client_data, w, h);
++		r = rfbi->client_ops->prepare_update(rfbi->client_data, x, y, w, h,
++						     frame_w, frame_h);
+ 		if (r)
+ 			goto err_put;
+ 	}
+@@ -411,6 +414,23 @@
+ 	return r;
+ }
+ 
++static int rfbi_update(struct omap_dss_device *dssdev)
++{
++	struct rfbi_device *rfbi = container_of(dssdev, struct rfbi_device,
++						output);
++
++	return rfbi_send(rfbi, 0, 0, rfbi->vm.hactive, rfbi->vm.vactive);
++}
++
++static int rfbi_update_rect(struct omap_dss_device *dssdev, u16 x, u16 y,
++			    u16 w, u16 h)
++{
++	struct rfbi_device *rfbi = container_of(dssdev, struct rfbi_device,
++						output);
++
++	return rfbi_send(rfbi, x, y, w, h);
++}
++
+ static bool rfbi_is_video_mode(struct omap_dss_device *dssdev)
+ {
+ 	return false;
+@@ -418,6 +438,7 @@
+ 
+ static const struct omapdss_dsi_ops rfbi_manual_update_ops = {
+ 	.update = rfbi_update,
++	.update_rect = rfbi_update_rect,
+ 	.is_video_mode = rfbi_is_video_mode,
+ };
+ 
+diff -ruN a/drivers/gpu/drm/omapdrm/dss/s1d1374x.c b/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
+--- a/drivers/gpu/drm/omapdrm/dss/s1d1374x.c	2026-10-26 10:18:08.150482742 +0100
++++ b/drivers/gpu/drm/omapdrm/dss/s1d1374x.c	2026-10-26 10:18:08.151482747 +0100
+@@ -297,13 +297,15 @@
+ 	}
+ }
+ 
+-static int s1d1374x_prepare_update(void *data, u16 w, u16 h)
++static int s1d1374x_prepare_update(void *data, u16 x, u16 y, u16 w, u16 h,
++				   u16 frame_w, u16 frame_h)
+ {
+ 	struct s1d1374x *ctrl = data;
+ 	u8 cmd = BLIZZARD_INPUT_WIN_X_START_0;
+ 	u8 regs[18];
+-	u16 x_end = w - 1, y_end = h - 1;
+-	u16 out_w = w, out_h = h;
++	u16 x_end = x + w - 1, y_end = y + h - 1;
++	u16 out_x = x, out_y = y, out_w = w, out_h = h;
++	bool whole = !x && !y && w == frame_w && h == frame_h;
+ 
+ 	if (!ctrl->identified) {
+ 		int r = s1d1374x_setup_clocks(ctrl);
+@@ -316,11 +318,16 @@
+ 			s1d1374x_setup_te(ctrl);
+ 	}
+ 
+-	/* A smaller frame is scaled up to the whole panel */
+-	if (ctrl->panel_w && ctrl->panel_h &&
+-	    (w < ctrl->panel_w || h < ctrl->panel_h)) {
+-		out_w = ctrl->panel_w;
+-		out_h = ctrl->panel_h;
++	/*
++	 * A smaller frame is scaled up to the whole panel, a rectangle of it
++	 * to its part of the panel
++	 */
++	if (ctrl->panel_w && ctrl->panel_h && frame_w && frame_h &&
++	    (frame_w < ctrl->panel_w || frame_h < ctrl->panel_h)) {
++		out_x = x * ctrl->panel_w / frame_w;
++		out_y = y * ctrl->panel_h / frame_h;
++		out_w = (x + w) * ctrl->panel_w / frame_w - out_x;
++		out_h = (y + h) * ctrl->panel_h / frame_h - out_y;
+ 	}
+ 
+ 	s1d1374x_wait_line_buffer(ctrl);
+@@ -335,14 +342,14 @@
+ 	}
+ 
+ 	/* Input window, then output window: 0x6c - 0x8a */
+-	regs[0] = 0;		regs[1] = 0;		/* X start */
+-	regs[2] = 0;		regs[3] = 0;		/* Y start */
++	regs[0] = x;		regs[1] = x >> 8;	/* X start */
++	regs[2] = y;		regs[3] = y >> 8;	/* Y start */
+ 	regs[4] = x_end;	regs[5] = x_end >> 8;	/* X end */
+ 	regs[6] = y_end;	regs[7] = y_end >> 8;	/* Y end */
+-	regs[8] = 0;		regs[9] = 0;
+-	regs[10] = 0;		regs[11] = 0;
+-	regs[12] = out_w - 1;	regs[13] = (out_w - 1) >> 8;
+-	regs[14] = out_h - 1;	regs[15] = (out_h - 1) >> 8;
++	regs[8] = out_x;	regs[9] = out_x >> 8;
++	regs[10] = out_y;	regs[11] = out_y >> 8;
++	regs[12] = out_x + out_w - 1;	regs[13] = (out_x + out_w - 1) >> 8;
++	regs[14] = out_y + out_h - 1;	regs[15] = (out_y + out_h - 1) >> 8;
+ 	regs[16] = BLIZZARD_COLOR_RGB565;		/* 0x8c input format */
+ 	regs[17] = ctrl->data_source;			/* 0x8e data source */
+ 	/*
+@@ -351,7 +358,8 @@
+ 	 */
+ 	if (out_w != w || out_h != h)
+ 		ctrl->zoomed = true;
+-	else if (ctrl->zoomed && ctrl->data_source == BLIZZARD_SRC_WRITE_LCD_DESTRUCTIVE) {
++	else if (whole && ctrl->zoomed &&
++		 ctrl->data_source == BLIZZARD_SRC_WRITE_LCD_DESTRUCTIVE) {
+ 		regs[17] = BLIZZARD_SRC_WRITE_LCD_BACKGROUND;
+ 		ctrl->zoomed = false;
+ 	}
+diff -ruN a/drivers/gpu/drm/omapdrm/omap_crtc.c b/drivers/gpu/drm/omapdrm/omap_crtc.c
+--- a/drivers/gpu/drm/omapdrm/omap_crtc.c	2026-10-26 10:18:08.150482742 +0100
++++ b/drivers/gpu/drm/omapdrm/omap_crtc.c	2026-10-26 10:18:08.152482752 +0100
+@@ -47,6 +47,15 @@
+ 	void (*framedone_handler)(void *);
+ 	void *framedone_handler_data;
+ 	u64 framedone_count;
++
++	/*
++	 * A manually updated display sends only the damage: the rectangle the
++	 * primary plane was cropped to in this commit (rect_next), the one the
++	 * update in flight sends (rect, partial), and whether the output's
++	 * size was cut down to it (cropped)
++	 */
++	struct drm_rect rect_next, rect;
++	bool partial_next, partial, cropped;
+ };
+ 
+ /* -----------------------------------------------------------------------------
+@@ -389,6 +398,25 @@
+ 	omap_crtc_complete_update(crtc);
+ }
+ 
++/* Can this CRTC's display be sent a rectangle instead of the frame? */
++bool omap_crtc_can_update_rect(struct drm_crtc *crtc)
++{
++	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
++	struct omap_dss_device *dssdev = omap_crtc->pipe->output;
++
++	return to_omap_crtc_state(crtc->state)->manually_updated && dssdev &&
++	       dssdev->dsi_ops && dssdev->dsi_ops->update_rect;
++}
++
++/* The primary plane fetches just r in this commit: send only that */
++void omap_crtc_set_update_rect(struct drm_crtc *crtc, const struct drm_rect *r)
++{
++	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
++
++	omap_crtc->rect_next = *r;
++	omap_crtc->partial_next = true;
++}
++
+ void omap_crtc_flush(struct drm_crtc *crtc)
+ {
+ 	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
+@@ -416,7 +444,13 @@
+ 	 * alone dropped the flip's event, and the commit waiting for it was
+ 	 * never done, so every later one got -EBUSY.
+ 	 */
+-	ret = dssdev->dsi_ops->update(dssdev);
++	if (omap_crtc->partial && dssdev->dsi_ops->update_rect)
++		ret = dssdev->dsi_ops->update_rect(dssdev, omap_crtc->rect.x1,
++						   omap_crtc->rect.y1,
++						   drm_rect_width(&omap_crtc->rect),
++						   drm_rect_height(&omap_crtc->rect));
++	else
++		ret = dssdev->dsi_ops->update(dssdev);
+ 	if (ret < 0)
+ 		omap_crtc_complete_update(&omap_crtc->base);
+ }
+@@ -699,6 +733,26 @@
+ 	DBG("%s: GO", omap_crtc->name);
+ 
+ 	if (omap_crtc_state->manually_updated) {
++		/*
++		 * The output's size follows the rectangle the plane was cropped
++		 * to, or goes back to the whole frame
++		 */
++		omap_crtc->partial = omap_crtc->partial_next;
++		omap_crtc->rect = omap_crtc->rect_next;
++		omap_crtc->partial_next = false;
++		if (omap_crtc->partial) {
++			struct videomode vm = omap_crtc->vm;
++
++			vm.hactive = drm_rect_width(&omap_crtc->rect);
++			vm.vactive = drm_rect_height(&omap_crtc->rect);
++			dispc_mgr_set_timings(priv->dispc, omap_crtc->channel, &vm);
++			omap_crtc->cropped = true;
++		} else if (omap_crtc->cropped) {
++			dispc_mgr_set_timings(priv->dispc, omap_crtc->channel,
++					      &omap_crtc->vm);
++			omap_crtc->cropped = false;
++		}
++
+ 		/* send new image for page flips and modeset changes */
+ 		spin_lock_irq(&crtc->dev->event_lock);
+ 		omap_crtc_flush(crtc);
+diff -ruN a/drivers/gpu/drm/omapdrm/omap_crtc.h b/drivers/gpu/drm/omapdrm/omap_crtc.h
+--- a/drivers/gpu/drm/omapdrm/omap_crtc.h	2026-10-26 10:18:08.150482742 +0100
++++ b/drivers/gpu/drm/omapdrm/omap_crtc.h	2026-10-26 10:18:08.152482752 +0100
+@@ -30,5 +30,8 @@
+ void omap_crtc_vblank_irq(struct drm_crtc *crtc);
+ void omap_crtc_framedone_irq(struct drm_crtc *crtc, uint32_t irqstatus);
+ void omap_crtc_flush(struct drm_crtc *crtc);
++struct drm_rect;
++bool omap_crtc_can_update_rect(struct drm_crtc *crtc);
++void omap_crtc_set_update_rect(struct drm_crtc *crtc, const struct drm_rect *r);
+ 
+ #endif /* __OMAPDRM_CRTC_H__ */
+diff -ruN a/drivers/gpu/drm/omapdrm/omap_fb.c b/drivers/gpu/drm/omapdrm/omap_fb.c
+--- a/drivers/gpu/drm/omapdrm/omap_fb.c	2026-10-26 10:18:08.151482747 +0100
++++ b/drivers/gpu/drm/omapdrm/omap_fb.c	2026-10-26 10:18:08.152482752 +0100
+@@ -8,6 +8,7 @@
+ #include <linux/seq_file.h>
+ 
+ #include <drm/drm_blend.h>
++#include <drm/drm_damage_helper.h>
+ #include <drm/drm_modeset_helper.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_framebuffer.h>
+@@ -58,27 +59,10 @@
+ 	struct mutex lock;
+ };
+ 
+-static int omap_framebuffer_dirty(struct drm_framebuffer *fb,
+-				  struct drm_file *file_priv,
+-				  unsigned flags, unsigned color,
+-				  struct drm_clip_rect *clips,
+-				  unsigned num_clips)
+-{
+-	struct drm_crtc *crtc;
+-
+-	drm_modeset_lock_all(fb->dev);
+-
+-	drm_for_each_crtc(crtc, fb->dev)
+-		omap_crtc_flush(crtc);
+-
+-	drm_modeset_unlock_all(fb->dev);
+-
+-	return 0;
+-}
+-
+ static const struct drm_framebuffer_funcs omap_framebuffer_funcs = {
+ 	.create_handle = drm_gem_fb_create_handle,
+-	.dirty = omap_framebuffer_dirty,
++	/* a commit with the clips as damage: a manual update sends just those */
++	.dirty = drm_atomic_helper_dirtyfb,
+ 	.destroy = drm_gem_fb_destroy,
+ };
+ 
+diff -ruN a/drivers/gpu/drm/omapdrm/omap_plane.c b/drivers/gpu/drm/omapdrm/omap_plane.c
+--- a/drivers/gpu/drm/omapdrm/omap_plane.c	2026-10-26 10:18:08.150482742 +0100
++++ b/drivers/gpu/drm/omapdrm/omap_plane.c	2026-10-26 10:18:08.152482752 +0100
+@@ -7,6 +7,7 @@
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_blend.h>
++#include <drm/drm_damage_helper.h>
+ #include <drm/drm_gem_atomic_helper.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_framebuffer.h>
+@@ -60,6 +61,51 @@
+ 		omap_framebuffer_unpin(old_state->fb);
+ }
+ 
++/*
++ * A manually updated display (RFBI, DSI command mode) is sent only what
++ * changed: the primary plane alone on its CRTC, covering it unscaled and
++ * unrotated, fetches just the merged damage (whole 8-pixel columns), and
++ * the CRTC sends that rectangle (omap_crtc_set_update_rect()).
++ */
++static void omap_plane_crop_to_damage(struct drm_plane_state *old_state,
++				      struct drm_plane_state *new_state,
++				      struct omap_overlay_info *info)
++{
++	struct drm_crtc_state *cs = new_state->crtc->state;
++	const struct drm_format_info *f = new_state->fb->format;
++	int sx = new_state->src_x >> 16, sy = new_state->src_y >> 16;
++	struct drm_rect r;
++
++	if (!omap_crtc_can_update_rect(new_state->crtc) || f->num_planes != 1 ||
++	    new_state->rotation != DRM_MODE_ROTATE_0 ||
++	    hweight32(cs->plane_mask) != 1 ||
++	    new_state->crtc_x || new_state->crtc_y ||
++	    new_state->crtc_w != cs->mode.hdisplay ||
++	    new_state->crtc_h != cs->mode.vdisplay ||
++	    (new_state->src_w >> 16) != new_state->crtc_w ||
++	    (new_state->src_h >> 16) != new_state->crtc_h ||
++	    !drm_atomic_helper_damage_merged(old_state, new_state, &r))
++		return;
++
++	/* damage is in the framebuffer, the plane's source starts at sx, sy */
++	drm_rect_translate(&r, -sx, -sy);
++	r.x1 = round_down(max(r.x1, 0), 8);
++	r.y1 = max(r.y1, 0);
++	r.x2 = min_t(int, round_up(r.x2, 8), new_state->crtc_w);
++	r.y2 = min_t(int, r.y2, new_state->crtc_h);
++	if (r.x1 >= r.x2 || r.y1 >= r.y2 ||
++	    (!r.x1 && !r.y1 && r.x2 == new_state->crtc_w &&
++	     r.y2 == new_state->crtc_h))
++		return;
++
++	info->paddr += r.y1 * new_state->fb->pitches[0] + r.x1 * f->cpp[0];
++	info->width = info->out_width = drm_rect_width(&r);
++	info->height = info->out_height = drm_rect_height(&r);
++	info->pos_x = 0;
++	info->pos_y = 0;
++	omap_crtc_set_update_rect(new_state->crtc, &r);
++}
++
+ static void omap_plane_atomic_update(struct drm_plane *plane,
+ 				     struct drm_atomic_state *state)
+ {
+@@ -112,6 +158,8 @@
+ 	/* update scanout: */
+ 	omap_framebuffer_update_scanout(new_state->fb, new_state, &info,
+ 					dual_ovl ? &r_info : NULL);
++	if (!dual_ovl && plane->type == DRM_PLANE_TYPE_PRIMARY)
++		omap_plane_crop_to_damage(old_state, new_state, &info);
+ 
+ 	DBG("%s: %dx%d -> %dx%d (%d)",
+ 			new_omap_state->overlay->name, info.width, info.height,
+@@ -578,6 +626,8 @@
+ 	else
+ 		zpos = omap_plane->id;
+ 	drm_plane_create_zpos_property(plane, zpos, 0, num_planes - 1);
++	if (plane->type == DRM_PLANE_TYPE_PRIMARY)
++		drm_plane_enable_fb_damage_clips(plane);
+ 	drm_plane_create_alpha_property(plane);
+ 	drm_plane_create_blend_mode_property(plane, BIT(DRM_MODE_BLEND_PREMULTI) |
+ 					     BIT(DRM_MODE_BLEND_COVERAGE));

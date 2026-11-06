@@ -1,0 +1,50 @@
+usb: musb: notify mode changes in kernel too
+
+musb notifies userspace through sysfs when its OTG state ("mode")
+changes. Add a notifier chain, called at the same point with the state
+and its name, for platform code that has to present the state in some
+other way (the Nokia N8x0's Maemo compatibility: DSME's
+/sys/devices/platform/musb_hdrc/mode).
+
+--- a/include/linux/usb/musb.h
++++ b/include/linux/usb/musb.h
+@@ -11,6 +11,8 @@
+ #ifndef __LINUX_USB_MUSB_H
+ #define __LINUX_USB_MUSB_H
+ 
++#include <linux/notifier.h>
++
+ /* The USB role is defined by the connector used on the board, so long as
+  * standards are being followed.  (Developer boards sometimes won't.)
+  */
+@@ -119,6 +121,8 @@
+ 
+ #if IS_ENABLED(CONFIG_USB_MUSB_HDRC)
+ int musb_mailbox(enum musb_vbus_id_status status);
++/* Called when "mode" changes: action the usb_otg_state, data its name */
++extern struct blocking_notifier_head musb_mode_notifier;
+ #else
+ static inline int musb_mailbox(enum musb_vbus_id_status status)
+ {
+--- a/drivers/usb/musb/musb_core.c
++++ b/drivers/usb/musb/musb_core.c
+@@ -1849,6 +1849,9 @@
+ };
+ EXPORT_SYMBOL_GPL(musb_mailbox);
+ 
++BLOCKING_NOTIFIER_HEAD(musb_mode_notifier);
++EXPORT_SYMBOL_GPL(musb_mode_notifier);
++
+ /*-------------------------------------------------------------------------*/
+ 
+ static ssize_t
+@@ -2088,6 +2091,9 @@
+ 	if (musb_get_state(musb) != musb->xceiv_old_state) {
+ 		musb->xceiv_old_state = musb_get_state(musb);
+ 		sysfs_notify(&musb->controller->kobj, NULL, "mode");
++		blocking_notifier_call_chain(&musb_mode_notifier,
++					     musb_get_state(musb),
++					     (void *)musb_otg_state_string(musb));
+ 	}
+ 
+ 	pm_runtime_mark_last_busy(musb->controller);

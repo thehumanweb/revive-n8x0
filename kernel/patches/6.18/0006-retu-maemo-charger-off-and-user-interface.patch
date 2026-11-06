@@ -1,0 +1,787 @@
+mfd: retu: Tahvo charger off; all IRQs; ADC; /dev/retu and /dev/tahvo
+
+- Tahvo: charge PWM (CHGCURR) to 0 at probe (logging CHGCURR/CHGCTL as
+  found), on shutdown/reboot/kexec and on panic. Nothing in the kernel
+  manages charging; Maemo's BME does it from userspace.
+- All 16 Retu and 8 Tahvo interrupt sources in the regmap-irq chips.
+- retu_read_adc() (with the Vilma battery voltage quirk),
+  retu_update_bits(), retu_irq_virq().
+- CONFIG_MFD_RETU_USER: Nokia's retu-user/tahvo-user ioctl ABI, which
+  Maemo's BME uses, on top of retu-mfd, as misc minors 62 and 63
+  (linuxrc parses /proc/misc in a way that needs minors below 100).
+diff -uN a/drivers/mfd/retu-mfd.c b/drivers/mfd/retu-mfd.c
+--- a/drivers/mfd/retu-mfd.c
++++ b/drivers/mfd/retu-mfd.c
+@@ -27,6 +27,7 @@
+ #include <linux/mfd/retu.h>
+ #include <linux/interrupt.h>
+ #include <linux/moduleparam.h>
++#include <linux/panic_notifier.h>
+ 
+ /* Registers */
+ #define RETU_REG_ASICR		0x00		/* ASIC ID and revision */
+@@ -38,11 +39,22 @@
+ /* Interrupt sources */
+ #define RETU_INT_PWR		0		/* Power button */
+ 
++#define RETU_REG_ADCR		0x08		/* ADC result */
++#define RETU_REG_ADCSCR		0x09		/* ADC sample control */
++#define RETU_ADC_MAX_CHANNEL	13
++
++#define TAHVO_REG_CHGCURR	0x04		/* Charge current PWM */
++#define TAHVO_REG_CHGCTL	0x08		/* Charge control */
++
+ struct retu_dev {
+ 	struct regmap			*regmap;
+ 	struct device			*dev;
+ 	struct mutex			mutex;
+ 	struct regmap_irq_chip_data	*irq_data;
++	struct i2c_client		*i2c;
++	bool				is_vilma;
++	bool				is_tahvo;
++	struct notifier_block		panic_nb;
+ };
+ 
+ static const struct resource retu_pwrbutton_res[] = {
+@@ -58,17 +70,31 @@
+ 	{
+ 		.name		= "retu-wdt"
+ 	},
++#if IS_ENABLED(CONFIG_MFD_RETU_USER)
+ 	{
++		.name		= "retu-user"
++	},
++#endif
++	{
+ 		.name		= "retu-pwrbutton",
+ 		.resources	= retu_pwrbutton_res,
+ 		.num_resources	= ARRAY_SIZE(retu_pwrbutton_res),
+ 	}
+ };
+ 
++/*
++ * All 16 sources, so that drivers (and /dev/retu users such as Maemo's BME:
++ * charger plug, ADC) can request any of them.
++ */
+ static const struct regmap_irq retu_irqs[] = {
+-	[RETU_INT_PWR] = {
+-		.mask = 1 << RETU_INT_PWR,
+-	}
++	REGMAP_IRQ_REG_LINE(0, 16), REGMAP_IRQ_REG_LINE(1, 16),
++	REGMAP_IRQ_REG_LINE(2, 16), REGMAP_IRQ_REG_LINE(3, 16),
++	REGMAP_IRQ_REG_LINE(4, 16), REGMAP_IRQ_REG_LINE(5, 16),
++	REGMAP_IRQ_REG_LINE(6, 16), REGMAP_IRQ_REG_LINE(7, 16),
++	REGMAP_IRQ_REG_LINE(8, 16), REGMAP_IRQ_REG_LINE(9, 16),
++	REGMAP_IRQ_REG_LINE(10, 16), REGMAP_IRQ_REG_LINE(11, 16),
++	REGMAP_IRQ_REG_LINE(12, 16), REGMAP_IRQ_REG_LINE(13, 16),
++	REGMAP_IRQ_REG_LINE(14, 16), REGMAP_IRQ_REG_LINE(15, 16),
+ };
+ 
+ static const struct regmap_irq_chip retu_irq_chip = {
+@@ -99,12 +125,19 @@
+ 		.resources	= tahvo_usb_res,
+ 		.num_resources	= ARRAY_SIZE(tahvo_usb_res),
+ 	},
++#if IS_ENABLED(CONFIG_MFD_RETU_USER)
++	{
++		.name		= "tahvo-user"
++	},
++#endif
+ };
+ 
++/* All 8 sources (charger faults, voltage limit, battery current, VBUS) */
+ static const struct regmap_irq tahvo_irqs[] = {
+-	[TAHVO_INT_VBUS] = {
+-		.mask = 1 << TAHVO_INT_VBUS,
+-	}
++	REGMAP_IRQ_REG_LINE(0, 16), REGMAP_IRQ_REG_LINE(1, 16),
++	REGMAP_IRQ_REG_LINE(2, 16), REGMAP_IRQ_REG_LINE(3, 16),
++	REGMAP_IRQ_REG_LINE(4, 16), REGMAP_IRQ_REG_LINE(5, 16),
++	REGMAP_IRQ_REG_LINE(6, 16), REGMAP_IRQ_REG_LINE(7, 16),
+ };
+ 
+ static const struct regmap_irq_chip tahvo_irq_chip = {
+@@ -164,7 +197,89 @@
+ 	return ret;
+ }
+ EXPORT_SYMBOL_GPL(retu_write);
++
++/* Read-modify-write under the device lock */
++int retu_update_bits(struct retu_dev *rdev, u8 reg, u16 mask, u16 val)
++{
++	int ret;
++
++	mutex_lock(&rdev->mutex);
++	ret = regmap_update_bits(rdev->regmap, reg, mask, val);
++	mutex_unlock(&rdev->mutex);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(retu_update_bits);
++
++/* Linux IRQ number of a Retu/Tahvo interrupt source */
++int retu_irq_virq(struct retu_dev *rdev, int irq)
++{
++	return regmap_irq_get_virq(rdev->irq_data, irq);
++}
++EXPORT_SYMBOL_GPL(retu_irq_virq);
++
++/*
++ * Read a Retu ADC channel (10 bits), as Nokia's retu driver did, including
++ * the Vilma battery voltage quirk.
++ */
++int retu_read_adc(struct retu_dev *rdev, int channel)
++{
++	unsigned int scr, adcr;
++	int ret;
++
++	if (rdev->is_tahvo)
++		return -ENODEV;
++	if (channel < 0 || channel > RETU_ADC_MAX_CHANNEL)
++		return -EINVAL;
+ 
++	mutex_lock(&rdev->mutex);
++
++	if (channel == 8 && rdev->is_vilma) {
++		ret = regmap_read(rdev->regmap, RETU_REG_ADCSCR, &scr);
++		if (!ret)
++			ret = regmap_read(rdev->regmap, RETU_REG_ADCR, &adcr);
++		if (!ret && (scr & 0xff) && ((adcr >> 10) & 0xf) != 8)
++			ret = regmap_write(rdev->regmap, RETU_REG_ADCSCR,
++					   scr & ~0xff);
++		if (ret)
++			goto out;
++	}
++
++	ret = regmap_write(rdev->regmap, RETU_REG_ADCR, channel << 10);
++	if (!ret)
++		ret = regmap_read(rdev->regmap, RETU_REG_ADCR, &adcr);
++	if (!ret && rdev->is_vilma)
++		ret = regmap_write(rdev->regmap, RETU_REG_ADCR, 1 << 13);
++out:
++	mutex_unlock(&rdev->mutex);
++
++	return ret ? ret : (adcr & 0x3ff);
++}
++EXPORT_SYMBOL_GPL(retu_read_adc);
++
++/*
++ * Tahvo drives the charger PWM. Nothing in the kernel manages charging; Maemo's
++ * BME does it from userspace. Whatever left the charger running (bootloader,
++ * previous kernel, BME), turn it off: charge PWM to 0, at probe, on
++ * shutdown/reboot/kexec and on panic. CHGCTL's PWM override bits are left
++ * alone until measured on hardware.
++ */
++static int tahvo_charger_off(struct retu_dev *rdev)
++{
++	return retu_write(rdev, TAHVO_REG_CHGCURR, 0);
++}
++
++static int tahvo_panic(struct notifier_block *nb, unsigned long event,
++		       void *unused)
++{
++	struct retu_dev *rdev = container_of(nb, struct retu_dev, panic_nb);
++
++	/* No regmap or mutex: the i2c core takes the bus with a trylock */
++	i2c_smbus_write_word_data(rdev->i2c, TAHVO_REG_CHGCURR, 0);
++
++	return NOTIFY_DONE;
++}
++
+ static void retu_power_off(void)
+ {
+ 	struct retu_dev *rdev = retu_pm_power_off;
+@@ -243,6 +358,8 @@
+ 
+ 	i2c_set_clientdata(i2c, rdev);
+ 	rdev->dev = &i2c->dev;
++	rdev->i2c = i2c;
++	rdev->is_tahvo = i2c->addr == 2;
+ 	mutex_init(&rdev->mutex);
+ 	rdev->regmap = devm_regmap_init(&i2c->dev, &retu_bus, &i2c->dev,
+ 					&retu_config);
+@@ -260,7 +377,20 @@
+ 		 (ret & RETU_REG_ASICR_VILMA) ? " & " : "",
+ 		 (ret & RETU_REG_ASICR_VILMA) ? rdat->companion_name : "",
+ 		 (ret >> 4) & 0x7, ret & 0xf);
++	rdev->is_vilma = !rdev->is_tahvo && (ret & RETU_REG_ASICR_VILMA);
+ 
++	if (rdev->is_tahvo) {
++		dev_info(rdev->dev, "charger off (was CHGCURR %#x, CHGCTL %#x)\n",
++			 retu_read(rdev, TAHVO_REG_CHGCURR),
++			 retu_read(rdev, TAHVO_REG_CHGCTL));
++		ret = tahvo_charger_off(rdev);
++		if (ret < 0)
++			return ret;
++		rdev->panic_nb.notifier_call = tahvo_panic;
++		atomic_notifier_chain_register(&panic_notifier_list,
++					       &rdev->panic_nb);
++	}
++
+ 	/* Mask all interrupts. */
+ 	ret = retu_write(rdev, rdat->irq_chip->mask_base, 0xffff);
+ 	if (ret < 0)
+@@ -287,10 +417,23 @@
+ 	return 0;
+ }
+ 
++/* reboot, poweroff and kexec all come through here */
++static void retu_shutdown(struct i2c_client *i2c)
++{
++	struct retu_dev *rdev = i2c_get_clientdata(i2c);
++
++	if (rdev->is_tahvo)
++		tahvo_charger_off(rdev);
++}
++
+ static void retu_remove(struct i2c_client *i2c)
+ {
+ 	struct retu_dev *rdev = i2c_get_clientdata(i2c);
+ 
++	if (rdev->is_tahvo)
++		atomic_notifier_chain_unregister(&panic_notifier_list,
++						 &rdev->panic_nb);
++
+ 	if (retu_pm_power_off == rdev) {
+ 		pm_power_off	  = NULL;
+ 		retu_pm_power_off = NULL;
+@@ -320,6 +463,7 @@
+ 	},
+ 	.probe		= retu_probe,
+ 	.remove		= retu_remove,
++	.shutdown	= retu_shutdown,
+ 	.id_table	= retu_id,
+ };
+ module_i2c_driver(retu_driver);
+diff -uN a/include/linux/mfd/retu.h b/include/linux/mfd/retu.h
+--- a/include/linux/mfd/retu.h
++++ b/include/linux/mfd/retu.h
+@@ -13,6 +13,9 @@
+ 
+ int retu_read(struct retu_dev *, u8);
+ int retu_write(struct retu_dev *, u8, u16);
++int retu_update_bits(struct retu_dev *, u8 reg, u16 mask, u16 val);
++int retu_irq_virq(struct retu_dev *, int irq);
++int retu_read_adc(struct retu_dev *, int channel);
+ 
+ /* Registers */
+ #define RETU_REG_WATCHDOG	0x17		/* Watchdog */
+diff -uN a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -1234,6 +1234,14 @@
+ 	help
+ 	  Retu and Tahvo are a multi-function devices found on Nokia
+ 	  Internet Tablets (770, N800 and N810).
++
++config MFD_RETU_USER
++	bool "Retu/Tahvo user space interface (/dev/retu, /dev/tahvo)"
++	depends on MFD_RETU=y
++	help
++	  Nokia's retu-user/tahvo-user ioctl interface, as used by Maemo's
++	  battery management daemon (BME): register access, Retu ADC reads
++	  and interrupt delivery through misc devices "retu" and "tahvo".
+ 
+ config MFD_PM8XXX
+ 	tristate "Qualcomm PM8xxx PMIC chips driver"
+diff -uN a/drivers/mfd/Makefile b/drivers/mfd/Makefile
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -242,6 +242,7 @@
+ obj-$(CONFIG_MFD_LM3533)	+= lm3533-core.o lm3533-ctrlbank.o
+ obj-$(CONFIG_MFD_VEXPRESS_SYSREG)	+= vexpress-sysreg.o
+ obj-$(CONFIG_MFD_RETU)		+= retu-mfd.o
++obj-$(CONFIG_MFD_RETU_USER)	+= retu-user.o
+ obj-$(CONFIG_MFD_AS3711)	+= as3711.o
+ obj-$(CONFIG_MFD_AS3722)	+= as3722.o
+ obj-$(CONFIG_MFD_STW481X)	+= stw481x.o
+diff -uN a/drivers/mfd/retu-user.c b/drivers/mfd/retu-user.c
+--- a/drivers/mfd/retu-user.c
++++ b/drivers/mfd/retu-user.c
+@@ -0,0 +1,486 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Retu and Tahvo user space interface: /dev/retu and /dev/tahvo with the
++ * ioctl ABI of Nokia's retu-user and tahvo-user, which Maemo's BME uses.
++ *
++ * Based on retu-user.c and tahvo-user.c
++ * Copyright (C) 2004, 2005 Nokia Corporation
++ * Written by Mikko Ylinen <mikko.k.ylinen@nokia.com>
++ *
++ * Ported to retu-mfd (regmap, regmap-irq). Differences from Nokia's driver:
++ *  - interrupts are acked by regmap-irq; IDR writes from userspace are
++ *    accepted and ignored;
++ *  - IMR writes enable or disable the subscribed Linux IRQs instead of
++ *    touching the mask register, which regmap-irq owns;
++ *  - Retu's WATCHDOG register is not writable; retu_wdt owns it;
++ *  - on close, queued IRQ ids are dropped along with the handlers;
++ *  - fixed misc minors (below): Maemo's linuxrc creates the nodes with
++ *    `grep retu /proc/misc | cut -d " " -f 2`, which needs a minor below 100
++ *    (printed with a leading space), and dynamic minors are now >= 256.
++ */
++
++#include <linux/bitops.h>
++#include <linux/fs.h>
++#include <linux/interrupt.h>
++#include <linux/irq.h>
++#include <linux/kernel.h>
++#include <linux/list.h>
++#include <linux/miscdevice.h>
++#include <linux/mfd/retu.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/platform_device.h>
++#include <linux/poll.h>
++#include <linux/spinlock.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++
++/* ioctls, as in Nokia's user_retu_tahvo.h */
++#define URT_IOC_MAGIC		'`'
++#define URT_IOCT_IRQ_SUBSCR	_IO(URT_IOC_MAGIC, 0)
++#define RETU_IOCH_READ		_IO(URT_IOC_MAGIC, 1)
++#define RETU_IOCX_WRITE		_IO(URT_IOC_MAGIC, 2)
++#define RETU_IOCH_ADC_READ	_IO(URT_IOC_MAGIC, 3)
++#define TAHVO_IOCH_READ		_IO(URT_IOC_MAGIC, 4)
++#define TAHVO_IOCX_WRITE	_IO(URT_IOC_MAGIC, 5)
++
++struct retu_tahvo_write_parms {
++	u32	field;
++	u16	value;
++	u8	result;
++};
++
++#define FIELD_MASK(field)	((u16)((field) & 0xffff))
++#define FIELD_REG(field)	((u16)(((field) >> 16) & 0x3f))
++
++/* Register access types */
++#define READ_ONLY		1
++#define WRITE_ONLY		2
++#define READ_WRITE		3
++#define TOGGLE			4
++
++#define REG_IDR			0x01
++#define RETU_REG_IMR		0x02
++#define TAHVO_REG_IMR		0x03
++
++/* Unassigned in devices.txt; the top of the old dynamic range */
++#define RETU_USER_MINOR		62
++#define TAHVO_USER_MINOR	63
++
++/* Maximum size of IRQ node buffer/pool */
++#define RETU_USER_MAX_IRQ_BUF_LEN	16
++
++/* Register types, from Nokia's retu-user.c and tahvo-user.c */
++static const u8 retu_access_bits[] = {
++	1, 4, 3, 3, 1, 3, 3, 0, 3, 3, 3, 3, 3, 3, 3, 4,
++	4, 3, 0, 0, 0, 0, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3
++};
++
++static const u8 tahvo_access_bits[] = {
++	1, 4, 1, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 1
++};
++
++struct retu_user_chip {
++	const char	*name;
++	int		minor;
++	const u8	*access_bits;
++	unsigned int	reg_max;
++	unsigned int	imr_reg;
++	unsigned int	nr_irqs;
++	unsigned int	read_cmd;
++	unsigned int	write_cmd;
++	bool		adc;
++	/* tahvo-user masked the source on each IRQ; userspace unmasks */
++	bool		mask_on_irq;
++	/* registers userspace may not write, one bit per register */
++	u32		deny_write;
++};
++
++static const struct retu_user_chip retu_chip = {
++	.name		= "retu",
++	.minor		= RETU_USER_MINOR,
++	.access_bits	= retu_access_bits,
++	.reg_max	= ARRAY_SIZE(retu_access_bits) - 1,
++	.imr_reg	= RETU_REG_IMR,
++	.nr_irqs	= 16,
++	.read_cmd	= RETU_IOCH_READ,
++	.write_cmd	= RETU_IOCX_WRITE,
++	.adc		= true,
++	.deny_write	= BIT(RETU_REG_WATCHDOG),
++};
++
++static const struct retu_user_chip tahvo_chip = {
++	.name		= "tahvo",
++	.minor		= TAHVO_USER_MINOR,
++	.access_bits	= tahvo_access_bits,
++	.reg_max	= ARRAY_SIZE(tahvo_access_bits) - 1,
++	.imr_reg	= TAHVO_REG_IMR,
++	.nr_irqs	= 8,
++	.read_cmd	= TAHVO_IOCH_READ,
++	.write_cmd	= TAHVO_IOCX_WRITE,
++	.mask_on_irq	= true,
++};
++
++struct retu_user_irq {
++	u32			id;
++	struct list_head	node;
++};
++
++struct retu_user {
++	const struct retu_user_chip *chip;
++	struct retu_dev		*rdev;
++	struct device		*dev;
++	struct miscdevice	misc;
++
++	/* protects subscr, irq_bits and user_masked */
++	struct mutex		mutex;
++	/* only one file may subscribe to the interrupts */
++	struct file		*subscr;
++	unsigned long		irq_bits;
++	/* sources userspace has masked (through IMR, or tahvo's IRQ masking) */
++	unsigned long		user_masked;
++
++	/* protects irqs and reserve */
++	spinlock_t		lock;
++	struct list_head	irqs;
++	struct list_head	reserve;
++	struct retu_user_irq	pool[RETU_USER_MAX_IRQ_BUF_LEN];
++	wait_queue_head_t	wait;
++};
++
++static irqreturn_t retu_user_irq_handler(int irq, void *_ru)
++{
++	struct retu_user *ru = _ru;
++	struct retu_user_irq *node;
++	u32 id = irqd_to_hwirq(irq_get_irq_data(irq));
++
++	/* user has to re-enable the interrupt once ready
++	 * for receiving them again */
++	if (ru->chip->mask_on_irq && !test_and_set_bit(id, &ru->user_masked))
++		disable_irq_nosync(irq);
++
++	spin_lock(&ru->lock);
++	if (!list_empty(&ru->reserve)) {
++		node = list_first_entry(&ru->reserve, struct retu_user_irq, node);
++		node->id = id;
++		list_move_tail(&node->node, &ru->irqs);
++	}
++	spin_unlock(&ru->lock);
++
++	wake_up(&ru->wait);
++
++	return IRQ_HANDLED;
++}
++
++static int retu_user_subscribe_to_irq(struct retu_user *ru, unsigned long id,
++				      struct file *filp)
++{
++	int virq, ret = 0;
++
++	if (id >= ru->chip->nr_irqs)
++		return -EINVAL;
++
++	mutex_lock(&ru->mutex);
++	if (ru->subscr && ru->subscr != filp) {
++		ret = -EBUSY;
++		goto out;
++	}
++	/* Store the file pointer of the first user process registering IRQs */
++	ru->subscr = filp;
++
++	if (test_bit(id, &ru->irq_bits))
++		goto out;
++
++	virq = retu_irq_virq(ru->rdev, id);
++	if (virq <= 0) {
++		ret = virq ? virq : -EINVAL;
++		goto out;
++	}
++
++	ret = request_threaded_irq(virq, NULL, retu_user_irq_handler,
++				   IRQF_ONESHOT, ru->chip->name, ru);
++	if (ret < 0) {
++		dev_err(ru->dev, "can't get IRQ %lu: %d\n", id, ret);
++		goto out;
++	}
++
++	/* requesting unmasks the source, as Nokia's driver did */
++	clear_bit(id, &ru->user_masked);
++	set_bit(id, &ru->irq_bits);
++out:
++	mutex_unlock(&ru->mutex);
++
++	return ret;
++}
++
++/* Called with ru->mutex held */
++static void retu_user_unreg_irq_handlers(struct retu_user *ru)
++{
++	unsigned int id;
++
++	for_each_set_bit(id, &ru->irq_bits, ru->chip->nr_irqs) {
++		int virq = retu_irq_virq(ru->rdev, id);
++
++		if (test_and_clear_bit(id, &ru->user_masked))
++			enable_irq(virq);
++		free_irq(virq, ru);
++	}
++
++	ru->irq_bits = 0;
++	ru->user_masked = 0;
++
++	spin_lock_irq(&ru->lock);
++	list_splice_init(&ru->irqs, &ru->reserve);
++	spin_unlock_irq(&ru->lock);
++}
++
++/* IMR writes: mask or unmask subscribed sources through the IRQ core */
++static void retu_user_write_imr(struct retu_user *ru, u16 mask, u16 value)
++{
++	unsigned long bits = mask;
++	unsigned int id;
++
++	mutex_lock(&ru->mutex);
++	for_each_set_bit(id, &bits, ru->chip->nr_irqs) {
++		bool masked = value & BIT(id);
++
++		if (!test_bit(id, &ru->irq_bits))
++			continue;
++		if (masked && !test_and_set_bit(id, &ru->user_masked))
++			disable_irq(retu_irq_virq(ru->rdev, id));
++		else if (!masked && test_and_clear_bit(id, &ru->user_masked))
++			enable_irq(retu_irq_virq(ru->rdev, id));
++	}
++	mutex_unlock(&ru->mutex);
++}
++
++static int retu_user_write_with_mask(struct retu_user *ru, u32 field, u16 value)
++{
++	const struct retu_user_chip *chip = ru->chip;
++	u16 mask = FIELD_MASK(field);
++	unsigned int reg = FIELD_REG(field);
++
++	/* Detect bad mask and reg */
++	if (mask == 0 || reg > chip->reg_max ||
++	    chip->access_bits[reg] == READ_ONLY ||
++	    (chip->deny_write & BIT(reg))) {
++		dev_err(ru->dev, "invalid arguments (reg=%#x, mask=%#x)\n",
++			reg, mask);
++		return -EINVAL;
++	}
++
++	/* Justify value according to mask */
++	value = (value << __ffs(mask)) & mask;
++
++	if (reg == chip->imr_reg) {
++		retu_user_write_imr(ru, mask, value);
++		return 0;
++	}
++	if (reg == REG_IDR)	/* regmap-irq acks */
++		return 0;
++	if (chip->access_bits[reg] == TOGGLE)
++		/* No need to detect previous content of register */
++		return retu_write(ru->rdev, reg, value);
++
++	return retu_update_bits(ru->rdev, reg, mask, value);
++}
++
++static long retu_user_read_with_mask(struct retu_user *ru, u32 field)
++{
++	u16 mask = FIELD_MASK(field);
++	unsigned int reg = FIELD_REG(field);
++	int value;
++
++	/* Detect bad mask and reg */
++	if (mask == 0 || reg > ru->chip->reg_max) {
++		dev_err(ru->dev, "invalid arguments (reg=%#x, mask=%#x)\n",
++			reg, mask);
++		return -EINVAL;
++	}
++
++	value = retu_read(ru->rdev, reg);
++	if (value < 0)
++		return value;
++
++	return (value & mask) >> __ffs(mask);
++}
++
++static int retu_user_open(struct inode *inode, struct file *filp)
++{
++	/* misc_open() left our miscdevice here */
++	struct miscdevice *misc = filp->private_data;
++
++	filp->private_data = container_of(misc, struct retu_user, misc);
++
++	return 0;
++}
++
++static int retu_user_release(struct inode *inode, struct file *filp)
++{
++	struct retu_user *ru = filp->private_data;
++
++	/* Unregister all interrupts that have been registered */
++	mutex_lock(&ru->mutex);
++	if (ru->subscr == filp) {
++		retu_user_unreg_irq_handlers(ru);
++		ru->subscr = NULL;
++	}
++	mutex_unlock(&ru->mutex);
++
++	return 0;
++}
++
++static long retu_user_ioctl(struct file *filp, unsigned int cmd,
++			    unsigned long arg)
++{
++	struct retu_user *ru = filp->private_data;
++	struct retu_tahvo_write_parms par;
++
++	if (cmd == URT_IOCT_IRQ_SUBSCR)
++		return retu_user_subscribe_to_irq(ru, arg, filp);
++
++	if (cmd == ru->chip->read_cmd)
++		return retu_user_read_with_mask(ru, arg);
++
++	if (cmd == ru->chip->write_cmd) {
++		if (copy_from_user(&par, (void __user *)arg, sizeof(par)))
++			return -EFAULT;
++		par.result = retu_user_write_with_mask(ru, par.field,
++						       par.value);
++		if (copy_to_user((void __user *)arg, &par, sizeof(par)))
++			return -EFAULT;
++		return 0;
++	}
++
++	if (cmd == RETU_IOCH_ADC_READ && ru->chip->adc)
++		return retu_read_adc(ru->rdev, arg);
++
++	return -ENOIOCTLCMD;
++}
++
++/* Read IRQ ids, one u32 each. Blocks until count / 4 have arrived. */
++static ssize_t retu_user_read(struct file *filp, char __user *buf,
++			      size_t count, loff_t *offp)
++{
++	struct retu_user *ru = filp->private_data;
++	struct retu_user_irq *node;
++	size_t i, nr;
++
++	/* read not permitted if neither filp nor anyone has registered IRQs */
++	if (ru->subscr != filp)
++		return -EPERM;
++
++	if (count < sizeof(u32) || count % sizeof(u32))
++		return -EINVAL;
++
++	nr = count / sizeof(u32);
++
++	for (i = 0; i < nr; i++) {
++		u32 irq_id;
++		int ret;
++
++		ret = wait_event_interruptible(ru->wait, !list_empty(&ru->irqs));
++		if (ret < 0)
++			return ret;
++
++		spin_lock_irq(&ru->lock);
++		if (list_empty(&ru->irqs)) {
++			/* dropped by a racing close */
++			spin_unlock_irq(&ru->lock);
++			return -EPERM;
++		}
++		node = list_first_entry(&ru->irqs, struct retu_user_irq, node);
++		irq_id = node->id;
++		list_move(&node->node, &ru->reserve);
++		spin_unlock_irq(&ru->lock);
++
++		if (copy_to_user(buf + i * sizeof(irq_id), &irq_id,
++				 sizeof(irq_id)))
++			return -EFAULT;
++	}
++
++	return count;
++}
++
++static __poll_t retu_user_poll(struct file *filp, poll_table *pt)
++{
++	struct retu_user *ru = filp->private_data;
++
++	poll_wait(filp, &ru->wait, pt);
++
++	return list_empty(&ru->irqs) ? 0 : EPOLLIN | EPOLLRDNORM;
++}
++
++static const struct file_operations retu_user_fileops = {
++	.owner		= THIS_MODULE,
++	.open		= retu_user_open,
++	.unlocked_ioctl	= retu_user_ioctl,
++	.read		= retu_user_read,
++	.release	= retu_user_release,
++	.poll		= retu_user_poll,
++	.llseek		= noop_llseek,
++};
++
++static int retu_user_probe(struct platform_device *pdev)
++{
++	struct retu_user *ru;
++	int i;
++
++	ru = devm_kzalloc(&pdev->dev, sizeof(*ru), GFP_KERNEL);
++	if (!ru)
++		return -ENOMEM;
++
++	ru->chip = (const struct retu_user_chip *)
++		platform_get_device_id(pdev)->driver_data;
++	ru->rdev = dev_get_drvdata(pdev->dev.parent);
++	ru->dev = &pdev->dev;
++
++	mutex_init(&ru->mutex);
++	spin_lock_init(&ru->lock);
++	INIT_LIST_HEAD(&ru->irqs);
++	INIT_LIST_HEAD(&ru->reserve);
++	for (i = 0; i < RETU_USER_MAX_IRQ_BUF_LEN; i++)
++		list_add(&ru->pool[i].node, &ru->reserve);
++	init_waitqueue_head(&ru->wait);
++
++	ru->misc.minor = ru->chip->minor;
++	ru->misc.name = ru->chip->name;
++	ru->misc.fops = &retu_user_fileops;
++	ru->misc.parent = &pdev->dev;
++
++	platform_set_drvdata(pdev, ru);
++
++	return misc_register(&ru->misc);
++}
++
++static void retu_user_remove(struct platform_device *pdev)
++{
++	struct retu_user *ru = platform_get_drvdata(pdev);
++
++	misc_deregister(&ru->misc);
++	mutex_lock(&ru->mutex);
++	retu_user_unreg_irq_handlers(ru);
++	mutex_unlock(&ru->mutex);
++}
++
++static const struct platform_device_id retu_user_ids[] = {
++	{ "retu-user", (kernel_ulong_t)&retu_chip },
++	{ "tahvo-user", (kernel_ulong_t)&tahvo_chip },
++	{ }
++};
++MODULE_DEVICE_TABLE(platform, retu_user_ids);
++
++static struct platform_driver retu_user_driver = {
++	.probe		= retu_user_probe,
++	.remove		= retu_user_remove,
++	.id_table	= retu_user_ids,
++	.driver		= {
++		.name	= "retu-user",
++	},
++};
++module_platform_driver(retu_user_driver);
++
++MODULE_DESCRIPTION("Retu and Tahvo user space functions");
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Mikko Ylinen");

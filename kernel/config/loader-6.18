@@ -1,0 +1,83 @@
+# n810-loader: a kernel that only loads the real one (loader/init.c,
+# scripts/build-loader.sh). allnoconfig plus this: what NOLO's boot, the
+# OneNAND's rootfs (jffs2) and kexec need, a serial console, nothing else.
+# The real kernel, /boot/zImage on the rootfs, then has no size limit.
+CONFIG_ARCH_MULTI_V6=y
+# CONFIG_ARCH_MULTI_V7 is not set
+CONFIG_ARCH_OMAP2=y
+CONFIG_SOC_OMAP2420=y
+CONFIG_MACH_NOKIA_N8X0=y
+CONFIG_AEABI=y
+CONFIG_MMU=y
+CONFIG_KERNEL_XZ=y
+CONFIG_CC_OPTIMIZE_FOR_SIZE=y
+# NOLO passes ATAGs: the DTB is appended, and the ATAGs fold into it
+CONFIG_ATAGS=y
+CONFIG_USE_OF=y
+CONFIG_ARM_APPENDED_DTB=y
+CONFIG_ARM_ATAG_DTB_COMPAT=y
+CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER=y
+# n810loader marks the built-in line, which init.c doesn't pass on
+CONFIG_CMDLINE="console=ttyS2,115200n8 n810loader"
+# the buses and blocks OneNAND sits behind
+CONFIG_OMAP_GPMC=y
+CONFIG_MEMORY=y
+CONFIG_TI_SYSC=y
+CONFIG_GPIOLIB=y
+CONFIG_GPIO_OMAP=y
+CONFIG_PINCTRL=y
+CONFIG_PINCTRL_SINGLE=y
+# serial console on UART3 (the jig), early output too
+CONFIG_TTY=y
+CONFIG_PRINTK=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_OMAP=y
+CONFIG_SERIAL_OF_PLATFORM=y
+CONFIG_DEBUG_KERNEL=y
+CONFIG_DEBUG_LL=y
+CONFIG_DEBUG_OMAP2UART3=y
+CONFIG_EARLY_PRINTK=y
+# the rootfs: OneNAND, jffs2 (NAND needs its write buffer support, read
+# only as it is mounted; summary nodes make the scan shorter)
+CONFIG_MTD=y
+CONFIG_MTD_OF_PARTS=y
+CONFIG_MTD_ONENAND=y
+CONFIG_MTD_ONENAND_OMAP2=y
+CONFIG_MISC_FILESYSTEMS=y
+CONFIG_JFFS2_FS=y
+CONFIG_JFFS2_FS_WRITEBUFFER=y
+CONFIG_JFFS2_SUMMARY=y
+CONFIG_JFFS2_COMPRESSION_OPTIONS=y
+CONFIG_JFFS2_ZLIB=y
+CONFIG_JFFS2_LZO=y
+CONFIG_JFFS2_RTIME=y
+# userspace: one static binary in a built-in initramfs
+CONFIG_BINFMT_ELF=y
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_INITRAMFS_SOURCE="/work/build/loader/initramfs.list"
+CONFIG_INITRAMFS_COMPRESSION_NONE=y
+CONFIG_PROC_FS=y
+# NOLO's OMAP tags from the DT (/sys/firmware/devicetree), passed on
+CONFIG_SYSFS=y
+# a panic restarts (NOLO boots the loader again) instead of hanging with
+# the battery draining unwatched
+CONFIG_PANIC_TIMEOUT=10
+# Retu and Tahvo on cbus: patches/6.18/0006 sets Tahvo's charge PWM to 0
+# at probe and on panic, so the charger is off from the loader's first
+# second (it may still run from Maemo's BME after a warm reboot) until
+# the real kernel and BME take over
+CONFIG_I2C=y
+CONFIG_I2C_CBUS_GPIO=y
+CONFIG_MFD_CORE=y
+CONFIG_MFD_RETU=y
+# No way out: Retu's watchdog (it can't be disabled) is armed at probe with
+# its longest period, 63 s, and never fed (WATCHDOG_NOWAYOUT, and no Maemo
+# compatibility here), so anything that keeps the loader from kexecing,
+# a hang in the jffs2 mount or the kexec itself, ends in a reset; the
+# real kernel's Retu driver feeds it from its own probe on
+CONFIG_WATCHDOG=y
+CONFIG_WATCHDOG_NOWAYOUT=y
+CONFIG_RETU_WATCHDOG=y
+# and the point of it all
+CONFIG_KEXEC=y

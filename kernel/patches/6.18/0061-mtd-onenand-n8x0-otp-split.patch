@@ -1,0 +1,34 @@
+mtd: onenand: N8x0: Nokia's OTP user/factory split
+
+Mainline splits a 512 Mbit+ OneNAND's OTP block after page 50: user
+pages 0-49, factory 50-63. Nokia's N800/N810 kernel (2.6.21) split it
+after page 10, and that is how these units were programmed: the CAL's
+factory blocks (the WLAN MAC and BT address) are in the 20 KB user region
+that Maemo's tools (DSME, the CAL) read with OTPSELECT. Use Nokia's
+split on N8x0 boards, so the user region is the CAL's and nothing more,
+and the factory region is what Nokia called factory.
+
+--- a/drivers/mtd/nand/onenand/onenand_base.c
++++ b/drivers/mtd/nand/onenand/onenand_base.c
+@@ -26,6 +26,7 @@
+ #include <linux/mtd/mtd.h>
+ #include <linux/mtd/onenand.h>
+ #include <linux/mtd/partitions.h>
++#include <linux/of.h>
+ 
+ #include <asm/io.h>
+ 
+@@ -3050,6 +3051,13 @@
+ 	density = onenand_get_density(this->device_id);
+ 	if (density < ONENAND_DEVICE_DENSITY_512Mb)
+ 		otp_pages = 20;
++	else if (of_machine_is_compatible("nokia,n8x0"))
++		/*
++		 * Nokia's N800/N810 kernel split the OTP block after page 10:
++		 * the CAL's factory blocks (WLAN MAC, BT address) are in those
++		 * user pages, and Maemo's tools size the user region by it
++		 */
++		otp_pages = 10;
+ 	else
+ 		otp_pages = 50;
+ 

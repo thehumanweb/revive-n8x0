@@ -1,0 +1,76 @@
+ARM: OMAP2xxx: fix the restart crash (virt_prcm_set lookup)
+
+omap2xxx_restart() puts the DPLL in bypass through the virt_prcm_set
+clock, looked up as "virt_prcm_set" at postcore. Since the move to DT
+clocks the clock is registered with only a "cpufreq_ck" clkdev alias, so
+the lookup failed, the ERR_PTR stayed in reset_virt_prcm_set_ck and every
+reboot oopsed in clk_set_rate() ("Unhandled fault ... at 0x00000016",
+N810 when DSME restarts the device). Register the "virt_prcm_set" alias
+too, and keep the pointers NULL (restart without the DPLL bypass) when a
+lookup fails.
+
+With no rate table entry for the rate (or the sys_ck rate),
+omap2_determine_rate_to_table() returned 0 with -EINVAL as the rate, so
+the set_rate that followed asked for 4294 MHz. Return the error.
+
+--- a/arch/arm/mach-omap2/clkt2xxx_virt_prcm_set.c
++++ b/arch/arm/mach-omap2/clkt2xxx_virt_prcm_set.c
+@@ -90,6 +90,8 @@
+ 		if (ptr->mpu_speed <= req->rate)
+ 			break;
+ 	}
++	if (highest_rate < 0)
++		return highest_rate;
+ 	req->rate = highest_rate;
+ 
+ 	return 0;
+@@ -255,5 +257,7 @@
+ 	}
+ 
+ 	clkdev_create(clk, "cpufreq_ck", NULL);
++	/* For omap2xxx_restart() */
++	clkdev_create(clk, "virt_prcm_set", NULL);
+ }
+ #endif
+--- a/arch/arm/mach-omap2/omap2-restart.c
++++ b/arch/arm/mach-omap2/omap2-restart.c
+@@ -32,8 +32,10 @@
+ {
+ 	u32 rate;
+ 
+-	rate = clk_get_rate(reset_sys_ck);
+-	clk_set_rate(reset_virt_prcm_set_ck, rate);
++	if (reset_virt_prcm_set_ck) {
++		rate = clk_get_rate(reset_sys_ck);
++		clk_set_rate(reset_virt_prcm_set_ck, rate);
++	}
+ 
+ 	/* XXX Should save the cmd argument for use after the reboot */
+ 
+@@ -49,14 +51,22 @@
+  */
+ static int __init omap2xxx_common_look_up_clks_for_reset(void)
+ {
+-	reset_virt_prcm_set_ck = clk_get(NULL, "virt_prcm_set");
+-	if (IS_ERR(reset_virt_prcm_set_ck))
++	struct clk *vps, *sys;
++
++	/* Leave both NULL on failure, so the restart skips the DPLL bypass */
++	vps = clk_get(NULL, "virt_prcm_set");
++	if (IS_ERR(vps))
+ 		return -EINVAL;
+ 
+-	reset_sys_ck = clk_get(NULL, "sys_ck");
+-	if (IS_ERR(reset_sys_ck))
++	sys = clk_get(NULL, "sys_ck");
++	if (IS_ERR(sys)) {
++		clk_put(vps);
+ 		return -EINVAL;
++	}
+ 
++	reset_virt_prcm_set_ck = vps;
++	reset_sys_ck = sys;
++
+ 	return 0;
+ }
+ omap_postcore_initcall(omap2xxx_common_look_up_clks_for_reset);

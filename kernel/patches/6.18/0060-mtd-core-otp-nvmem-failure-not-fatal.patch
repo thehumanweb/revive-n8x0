@@ -1,0 +1,41 @@
+mtd: core: an OTP area that doesn't read is not fatal
+
+mtd_otp_nvmem_add() fails the whole mtd_device_register() on any OTP read
+error but -EOPNOTSUPP. The N810's OneNAND OTP area (where the CAL's
+factory blocks live: the unit's WLAN MAC and BT address) reads with an
+ECC error, so with CONFIG_MTD_ONENAND_OTP the OneNAND probe failed, the
+root partition was gone, and the kernel panicked into a boot loop:
+
+  onenand_wait: ECC error = 0x0008
+  omap2-onenand 4000000.onenand: error -EBADMSG: Failed to register OTP NVMEM device
+  ...
+  Kernel panic - not syncing: VFS: Unable to mount root fs
+
+The NVMEM devices are an extra; warn and go on without them (still
+failing on -EPROBE_DEFER). Userspace OTP reads through mtdchar
+(OTPSELECT) are a separate path and hand back the data despite ECC
+errors.
+
+--- a/drivers/mtd/mtdcore.c
++++ b/drivers/mtd/mtdcore.c
+@@ -1082,10 +1082,19 @@
+ 
+ err:
+ 	nvmem_unregister(mtd->otp_user_nvmem);
++	mtd->otp_user_nvmem = NULL;
+ 	/* Don't report error if OTP is not supported. */
+ 	if (err == -EOPNOTSUPP)
+ 		return 0;
+-	return dev_err_probe(dev, err, "Failed to register OTP NVMEM device\n");
++	if (err == -EPROBE_DEFER)
++		return dev_err_probe(dev, err, "Failed to register OTP NVMEM device\n");
++	/*
++	 * The OTP NVMEM devices are an extra: an OTP area that doesn't read
++	 * (an ECC error in the N810 OneNAND's, as Nokia programmed it) must not
++	 * take the whole device and its partitions down with it.
++	 */
++	dev_warn(dev, "no OTP NVMEM device: %pe\n", ERR_PTR(err));
++	return 0;
+ }
+ 
+ /**

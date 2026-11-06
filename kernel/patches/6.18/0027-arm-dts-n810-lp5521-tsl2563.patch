@@ -1,0 +1,80 @@
+ARM: dts: n810: LP5521 LED controller and TSL2563 light sensor
+
+Both on I2C2 next to the LM8323, where Maemo has them
+(i2c_omap.2/i2c-0/0-0032 and 0-0029 in mce). The LP5521 drives the RGB
+indicator LED, one multicolor LED (rgb:status): as Nokia's 2.6.21
+lp5521 driver set it up, 4.7 mA per channel (also the limit), the
+board's 32 kHz clock, charge pump auto. The TSL2563's
+interrupt is GPIO 8, falling (Nokia's board-n810.c and tsl2563.c).
+
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n810.dts
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n810.dts
+@@ -1,6 +1,8 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /dts-v1/;
+ 
++#include <dt-bindings/leds/common.h>
++#include <dt-bindings/leds/leds-lp55xx.h>
+ #include "omap2420-n8x0-common.dtsi"
+ #include <dt-bindings/input/input.h>
+ 
+@@ -125,6 +127,59 @@
+ 		>;
+ 	};
+ 
++	/* RGB indicator LED; Nokia ran it at 4.7 mA from the board's
++	 * 32 kHz clock, charge pump auto */
++	led-controller@32 {
++		compatible = "national,lp5521";
++		reg = <0x32>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++		clocks = <&func_32k_ck>;
++		clock-names = "32k_clk";
++		clock-mode = /bits/ 8 <2>;	/* external */
++		ti,charge-pump-mode = <LP55XX_CP_AUTO>;
++
++		multi-led@0 {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			reg = <0>;
++			color = <LED_COLOR_ID_RGB>;
++			function = LED_FUNCTION_STATUS;
++			/* lp55xx names it from its LEDs' chan-name */
++
++			led@0 {
++				reg = <0>;
++				color = <LED_COLOR_ID_RED>;
++				chan-name = "rgb:status";
++				led-cur = /bits/ 8 <47>;
++				max-cur = /bits/ 8 <47>;
++			};
++
++			led@1 {
++				reg = <1>;
++				color = <LED_COLOR_ID_GREEN>;
++				chan-name = "rgb:status";
++				led-cur = /bits/ 8 <47>;
++				max-cur = /bits/ 8 <47>;
++			};
++
++			led@2 {
++				reg = <2>;
++				color = <LED_COLOR_ID_BLUE>;
++				chan-name = "rgb:status";
++				led-cur = /bits/ 8 <47>;
++				max-cur = /bits/ 8 <47>;
++			};
++		};
++	};
++
++	/* Ambient light sensor; INT is active low */
++	light-sensor@29 {
++		compatible = "amstaos,tsl2563";
++		reg = <0x29>;
++		interrupts-extended = <&gpio1 8 IRQ_TYPE_EDGE_FALLING>; /* gpio8 */
++	};
++
+ 	aic33@18 {
+ 		compatible = "ti,tlv320aic33";
+ 		reg = <0x18>;

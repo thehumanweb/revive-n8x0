@@ -1,0 +1,62 @@
+ASoC: ti: n810: ceilings for the output levels
+
+The N810's speakers hang off the AIC33's line outputs through an external
+amplifier, and nothing stopped userspace from setting the output stage's
++9 dB boost and 0 dB DAC level. Limit them at card probe: the line and
+headphone boost to its first step (+1 dB; snd_soc_limit_volume() takes
+no 0) and their DAC attenuators to -13 dB, -12 dB at most in all. A
+440 Hz tone at -9 dBFS through -12.5 dB of PCM and -12 dB of line DAC is
+clearly audible on the N810, so the ceiling leaves about 21 dB above
+that test. On the N810 the controls then stop at 92 and 1.
+
+--- a/sound/soc/ti/n810.c
++++ b/sound/soc/ti/n810.c
+@@ -264,6 +264,40 @@
+ 	SND_SOC_DAILINK_REG(aic33),
+ };
+ 
++/*
++ * Ceilings for the output levels, so that nothing in userspace can drive
++ * the speakers (through the external amplifier on the line outputs) or a
++ * headset harder than this: the output stages' boost (0..9 dB) at its
++ * first step, 1 dB (snd_soc_limit_volume() takes no 0), and the
++ * DAC-to-output attenuators no higher than -13 dB (0.5 dB steps, 118 is
++ * 0 dB): -12 dB at most in all. That is still loud on the N810's
++ * speakers; raise it only after listening at the ceiling.
++ */
++#define N810_OUT_BOOST_MAX	1
++#define N810_OUT_DAC_MAX	(118 - 2 * 13)
++
++static int n810_late_probe(struct snd_soc_card *card)
++{
++	static const struct {
++		const char *name;
++		int max;
++	} limits[] = {
++		{ "Line Playback Volume", N810_OUT_BOOST_MAX },
++		{ "HP Playback Volume", N810_OUT_BOOST_MAX },
++		{ "Line DAC Playback Volume", N810_OUT_DAC_MAX },
++		{ "HP DAC Playback Volume", N810_OUT_DAC_MAX },
++	};
++	int i, err;
++
++	for (i = 0; i < ARRAY_SIZE(limits); i++) {
++		err = snd_soc_limit_volume(card, limits[i].name, limits[i].max);
++		if (err)
++			dev_warn(card->dev, "can't limit %s: %d\n",
++				 limits[i].name, err);
++	}
++	return 0;
++}
++
+ /* Audio machine driver */
+ static struct snd_soc_card snd_soc_n810 = {
+ 	.name = "N810",
+@@ -278,6 +312,7 @@
+ 	.dapm_routes = audio_map,
+ 	.num_dapm_routes = ARRAY_SIZE(audio_map),
+ 	.fully_routed = true,
++	.late_probe = n810_late_probe,
+ };
+ 
+ static struct platform_device *n810_snd_device;

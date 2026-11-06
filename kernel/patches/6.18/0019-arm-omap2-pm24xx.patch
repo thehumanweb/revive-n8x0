@@ -1,0 +1,508 @@
+ARM: OMAP2: power management back (pm24xx), for the N800/N810
+
+Upstream removed OMAP2 power management; the sleep code, power and
+clock domains and the PRCM accessors are still there. This is 3.1's
+pm24xx.c for current kernels, with Nokia's 2.6.21 N800/N810 behaviour:
+
+- idle: with no CORE functional clock running (a UART used as console
+  keeps one), no DMA and sleep allowed, the whole chip goes to
+  retention, the SDRAM in self-refresh (omap24xx_cpu_suspend from
+  SRAM); otherwise the MPU powerdomain retains when no MMC, UART,
+  McSPI or DSS clock runs, or just waits for an interrupt, from SRAM
+  (omap24xx_idle_loop_suspend, back in sleep24xx.S); never during I2C.
+- suspend to RAM: full retention without the GPT1 wake-up.
+- PRCM: autoidle, CORE retention with memory retained, DSP and GFX off,
+  hardware-supervised clock domains, automatic VCORE transitions (roof
+  active, floor in retention), GPIO and GPT1 wake-ups.
+- Maemo's /sys/power/sleep_while_idle (linuxrc sets it, BME clears it
+  while charging) gates full-chip retention, as in Nokia's kernel.
+- N8x0: the Menelaus platform data (hardware VCORE 1.40/1.05 V,
+  regulators asleep in retention, as Nokia's board-n800-pm.c) reached no
+  device, pdata-quirks' auxdata being for platform devices; run its late
+  init on the bound I2C client.
+
+--- a/arch/arm/mach-omap2/sleep24xx.S
++++ b/arch/arm/mach-omap2/sleep24xx.S
+@@ -23,6 +23,22 @@
+ 	.text
+ 
+ /*
++ * omap24xx_idle_loop_suspend() - Wait for interrupt, from SRAM (copied
++ * there at boot), for the MPU idle of pm24xx.c, also with the MPU
++ * powerdomain in retention. When the OMAP wakes up it continues execution
++ * at the point it went to sleep.
++ */
++	.align	3
++ENTRY(omap24xx_idle_loop_suspend)
++	stmfd	sp!, {r0, lr}		@ save registers on stack
++	mov	r0, #0			@ clear for mcr setup
++	mcr	p15, 0, r0, c7, c0, 4	@ wait for interrupt
++	ldmfd	sp!, {r0, pc}		@ restore regs and return
++
++ENTRY(omap24xx_idle_loop_suspend_sz)
++	.word	. - omap24xx_idle_loop_suspend
++
++/*
+  * omap24xx_cpu_suspend() - Forces OMAP into deep sleep state by completing
+  * SDRC shutdown then ARM shutdown.  Upon wake MPU is back on so just restore
+  * SDRC.
+--- a/arch/arm/mach-omap2/pm.h
++++ b/arch/arm/mach-omap2/pm.h
+@@ -44,6 +44,8 @@
+ #endif /* CONFIG_PM_DEBUG */
+ 
+ /* 24xx */
++extern void omap24xx_idle_loop_suspend(void);
++extern unsigned int omap24xx_idle_loop_suspend_sz;
+ extern void omap24xx_cpu_suspend(u32 dll_ctrl, void __iomem *sdrc_dlla_ctrl,
+ 					void __iomem *sdrc_power);
+ extern unsigned int omap24xx_cpu_suspend_sz;
+--- a/arch/arm/mach-omap2/common.h
++++ b/arch/arm/mach-omap2/common.h
+@@ -44,6 +44,19 @@
+ extern int (*omap_pm_soc_init)(void);
+ int omap_pm_nop_init(void);
+ 
++#if defined(CONFIG_PM) && defined(CONFIG_ARCH_OMAP2)
++int omap2_pm_init(void);
++void omap2_pm_set_sleep_while_idle(bool enable);
++#else
++static inline int omap2_pm_init(void)
++{
++	return 0;
++}
++static inline void omap2_pm_set_sleep_while_idle(bool enable)
++{
++}
++#endif
++
+ #if defined(CONFIG_PM) && defined(CONFIG_ARCH_OMAP3)
+ int omap3_pm_init(void);
+ #else
+--- a/arch/arm/mach-omap2/io.c
++++ b/arch/arm/mach-omap2/io.c
+@@ -434,6 +434,7 @@
+ 	omap_hwmod_init_postsetup();
+ 	omap_clk_soc_init = omap2420_dt_clk_init;
+ 	rate_table = omap2420_rate_table;
++	omap_pm_soc_init = omap2_pm_init;
+ }
+ #endif
+ 
+--- a/arch/arm/mach-omap2/Makefile
++++ b/arch/arm/mach-omap2/Makefile
+@@ -80,7 +80,7 @@
+ obj-$(CONFIG_SOC_OMAP5)			+= $(omap-4-5-pm-common)
+ 
+ ifeq ($(CONFIG_PM),y)
+-obj-$(CONFIG_ARCH_OMAP2)		+= sleep24xx.o
++obj-$(CONFIG_ARCH_OMAP2)		+= sleep24xx.o pm24xx.o
+ obj-$(CONFIG_ARCH_OMAP3)		+= pm34xx.o sleep34xx.o
+ omap-4-5-pm-common			+= pm44xx.o
+ obj-$(CONFIG_ARCH_OMAP4)		+= $(omap-4-5-pm-common)
+--- a/arch/arm/mach-omap2/n8x0-maemo.c
++++ b/arch/arm/mach-omap2/n8x0-maemo.c
+@@ -7,8 +7,8 @@
+  *  - /proc/bootreason and /proc/component_version, from NOLO's OMAP tags.
+  *    NOLO passes them as ATAG_BOARD; the decompressor's ATAG to DT
+  *    conversion keeps them in /chosen/linux,atag-board.
+- *  - /sys/power/sleep_while_idle, which BME clears while charging. Nothing
+- *    acts on it here; the value is kept and changes are logged.
++ *  - /sys/power/sleep_while_idle, which linuxrc sets and BME clears while
++ *    charging: whether idle may put the whole chip in retention (pm24xx).
+  *  - /sys/devices/platform/omapfb/panel/backlight_{level,max}, which DSME
+  *    sets to dim and blank the display. omapfb is gone; they pass through
+  *    to the Tahvo backlight.
+@@ -27,6 +27,8 @@
+ #include <linux/sysfs.h>
+ #include <linux/unaligned.h>
+ 
++#include "common.h"
++
+ #define OMAP_TAG_BOOT_REASON	0x4f80	/* char reason_str[12] */
+ #define OMAP_TAG_VERSION_STR	0x4f82	/* char component[12], version[12] */
+ 
+@@ -90,6 +92,7 @@
+ 	if (value != sleep_while_idle)
+ 		pr_info("sleep_while_idle: %hu\n", value);
+ 	sleep_while_idle = value;
++	omap2_pm_set_sleep_while_idle(value);
+ 	return n;
+ }
+ 
+--- a/arch/arm/mach-omap2/board-n8x0.c
++++ b/arch/arm/mach-omap2/board-n8x0.c
+@@ -23,6 +23,7 @@
+ #include <linux/platform_data/spi-omap2-mcspi.h>
+ #include <linux/platform_data/mmc-omap.h>
+ #include <linux/mfd/menelaus.h>
++#include <linux/of.h>
+ 
+ #include <asm/mach/arch.h>
+ #include <asm/mach-types.h>
+@@ -504,11 +505,36 @@
+ 	},
+ };
+ 
++/*
++ * The Menelaus platform data above reaches no device: pdata-quirks' auxdata
++ * is for platform devices, Menelaus is an I2C client. Run its late init
++ * (hardware VCORE 1.40/1.05 V, regulators asleep in retention, as Nokia's
++ * board-n800-pm.c) once the driver is bound.
++ */
++static void __init n8x0_menelaus_pm_init(void)
++{
++	struct device_node *np;
++	struct i2c_client *client;
++
++	np = of_find_compatible_node(NULL, NULL, "menelaus");
++	if (!np)
++		return;
++	client = of_find_i2c_device_by_node(np);
++	of_node_put(np);
++	if (!client)
++		return;
++	if (client->dev.driver && !n8x0_menelaus_late_init(&client->dev))
++		pr_info("n8x0: Menelaus VCORE 1400/1050 mV (hardware), regulator sleep\n");
++	put_device(&client->dev);
++}
++
+ static int __init n8x0_late_initcall(void)
+ {
+ 	if (!board_caps)
+ 		return -ENODEV;
+ 
++	n8x0_menelaus_pm_init();
++
+ 	n8x0_mmc_init();
+ 	n8x0_usb_init();
+ 	gpiod_add_lookup_table(&nokia810_asoc_gpio_table);
+--- a/arch/arm/mach-omap2/pm24xx.c
++++ b/arch/arm/mach-omap2/pm24xx.c
+@@ -0,0 +1,326 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * OMAP2 Power Management Routines
++ *
++ * Copyright (C) 2005 Texas Instruments, Inc.
++ * Copyright (C) 2006-2008 Nokia Corporation
++ *
++ * Written by:
++ * Richard Woodruff <r-woodruff2@ti.com>
++ * Tony Lindgren
++ * Juha Yrjola
++ * Amit Kucheria <amit.kucheria@nokia.com>
++ * Igor Stoppa <igor.stoppa@nokia.com>
++ *
++ * Idle: when no CORE functional clock runs (a UART used as console keeps
++ * its own on), no DMA is active and sleep is allowed (Maemo's
++ * /sys/power/sleep_while_idle), the whole chip goes to retention with
++ * the SDRAM in self-refresh, from SRAM (omap24xx_cpu_suspend); otherwise
++ * the MPU powerdomain goes to retention or just waits for an interrupt.
++ * Suspend to RAM is full retention without the GPT1 wake-up.
++ *
++ * This is 3.1's pm24xx.c (later removed upstream) for current kernels,
++ * with the behaviour of Nokia's 2.6.21 N800/N810 kernel.
++ */
++
++#include <linux/clk.h>
++#include <linux/io.h>
++#include <linux/irqchip/irq-omap-intc.h>
++#include <linux/cpu_pm.h>
++#include <linux/suspend.h>
++
++#include <asm/system_misc.h>
++
++#include "soc.h"
++#include "common.h"
++#include "clock.h"
++#include "prm2xxx.h"
++#include "prm-regbits-24xx.h"
++#include "cm2xxx.h"
++#include "cm-regbits-24xx.h"
++#include "sdrc.h"
++#include "sram.h"
++#include "pm.h"
++#include "control.h"
++#include "powerdomain.h"
++#include "clockdomain.h"
++
++/* CM_FCLKEN1_CORE: the 2420 I2C functional clocks */
++#define OMAP2420_EN_I2C1_MASK		(1 << 19)
++#define OMAP2420_EN_I2C2_MASK		(1 << 20)
++
++static void (*omap2_sram_idle)(void);
++static void (*omap2_sram_suspend)(u32 dllctrl, void __iomem *sdrc_dlla_ctrl,
++				  void __iomem *sdrc_power);
++
++static struct powerdomain *mpu_pwrdm, *core_pwrdm;
++static struct clockdomain *dsp_clkdm, *mpu_clkdm, *wkup_clkdm, *gfx_clkdm;
++
++/* Maemo's /sys/power/sleep_while_idle; BME clears it while charging */
++static bool omap2_sleep_while_idle = true;
++
++void omap2_pm_set_sleep_while_idle(bool enable)
++{
++	WRITE_ONCE(omap2_sleep_while_idle, enable);
++}
++
++static int omap2_fclks_active(void)
++{
++	u32 f1, f2;
++
++	f1 = omap2_cm_read_mod_reg(CORE_MOD, CM_FCLKEN1);
++	f2 = omap2_cm_read_mod_reg(CORE_MOD, OMAP24XX_CM_FCLKEN2);
++
++	return f1 | f2;
++}
++
++static void omap2_enter_full_retention(void)
++{
++	u32 l;
++
++	/* Clear old wake-up events */
++	omap2_prm_write_mod_reg(0xffffffff, CORE_MOD, PM_WKST1);
++	omap2_prm_write_mod_reg(0xffffffff, CORE_MOD, OMAP24XX_PM_WKST2);
++	omap2_prm_write_mod_reg(0xffffffff, WKUP_MOD, PM_WKST);
++
++	/*
++	 * Set MPU powerdomain's next power state to RETENTION;
++	 * preserve logic state during retention
++	 */
++	pwrdm_set_logic_retst(mpu_pwrdm, PWRDM_POWER_RET);
++	pwrdm_set_next_pwrst(mpu_pwrdm, PWRDM_POWER_RET);
++
++	/* Workaround to kill USB */
++	l = omap_ctrl_readl(OMAP2_CONTROL_DEVCONF0) | OMAP24XX_USBSTANDBYCTRL;
++	omap_ctrl_writel(l, OMAP2_CONTROL_DEVCONF0);
++
++	/* One last check for pending IRQs to avoid extra latency due
++	 * to sleeping unnecessarily. */
++	if (omap_irq_pending())
++		goto no_sleep;
++
++	/* Jump to SRAM suspend code */
++	omap2_sram_suspend(sdrc_read_reg(SDRC_DLLA_CTRL),
++			   OMAP_SDRC_REGADDR(SDRC_DLLA_CTRL),
++			   OMAP_SDRC_REGADDR(SDRC_POWER));
++
++no_sleep:
++	/* clear CORE wake-up events */
++	omap2_prm_write_mod_reg(0xffffffff, CORE_MOD, PM_WKST1);
++	omap2_prm_write_mod_reg(0xffffffff, CORE_MOD, OMAP24XX_PM_WKST2);
++
++	/* wakeup domain events - bit 1: GPT1, bit5 GPIO */
++	omap2_prm_clear_mod_reg_bits(0x4 | 0x1, WKUP_MOD, PM_WKST);
++
++	/* MPU domain wake events */
++	l = omap2_prm_read_mod_reg(OCP_MOD, OMAP2_PRCM_IRQSTATUS_MPU_OFFSET);
++	if (l & 0x01)
++		omap2_prm_write_mod_reg(0x01, OCP_MOD,
++					OMAP2_PRCM_IRQSTATUS_MPU_OFFSET);
++	if (l & 0x20)
++		omap2_prm_write_mod_reg(0x20, OCP_MOD,
++					OMAP2_PRCM_IRQSTATUS_MPU_OFFSET);
++
++	/* Mask future PRCM-to-MPU interrupts */
++	omap2_prm_write_mod_reg(0x0, OCP_MOD, OMAP2_PRCM_IRQSTATUS_MPU_OFFSET);
++
++	pwrdm_set_next_pwrst(mpu_pwrdm, PWRDM_POWER_ON);
++}
++
++static int omap2_i2c_active(void)
++{
++	u32 l;
++
++	l = omap2_cm_read_mod_reg(CORE_MOD, CM_FCLKEN1);
++	return l & (OMAP2420_EN_I2C2_MASK | OMAP2420_EN_I2C1_MASK);
++}
++
++static int omap2_allow_mpu_retention(void)
++{
++	u32 l;
++
++	/* Check for MMC, UART2, UART1, McSPI2, McSPI1 and DSS1. */
++	l = omap2_cm_read_mod_reg(CORE_MOD, CM_FCLKEN1);
++	if (l & (OMAP2420_EN_MMC_MASK | OMAP24XX_EN_UART2_MASK |
++		 OMAP24XX_EN_UART1_MASK | OMAP24XX_EN_MCSPI2_MASK |
++		 OMAP24XX_EN_MCSPI1_MASK | OMAP24XX_EN_DSS1_MASK))
++		return 0;
++	/* Check for UART3. */
++	l = omap2_cm_read_mod_reg(CORE_MOD, OMAP24XX_CM_FCLKEN2);
++	if (l & OMAP24XX_EN_UART3_MASK)
++		return 0;
++
++	return 1;
++}
++
++static void omap2_enter_mpu_retention(void)
++{
++	/* Putting MPU into the WFI state while a transfer is active
++	 * seems to cause the I2C block to timeout. Why? Good question. */
++	if (omap2_i2c_active())
++		return;
++
++	/* The peripherals seem not to be able to wake up the MPU when
++	 * it is in retention mode. */
++	if (omap2_allow_mpu_retention()) {
++		omap2_prm_write_mod_reg(0xffffffff, CORE_MOD, PM_WKST1);
++		omap2_prm_write_mod_reg(0xffffffff, CORE_MOD, OMAP24XX_PM_WKST2);
++		omap2_prm_write_mod_reg(0xffffffff, WKUP_MOD, PM_WKST);
++
++		/* Try to enter MPU retention */
++		pwrdm_set_next_pwrst(mpu_pwrdm, PWRDM_POWER_RET);
++	} else {
++		/* Block MPU retention */
++		pwrdm_set_next_pwrst(mpu_pwrdm, PWRDM_POWER_ON);
++	}
++
++	omap2_sram_idle();
++}
++
++static int omap2_can_sleep(void)
++{
++	if (!READ_ONCE(omap2_sleep_while_idle))
++		return 0;
++	if (omap2_fclks_active())
++		return 0;
++
++	return 1;
++}
++
++/* Called with interrupts disabled; returns with them disabled */
++static void omap2_pm_idle(void)
++{
++	if (omap_irq_pending())
++		return;
++
++	/* sDMA vetoes CORE retention from its CPU_CLUSTER_PM notifier */
++	if (!omap2_can_sleep() || cpu_cluster_pm_enter()) {
++		omap2_enter_mpu_retention();
++		return;
++	}
++
++	omap2_enter_full_retention();
++	cpu_cluster_pm_exit();
++}
++
++static int omap2_pm_suspend(void)
++{
++	u32 wken_wkup;
++
++	/* The tick is stopped: no GPT1 wake-up */
++	wken_wkup = omap2_prm_read_mod_reg(WKUP_MOD, PM_WKEN);
++	omap2_prm_write_mod_reg(wken_wkup & ~OMAP24XX_EN_GPT1_MASK,
++				WKUP_MOD, PM_WKEN);
++
++	if (cpu_cluster_pm_enter())
++		omap2_enter_mpu_retention();
++	else {
++		omap2_enter_full_retention();
++		cpu_cluster_pm_exit();
++	}
++
++	omap2_prm_write_mod_reg(wken_wkup, WKUP_MOD, PM_WKEN);
++
++	return 0;
++}
++
++static void __init prcm_setup_regs(void)
++{
++	int i, num_mem_banks;
++	struct powerdomain *pwrdm;
++
++	/* Enable autoidle */
++	omap2_prm_write_mod_reg(OMAP24XX_AUTOIDLE_MASK, OCP_MOD,
++				OMAP2_PRCM_SYSCONFIG_OFFSET);
++
++	/*
++	 * Set CORE powerdomain memory banks to retain their contents
++	 * during RETENTION
++	 */
++	num_mem_banks = pwrdm_get_mem_bank_count(core_pwrdm);
++	for (i = 0; i < num_mem_banks; i++)
++		pwrdm_set_mem_retst(core_pwrdm, i, PWRDM_POWER_RET);
++
++	/* Set CORE powerdomain's next power state to RETENTION */
++	pwrdm_set_next_pwrst(core_pwrdm, PWRDM_POWER_RET);
++
++	/*
++	 * Set MPU powerdomain's next power state to RETENTION;
++	 * preserve logic state during retention
++	 */
++	pwrdm_set_logic_retst(mpu_pwrdm, PWRDM_POWER_RET);
++	pwrdm_set_next_pwrst(mpu_pwrdm, PWRDM_POWER_RET);
++
++	/* Force-power down DSP, GFX powerdomains */
++	pwrdm = clkdm_get_pwrdm(dsp_clkdm);
++	pwrdm_set_next_pwrst(pwrdm, PWRDM_POWER_OFF);
++
++	pwrdm = clkdm_get_pwrdm(gfx_clkdm);
++	pwrdm_set_next_pwrst(pwrdm, PWRDM_POWER_OFF);
++
++	/* Enable hardware-supervised idle for all clkdms */
++	clkdm_for_each(omap_pm_clkdms_setup, NULL);
++	clkdm_add_wkdep(mpu_clkdm, wkup_clkdm);
++
++	/* REVISIT: Configure number of 32 kHz clock cycles for sys_clk
++	 * stabilisation */
++	omap2_prm_write_mod_reg(15 << OMAP_SETUP_TIME_SHIFT, OMAP24XX_GR_MOD,
++				OMAP2_PRCM_CLKSSETUP_OFFSET);
++
++	/* Configure automatic voltage transition: roof when active, floor
++	 * in retention (Menelaus in hardware VCORE mode) */
++	omap2_prm_write_mod_reg(2 << OMAP_SETUP_TIME_SHIFT, OMAP24XX_GR_MOD,
++				OMAP2_PRCM_VOLTSETUP_OFFSET);
++	omap2_prm_write_mod_reg(OMAP24XX_AUTO_EXTVOLT_MASK |
++				(0x1 << OMAP24XX_SETOFF_LEVEL_SHIFT) |
++				OMAP24XX_MEMRETCTRL_MASK |
++				(0x1 << OMAP24XX_SETRET_LEVEL_SHIFT) |
++				(0x0 << OMAP24XX_VOLT_LEVEL_SHIFT),
++				OMAP24XX_GR_MOD, OMAP2_PRCM_VOLTCTRL_OFFSET);
++
++	/* Enable wake-up events */
++	omap2_prm_write_mod_reg(OMAP24XX_EN_GPIOS_MASK | OMAP24XX_EN_GPT1_MASK,
++				WKUP_MOD, PM_WKEN);
++}
++
++int __init omap2_pm_init(void)
++{
++	u32 l;
++
++	pr_info("Power Management for OMAP2 initializing\n");
++	l = omap2_prm_read_mod_reg(OCP_MOD, OMAP2_PRCM_REVISION_OFFSET);
++	pr_info("PRCM revision %d.%d\n", (l >> 4) & 0x0f, l & 0x0f);
++
++	mpu_pwrdm = pwrdm_lookup("mpu_pwrdm");
++	core_pwrdm = pwrdm_lookup("core_pwrdm");
++	mpu_clkdm = clkdm_lookup("mpu_clkdm");
++	wkup_clkdm = clkdm_lookup("wkup_clkdm");
++	dsp_clkdm = clkdm_lookup("dsp_clkdm");
++	gfx_clkdm = clkdm_lookup("gfx_clkdm");
++	if (!mpu_pwrdm || !core_pwrdm || !mpu_clkdm || !wkup_clkdm ||
++	    !dsp_clkdm || !gfx_clkdm) {
++		pr_err("PM: OMAP2 power or clock domains not found\n");
++		return -ENODEV;
++	}
++
++	prcm_setup_regs();
++
++	/*
++	 * We copy the assembler sleep/wakeup routines to SRAM.
++	 * These routines need to be in SRAM as that's the only
++	 * memory the MPU can see when it wakes up.
++	 */
++	omap2_sram_idle = omap_sram_push(omap24xx_idle_loop_suspend,
++					 omap24xx_idle_loop_suspend_sz);
++	omap2_sram_suspend = omap_sram_push(omap24xx_cpu_suspend,
++					    omap24xx_cpu_suspend_sz);
++	if (!omap2_sram_idle || !omap2_sram_suspend) {
++		pr_err("PM: no SRAM for the OMAP2 sleep code\n");
++		return -ENOMEM;
++	}
++
++	omap_common_suspend_init(omap2_pm_suspend);
++	arm_pm_idle = omap2_pm_idle;
++
++	return 0;
++}

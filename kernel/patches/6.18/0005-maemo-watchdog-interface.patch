@@ -1,0 +1,136 @@
+watchdog: Maemo interface for the N800/N810 (omap_wdt, retu-watchdog/period)
+
+Maemo's kicker needs /dev/omap_wdt (misc 10,130) and
+/sys/devices/platform/retu-watchdog/period, and exits without them, which
+makes DSME reset the device. omap_wdt also binds "ti,omap2-wdt" (the
+OMAP2420 node, same watchdog block; no driver matched it). With
+CONFIG_NOKIA_N8X0_MAEMO_COMPAT the watchdog misc node is named omap_wdt, and
+retu_wdt registers no watchdog device (the OMAP watchdog is then the only
+one) but offers period; the kernel pings Retu until the first write.
+
+diff -uN a/drivers/watchdog/watchdog_dev.c b/drivers/watchdog/watchdog_dev.c
+--- a/drivers/watchdog/watchdog_dev.c
++++ b/drivers/watchdog/watchdog_dev.c
+@@ -1001,6 +1001,10 @@
+ static struct miscdevice watchdog_miscdev = {
+ 	.minor		= WATCHDOG_MINOR,
+ 	.name		= "watchdog",
++#ifdef CONFIG_NOKIA_N8X0_MAEMO_COMPAT
++	/* Maemo's kicker opens the OMAP watchdog as /dev/omap_wdt */
++	.nodename	= "omap_wdt",
++#endif
+ 	.fops		= &watchdog_fops,
+ };
+ 
+diff -uN a/drivers/watchdog/retu_wdt.c b/drivers/watchdog/retu_wdt.c
+--- a/drivers/watchdog/retu_wdt.c
++++ b/drivers/watchdog/retu_wdt.c
+@@ -25,6 +25,8 @@
+ 	struct retu_dev		*rdev;
+ 	struct device		*dev;
+ 	struct delayed_work	ping_work;
++	struct platform_device	*maemo_dev;
++	bool			maemo_owned;
+ };
+ 
+ /*
+@@ -99,6 +101,72 @@
+ 	.set_timeout	= retu_wdt_set_timeout,
+ };
+ 
++/*
++ * Maemo's interface (CONFIG_NOKIA_N8X0_MAEMO_COMPAT): no watchdog device (the
++ * OMAP watchdog is /dev/omap_wdt), but /sys/devices/platform/retu-watchdog/
++ * period, which Maemo's kicker writes to kick. The kernel pings until the
++ * first write; after that userspace owns the watchdog, and if it stops,
++ * Retu resets the device.
++ */
++static ssize_t period_show(struct device *dev, struct device_attribute *attr,
++			   char *buf)
++{
++	int val = retu_read(((struct retu_wdt_dev *)dev_get_drvdata(dev))->rdev,
++			    RETU_REG_WATCHDOG);
++
++	return val < 0 ? val : sysfs_emit(buf, "%d\n", val);
++}
++
++static ssize_t period_store(struct device *dev, struct device_attribute *attr,
++			    const char *buf, size_t count)
++{
++	struct retu_wdt_dev *wdev = dev_get_drvdata(dev);
++	unsigned int val;
++	int ret;
++
++	if (kstrtouint(buf, 0, &val) || val > RETU_WDT_MAX_TIMER)
++		return -EINVAL;
++
++	if (!wdev->maemo_owned) {
++		wdev->maemo_owned = true;
++		cancel_delayed_work_sync(&wdev->ping_work);
++		dev_info(dev, "userspace took over the watchdog\n");
++	}
++
++	ret = retu_write(wdev->rdev, RETU_REG_WATCHDOG, val);
++	return ret < 0 ? ret : count;
++}
++static DEVICE_ATTR_RW(period);
++
++static void retu_wdt_maemo_unregister(void *data)
++{
++	struct retu_wdt_dev *wdev = data;
++
++	device_remove_file(&wdev->maemo_dev->dev, &dev_attr_period);
++	platform_device_unregister(wdev->maemo_dev);
++}
++
++static int retu_wdt_maemo_register(struct platform_device *pdev,
++				   struct retu_wdt_dev *wdev)
++{
++	int ret;
++
++	wdev->maemo_dev = platform_device_register_simple("retu-watchdog", -1,
++							  NULL, 0);
++	if (IS_ERR(wdev->maemo_dev))
++		return PTR_ERR(wdev->maemo_dev);
++	dev_set_drvdata(&wdev->maemo_dev->dev, wdev);
++
++	ret = device_create_file(&wdev->maemo_dev->dev, &dev_attr_period);
++	if (ret) {
++		platform_device_unregister(wdev->maemo_dev);
++		return ret;
++	}
++
++	return devm_add_action_or_reset(&pdev->dev, retu_wdt_maemo_unregister,
++					wdev);
++}
++
+ static int retu_wdt_probe(struct platform_device *pdev)
+ {
+ 	struct retu_dev *rdev = dev_get_drvdata(pdev->dev.parent);
+@@ -133,6 +201,14 @@
+ 	if (ret)
+ 		return ret;
+ 
++	if (IS_ENABLED(CONFIG_NOKIA_N8X0_MAEMO_COMPAT)) {
++		ret = retu_wdt_maemo_register(pdev, wdev);
++		if (ret)
++			return ret;
++		retu_wdt_ping_enable(wdev);
++		return 0;
++	}
++
+ 	ret = devm_watchdog_register_device(&pdev->dev, retu_wdt);
+ 	if (ret < 0)
+ 		return ret;
+diff -uN a/drivers/watchdog/omap_wdt.c b/drivers/watchdog/omap_wdt.c
+--- a/drivers/watchdog/omap_wdt.c
++++ b/drivers/watchdog/omap_wdt.c
+@@ -350,6 +350,8 @@
+ }
+ 
+ static const struct of_device_id omap_wdt_of_match[] = {
++	/* OMAP2420/2430: same watchdog block (the N800/N810 use it) */
++	{ .compatible = "ti,omap2-wdt", },
+ 	{ .compatible = "ti,omap3-wdt", },
+ 	{},
+ };

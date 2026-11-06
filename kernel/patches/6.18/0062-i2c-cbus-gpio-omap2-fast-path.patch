@@ -1,0 +1,212 @@
+i2c: cbus-gpio: edges as single writes to an OMAP2 GPIO bank
+
+Each CBUS edge through gpiolib costs about a microsecond on an N810 (the
+descriptor checks, SRCU, the tracepoint, gpio-omap's lock): measured from
+userspace, 85-90 us a Retu or Tahvo register read and 425 us a Retu ADC
+reading on the Vilma channel (8), 245 on the others. Nokia's 2.6.21
+cbus.c wrote the bank's set and clear registers through
+omap_set_gpio_dataout(). Where the three lines are in one ti,omap2-gpio
+bank, as the N8x0's gpio64-66 are, do the same: map the bank and write
+SETDATAOUT/CLEARDATAOUT inside the transfer's spinlock, without reading
+back (as Nokia's didn't): the interconnect delivers writes to one module
+in order. Directions stay
+with gpiolib, and the lines' levels are set through it once a transfer
+is done, so gpio-omap's copy of the data register stays right. Other
+boards keep the gpiolib path.
+
+--- a/drivers/i2c/busses/i2c-cbus-gpio.c
++++ b/drivers/i2c/busses/i2c-cbus-gpio.c
+@@ -25,6 +25,8 @@
+ #include <linux/module.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/interrupt.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/platform_device.h>
+ 
+ /*
+@@ -34,14 +36,68 @@
+ #define CBUS_ADDR_BITS	3
+ #define CBUS_REG_BITS	5
+ 
++/* An OMAP2 GPIO bank's data registers (gpio-omap's omap2_gpio_regs) */
++#define OMAP2_GPIO_DATAIN	0x038
++#define OMAP2_GPIO_CLEARDATAOUT	0x090
++#define OMAP2_GPIO_SETDATAOUT	0x094
++
+ struct cbus_host {
+ 	spinlock_t	lock;		/* host lock */
+ 	struct device	*dev;
+ 	struct gpio_desc *clk;
+ 	struct gpio_desc *dat;
+ 	struct gpio_desc *sel;
++	/*
++	 * The fast path: the three lines in one OMAP2 GPIO bank (the N8x0's
++	 * gpio64-66), their bank mapped and their bits, or mmio NULL
++	 */
++	void __iomem	*mmio;
++	u32		clk_bit, dat_bit, sel_bit;
+ };
+ 
++/*
++ * A line set, or the data line read. Through gpiolib each edge costs
++ * about a microsecond on an N810 (its descriptor checks, SRCU, tracepoint
++ * and gpio-omap's lock), some 85 us a CBUS transfer and 425 for a Retu ADC
++ * reading; Nokia's cbus.c wrote the bank's set and clear registers
++ * through omap_set_gpio_dataout(). The fast path does the same, inside
++ * the transfer's spinlock, without reading back: the interconnect delivers
++ * writes to one module in order, and a read of DATAIN comes after the
++ * clock edges written before it. Directions still go through gpiolib,
++ * and so do the lines' levels at the end of a transfer (cbus_resync()),
++ * which keeps gpio-omap's copy of the data register right.
++ */
++static void cbus_set(struct cbus_host *host, struct gpio_desc *desc, u32 bit, int value)
++{
++	if (!host->mmio) {
++		gpiod_set_value(desc, value);
++		return;
++	}
++	writel_relaxed(bit, host->mmio + (value ? OMAP2_GPIO_SETDATAOUT : OMAP2_GPIO_CLEARDATAOUT));
++}
++
++static int cbus_get_dat(struct cbus_host *host)
++{
++	if (!host->mmio)
++		return gpiod_get_value(host->dat);
++	return !!(readl_relaxed(host->mmio + OMAP2_GPIO_DATAIN) & host->dat_bit);
++}
++
++#define cbus_clk(host, v)	cbus_set(host, (host)->clk, (host)->clk_bit, v)
++#define cbus_dat(host, v)	cbus_set(host, (host)->dat, (host)->dat_bit, v)
++#define cbus_sel(host, v)	cbus_set(host, (host)->sel, (host)->sel_bit, v)
++
++/* The lines' levels after a transfer, as gpio-omap should know them */
++static void cbus_resync(struct cbus_host *host, int dat_out, int dat)
++{
++	if (!host->mmio)
++		return;
++	gpiod_set_value(host->sel, 1);
++	gpiod_set_value(host->clk, 0);
++	if (dat_out)
++		gpiod_set_value(host->dat, dat);
++}
++
+ /**
+  * cbus_send_bit - sends one bit over the bus
+  * @host: the host we're using
+@@ -49,9 +105,9 @@
+  */
+ static void cbus_send_bit(struct cbus_host *host, unsigned bit)
+ {
+-	gpiod_set_value(host->dat, bit ? 1 : 0);
+-	gpiod_set_value(host->clk, 1);
+-	gpiod_set_value(host->clk, 0);
++	cbus_dat(host, bit ? 1 : 0);
++	cbus_clk(host, 1);
++	cbus_clk(host, 0);
+ }
+ 
+ /**
+@@ -76,9 +132,9 @@
+ {
+ 	int ret;
+ 
+-	gpiod_set_value(host->clk, 1);
+-	ret = gpiod_get_value(host->dat);
+-	gpiod_set_value(host->clk, 0);
++	cbus_clk(host, 1);
++	ret = cbus_get_dat(host);
++	cbus_clk(host, 0);
+ 	return ret;
+ }
+ 
+@@ -121,7 +177,7 @@
+ 	spin_lock_irqsave(&host->lock, flags);
+ 
+ 	/* Reset state and start of transfer, SEL stays down during transfer */
+-	gpiod_set_value(host->sel, 0);
++	cbus_sel(host, 0);
+ 
+ 	/* Set the DAT pin to output */
+ 	gpiod_direction_output(host->dat, 1);
+@@ -144,7 +200,7 @@
+ 			dev_dbg(host->dev, "failed setting direction\n");
+ 			goto out;
+ 		}
+-		gpiod_set_value(host->clk, 1);
++		cbus_clk(host, 1);
+ 
+ 		ret = cbus_receive_word(host);
+ 		if (ret < 0) {
+@@ -154,11 +210,12 @@
+ 	}
+ 
+ 	/* Indicate end of transfer, SEL goes up until next transfer */
+-	gpiod_set_value(host->sel, 1);
+-	gpiod_set_value(host->clk, 1);
+-	gpiod_set_value(host->clk, 0);
++	cbus_sel(host, 1);
++	cbus_clk(host, 1);
++	cbus_clk(host, 0);
+ 
+ out:
++	cbus_resync(host, rw == I2C_SMBUS_WRITE, data & 1);
+ 	spin_unlock_irqrestore(&host->lock, flags);
+ 
+ 	return ret;
+@@ -204,7 +261,47 @@
+ {
+ 	struct i2c_adapter *adapter = platform_get_drvdata(pdev);
+ 
++	struct cbus_host *chost = i2c_get_adapdata(adapter);
++
+ 	i2c_del_adapter(adapter);
++	if (chost->mmio)
++		iounmap(chost->mmio);
++}
++
++/*
++ * The fast path, where the three lines are in one OMAP2 GPIO bank: its
++ * registers mapped (gpio-omap has them too), each line's bit
++ */
++static void cbus_fast_init(struct device *dev, struct cbus_host *host)
++{
++	struct device_node *bank = NULL;
++	u32 bits[3];
++	int k;
++
++	for (k = 0; k < 3; k++) {
++		struct of_phandle_args args;
++
++		if (of_parse_phandle_with_args(dev->of_node, "gpios", "#gpio-cells", k, &args))
++			goto out;
++		if (args.args_count < 1 || args.args[0] > 31 || (bank && args.np != bank) ||
++		    !of_device_is_compatible(args.np, "ti,omap2-gpio") ||
++		    (args.args_count > 1 && args.args[1] & 1 /* active low */)) {
++			of_node_put(args.np);
++			goto out;
++		}
++		of_node_put(bank);
++		bank = args.np;
++		bits[k] = BIT(args.args[0]);
++	}
++	host->mmio = of_iomap(bank, 0);
++	if (host->mmio) {
++		host->clk_bit = bits[0];
++		host->dat_bit = bits[1];
++		host->sel_bit = bits[2];
++		dev_info(dev, "fast path: the OMAP2 GPIO bank's registers\n");
++	}
++out:
++	of_node_put(bank);
+ }
+ 
+ static int cbus_i2c_probe(struct platform_device *pdev)
+@@ -235,6 +332,7 @@
+ 	gpiod_set_consumer_name(chost->clk, "CBUS clk");
+ 	gpiod_set_consumer_name(chost->dat, "CBUS dat");
+ 	gpiod_set_consumer_name(chost->sel, "CBUS sel");
++	cbus_fast_init(&pdev->dev, chost);
+ 
+ 	adapter->owner		= THIS_MODULE;
+ 	adapter->class		= I2C_CLASS_HWMON;

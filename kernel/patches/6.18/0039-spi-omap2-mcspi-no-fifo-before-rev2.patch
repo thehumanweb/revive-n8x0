@@ -1,0 +1,46 @@
+spi: omap2-mcspi: no FIFO before McSPI 2.0 (OMAP2420)
+
+The driver used the McSPI FIFO for every controller, but it came with
+McSPI 2.x (OMAP2430 and later); the OMAP2420 has McSPI 1.4, under the
+same "ti,omap2-mcspi" compatible as OMAP3's. There, each DMA transfer
+then waited for an end-of-word interrupt and a TX FIFO empty flag that
+never come: "EOW timed out", "TXFFE timed out", a second each, on a
+Nokia N810's WLAN (p54spi on McSPI2) dozens of times a minute, with
+p54 commands timing out. Read the revision and leave the FIFO off
+before 2.0.
+
+--- a/drivers/spi/spi-omap2-mcspi.c
++++ b/drivers/spi/spi-omap2-mcspi.c
+@@ -129,6 +129,7 @@
+ 	struct omap2_mcspi_regs ctx;
+ 	struct clk		*ref_clk;
+ 	int			fifo_depth;
++	bool			no_fifo;	/* McSPI before 2.0 (OMAP2420) */
+ 	bool			target_aborted;
+ 	unsigned int		pin_dir:1;
+ 	size_t			max_xfer_len;
+@@ -316,7 +317,7 @@
+ 	mcspi = spi_controller_get_devdata(ctlr);
+ 
+ 	chconf = mcspi_cached_chconf0(spi);
+-	if (enable) {
++	if (enable && !mcspi->no_fifo) {
+ 		bytes_per_word = mcspi_bytes_per_word(cs->word_len);
+ 		if (t->len % bytes_per_word != 0)
+ 			goto disable_fifo;
+@@ -1373,6 +1374,15 @@
+ 	if (ret < 0)
+ 		return ret;
+ 
++	/*
++	 * The FIFO (CHCONF FFER/FFEW, XFERLEVEL, IRQSTATUS EOW) came with
++	 * McSPI 2.x; the OMAP2420's is 1.4 (and shares the compatible with
++	 * OMAP3's). Using it there, every DMA transfer waited out "EOW timed
++	 * out" and "TXFFE timed out".
++	 */
++	if (((mcspi_read_reg(ctlr, OMAP2_MCSPI_REVISION) >> 4) & 0xf) < 2)
++		mcspi->no_fifo = true;
++
+ 	mcspi_write_reg(ctlr, OMAP2_MCSPI_WAKEUPENABLE,
+ 			OMAP2_MCSPI_WAKEUPENABLE_WKEN);
+ 	ctx->wakeupenable = OMAP2_MCSPI_WAKEUPENABLE_WKEN;

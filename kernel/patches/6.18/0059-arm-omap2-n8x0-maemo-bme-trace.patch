@@ -1,0 +1,206 @@
+ARM: OMAP2: n8x0-maemo: /dev/bme-trace, BME's STI trace records
+
+The STI sink (0037) dropped the trace records BME sends for each of its
+events. Keep the last 256 instead and serve them as text lines from
+/dev/bme-trace ("<seconds> <id> <channel> <payload hex>"), so BME's
+charger recognition, charging state and measurements can be followed on
+the device. strace can't do it: BME traced for minutes misses DSME's
+process watchdog pings, and DSME resets the device (seen on a charger
+re-plug). A reader starts at the oldest record kept and blocks for new
+ones.
+
+--- a/arch/arm/mach-omap2/n8x0-maemo.c
++++ b/arch/arm/mach-omap2/n8x0-maemo.c
+@@ -17,7 +17,7 @@
+  *  - /sys/devices/platform/musb_hdrc/mode: the USB role and cable state
+  *    ("b_idle", "b_peripheral", "a_host", ...), which DSME reads.
+  *  - A NETLINK_USERSOCK kernel socket taking the STI trace records BME
+- *    sends.
++ *    sends. The last ones are readable as text from /dev/bme-trace.
+  */
+ 
+ #include <linux/backlight.h>
+@@ -29,17 +29,22 @@
+ #include <linux/kernel.h>
+ #include <linux/kernfs.h>
+ #include <linux/kobject.h>
++#include <linux/miscdevice.h>
+ #include <linux/netlink.h>
+ #include <linux/of.h>
+ #include <linux/poll.h>
+ #include <linux/platform_device.h>
+ #include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
+ #include <linux/string.h>
+ #include <linux/suspend.h>
+ #include <linux/sysfs.h>
++#include <linux/uaccess.h>
+ #include <linux/unaligned.h>
+ #include <linux/usb/musb.h>
++#include <linux/wait.h>
+ #include <linux/workqueue.h>
+ #include <net/net_namespace.h>
+ #include <net/netlink.h>
+@@ -587,11 +592,140 @@
+  * events (nlmsg_type STI_WRITE | id << 8, channel in nlmsg_flags' upper
+  * byte); without a kernel socket every send failed with ECONNREFUSED and
+  * BME printed "sendmsg: Connection refused" to the console, many times
+- * a minute. There is no STI here: take the records and drop them; acked
+- * on request as then, a read gets nothing.
++ * a minute. There is no STI here: take the records; acked on request as
++ * then, a read gets nothing.
++ *
++ * The last STI_LOG_LEN records written are kept for /dev/bme-trace, one
++ * text line each: "<seconds> <id> <channel> <payload bytes in hex>", the
++ * payload cut to STI_LOG_MAX bytes. They show BME's decisions as it makes
++ * them (charger recognition, charging state, measurements), which strace
++ * can't: BME traced for minutes misses DSME's process watchdog pings and
++ * DSME resets the device. A reader starts at the oldest record kept and
++ * blocks for new ones; one that falls behind skips to the oldest kept.
+  */
+ #define STI_READ	0
+ #define STI_WRITE	1
++#define STI_LOG_LEN	256
++#define STI_LOG_MAX	32
++
++struct sti_rec {
++	u64	ns;
++	u8	id;
++	u8	channel;
++	u8	len;
++	u8	data[STI_LOG_MAX];
++};
++
++static struct sti_rec sti_log[STI_LOG_LEN];
++static unsigned long sti_seq;	/* records logged since boot */
++static DEFINE_SPINLOCK(sti_lock);
++static DECLARE_WAIT_QUEUE_HEAD(sti_wait);
++
++static void n8x0_sti_log(const struct nlmsghdr *nlh)
++{
++	unsigned int len = min_t(unsigned int, nlmsg_len(nlh), STI_LOG_MAX);
++	struct sti_rec *r;
++	unsigned long flags;
++
++	spin_lock_irqsave(&sti_lock, flags);
++	r = &sti_log[sti_seq % STI_LOG_LEN];
++	r->ns = ktime_get_ns();
++	r->id = nlh->nlmsg_type >> 8;
++	r->channel = nlh->nlmsg_flags >> 8;
++	r->len = len;
++	memcpy(r->data, nlmsg_data(nlh), len);
++	sti_seq++;
++	spin_unlock_irqrestore(&sti_lock, flags);
++	wake_up_interruptible(&sti_wait);
++}
++
++static int sti_trace_open(struct inode *inode, struct file *file)
++{
++	unsigned long *pos = kmalloc(sizeof(*pos), GFP_KERNEL);
++	unsigned long flags;
++
++	if (!pos)
++		return -ENOMEM;
++	spin_lock_irqsave(&sti_lock, flags);
++	*pos = sti_seq > STI_LOG_LEN ? sti_seq - STI_LOG_LEN : 0;
++	spin_unlock_irqrestore(&sti_lock, flags);
++	file->private_data = pos;
++	return 0;
++}
++
++static int sti_trace_release(struct inode *inode, struct file *file)
++{
++	kfree(file->private_data);
++	return 0;
++}
++
++/* One record per read, as a text line */
++static ssize_t sti_trace_read(struct file *file, char __user *buf,
++			      size_t count, loff_t *ppos)
++{
++	unsigned long *pos = file->private_data;
++	char line[48 + 3 * STI_LOG_MAX];
++	struct sti_rec r;
++	unsigned long flags;
++	u64 sec;
++	u32 usec;
++	int n, i;
++
++	for (;;) {
++		spin_lock_irqsave(&sti_lock, flags);
++		if (sti_seq - *pos > STI_LOG_LEN)
++			*pos = sti_seq - STI_LOG_LEN;
++		if (*pos != sti_seq) {
++			r = sti_log[*pos % STI_LOG_LEN];
++			(*pos)++;
++			spin_unlock_irqrestore(&sti_lock, flags);
++			break;
++		}
++		spin_unlock_irqrestore(&sti_lock, flags);
++		if (file->f_flags & O_NONBLOCK)
++			return -EAGAIN;
++		if (wait_event_interruptible(sti_wait,
++					     READ_ONCE(sti_seq) != *pos))
++			return -ERESTARTSYS;
++	}
++
++	sec = r.ns;
++	usec = do_div(sec, NSEC_PER_SEC) / NSEC_PER_USEC;
++	n = scnprintf(line, sizeof(line), "%llu.%06u %02x %02x",
++		      sec, usec, r.id, r.channel);
++	for (i = 0; i < r.len; i++)
++		n += scnprintf(line + n, sizeof(line) - n, " %02x", r.data[i]);
++	n += scnprintf(line + n, sizeof(line) - n, "\n");
++	if (count < n)
++		return -EINVAL;
++	if (copy_to_user(buf, line, n))
++		return -EFAULT;
++	return n;
++}
++
++static __poll_t sti_trace_poll(struct file *file, poll_table *wait)
++{
++	unsigned long *pos = file->private_data;
++
++	poll_wait(file, &sti_wait, wait);
++	return READ_ONCE(sti_seq) != *pos ? EPOLLIN | EPOLLRDNORM : 0;
++}
++
++static const struct file_operations sti_trace_fops = {
++	.owner		= THIS_MODULE,
++	.open		= sti_trace_open,
++	.release	= sti_trace_release,
++	.read		= sti_trace_read,
++	.poll		= sti_trace_poll,
++	.llseek		= noop_llseek,
++};
++
++static struct miscdevice sti_trace_miscdev = {
++	.minor	= MISC_DYNAMIC_MINOR,
++	.name	= "bme-trace",
++	.fops	= &sti_trace_fops,
++	.mode	= 0400,
++};
+ 
+ static void n8x0_sti_input(struct sk_buff *skb)
+ {
+@@ -603,6 +737,8 @@
+ 			return;
+ 		switch (nlh->nlmsg_type & 0xff) {
+ 		case STI_WRITE:
++			n8x0_sti_log(nlh);
++			fallthrough;
+ 		case STI_READ:
+ 			if (nlh->nlmsg_flags & NLM_F_ACK)
+ 				netlink_ack(skb, nlh, 0, NULL);
+@@ -625,6 +761,8 @@
+ 
+ 	if (!netlink_kernel_create(&init_net, NETLINK_USERSOCK, &cfg))
+ 		pr_warn("n8x0-maemo: no STI netlink socket\n");
++	else if (misc_register(&sti_trace_miscdev))
++		pr_warn("n8x0-maemo: no /dev/bme-trace\n");
+ }
+ 
+ static int __init n8x0_maemo_init(void)

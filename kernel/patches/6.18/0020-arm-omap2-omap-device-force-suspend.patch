@@ -1,0 +1,30 @@
+ARM: OMAP2+: omap_device: don't idle a force-suspended device again
+
+_od_suspend_noirq() calls the driver's noirq suspend and then, if the
+device is not runtime suspended, idles it itself. A driver that uses
+pm_runtime_force_suspend() there (i2c-omap) has idled the device already
+through the omap_device runtime callbacks; if it holds a usage count
+(i2c-omap takes one in .suspend so the bus stays usable until noirq),
+pm_runtime_force_suspend() leaves the status RPM_ACTIVE and sets
+power.needs_force_resume. The device was then idled twice ("omap_device:
+omap_device_idle() called from invalid state 2") and, on resume, enabled
+twice, failing resume_noirq with -EINVAL: on the N800/N810 both I2C
+controllers were dead after suspend to RAM. Skip such devices.
+
+--- a/arch/arm/mach-omap2/omap_device.c
++++ b/arch/arm/mach-omap2/omap_device.c
+@@ -402,7 +402,13 @@
+ 
+ 	ret = pm_generic_suspend_noirq(dev);
+ 
+-	if (!ret && !pm_runtime_status_suspended(dev)) {
++	/*
++	 * A driver's pm_runtime_force_suspend() (noirq) has idled the
++	 * device through our runtime callbacks already, but leaves it
++	 * RPM_ACTIVE with needs_force_resume while it holds a usage count.
++	 */
++	if (!ret && !pm_runtime_status_suspended(dev) &&
++	    !dev->power.needs_force_resume) {
+ 		if (pm_generic_runtime_suspend(dev) == 0) {
+ 			omap_device_idle(pdev);
+ 			od->flags |= OMAP_DEVICE_SUSPENDED;

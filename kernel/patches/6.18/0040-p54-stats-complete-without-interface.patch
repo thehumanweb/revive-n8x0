@@ -1,0 +1,35 @@
+wifi: p54: free the statistics request and wake the waiter without an interface
+
+p54_rx_stats() returned early while no interface was added, without
+freeing the request it answers or completing stat_comp. mac80211
+configures the device before it adds the interface, and p54_config()
+waits for statistics (WARN_ON(p54_wait_for_stats())): bringing the
+interface up waited out five one-second timeouts with five warnings,
+and leaked the requests. Skip only the accounting.
+
+--- a/drivers/net/wireless/intersil/p54/txrx.c
++++ b/drivers/net/wireless/intersil/p54/txrx.c
+@@ -531,8 +531,14 @@
+ 	unsigned int i, rssi, tx, cca, dtime, dtotal, dcca, dtx, drssi, unit;
+ 	u32 tsf32;
+ 
++	/*
++	 * Without an interface there's nothing to account the statistics to,
++	 * but the request still has to be freed and the waiter woken: mac80211
++	 * configures the device (p54_config() waits for statistics) before it
++	 * adds the interface.
++	 */
+ 	if (unlikely(priv->mode == NL80211_IFTYPE_UNSPECIFIED))
+-		return ;
++		goto out;
+ 
+ 	tsf32 = le32_to_cpu(stats->tsf32);
+ 	if (tsf32 < priv->tsf_low32)
+@@ -611,6 +617,7 @@
+ 		do_div(survey->time_busy, 1024);
+ 	}
+ 
++out:
+ 	tmp = p54_find_and_unlink_skb(priv, hdr->req_id);
+ 	dev_kfree_skb_any(tmp);
+ 	complete(&priv->stat_comp);

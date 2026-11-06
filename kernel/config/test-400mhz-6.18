@@ -1,0 +1,3 @@
+# Test only: the experimental 400 MHz N8x0 rate (0018), e.g. in QEMU:
+#   scripts/prepare-6.18.sh config/test-400mhz-6.18
+CONFIG_OMAP2420_N8X0_400MHZ=y

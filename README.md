@@ -10,6 +10,8 @@ PowerVR MBX1 graphics core.
   partition table. Enough for Linux 6.18 to boot to a shell
   with the RFBI panel, keyboard, touchscreen, eMMC and USB
   networking.
+- `kernel/`: Linux 6.18.58 for the N810: 62 patches, configs, build scripts
+  and a kexec loader; see `kernel/README.md`.
 - `mbx/`: mbxemu, a functional model of the PowerVR MBX1 (TA, VGP, 3D
   core, 2D core, parameter buffer), see `mbx/README.md`; its QEMU device is in
   `qemu/device/`. Checked against the N810 frame by frame and
@@ -46,6 +48,7 @@ cd mbx && make
 
 The emulator (`mbx/`, except `mbx/kmod/`) and the scripts are MIT (SPDX
 headers). `mbx/kmod/` is Imagination Technologies' MBX kernel driver
-source, GPL-2.0 (see `mbx/kmod/COPYING`; each file keeps its own notice). The patches
+source, GPL-2.0 (see `mbx/kmod/COPYING`; each file keeps its own notice).
+The kernel patches in `kernel/patches/` are GPL-2.0 as changes to Linux. The patches
 in `qemu/patches/` modify QEMU and are under QEMU's licence, GPL-2.0, as
 is QEMU built with the MBX device in it.

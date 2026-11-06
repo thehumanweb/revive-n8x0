@@ -1,0 +1,163 @@
+# N810 on top of omap2plus_defconfig. Merged by scripts/prepare-6.18.sh.
+# ARMv6 / OMAP2420 only: no ARMv7, hence no SMP (the N8x0 needs SMP off).
+# CONFIG_ARCH_MULTI_V7 is not set
+CONFIG_ARCH_MULTI_V6=y
+CONFIG_ARCH_OMAP2=y
+CONFIG_SOC_OMAP2420=y
+# CONFIG_SOC_OMAP2430 is not set
+# CONFIG_SMP is not set
+# NOLO (and QEMU's n810 machine) pass ATAGs, not a DTB: append the DTB and
+# fold the ATAG command line and memory into it.
+CONFIG_ARM_APPENDED_DTB=y
+CONFIG_ARM_ATAG_DTB_COMPAT=y
+CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_FROM_BOOTLOADER=y
+# Early output on UART3 for bring-up.
+CONFIG_DEBUG_LL=y
+CONFIG_DEBUG_OMAP2UART3=y
+CONFIG_EARLY_PRINTK=y
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_OMAP=y
+# Root on the stock initfs (OneNAND, jffs2), /dev from devtmpfs.
+CONFIG_MTD=y
+CONFIG_MTD_BLOCK=y
+CONFIG_MTD_OF_PARTS=y
+CONFIG_MTD_CMDLINE_PARTS=y
+CONFIG_MTD_ONENAND=y
+CONFIG_MTD_ONENAND_OMAP2=y
+CONFIG_JFFS2_FS=y
+CONFIG_JFFS2_FS_WRITEBUFFER=y
+CONFIG_JFFS2_SUMMARY=y
+CONFIG_JFFS2_COMPRESSION_OPTIONS=y
+CONFIG_JFFS2_ZLIB=y
+CONFIG_JFFS2_LZO=y
+CONFIG_JFFS2_RTIME=y
+# CONFIG_JFFS2_FS_XATTR is not set
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+# Retu/Tahvo on cbus.
+CONFIG_I2C_CBUS_GPIO=y
+CONFIG_MFD_RETU=y
+CONFIG_RETU_WATCHDOG=y
+CONFIG_INPUT_RETU_PWRBUTTON=y
+# Retu's RTC (patches/6.18/0052) is rtc0. Its date base lives in the rootfs,
+# so HCTOSYS (kept, rtc0) finds none at boot; S02clock restores the base and
+# runs hwclock -s. Menelaus's RTC has no 32 kHz oscillator on
+# the N8x0 (it registered only in QEMU, as rtc0). No SYSTOHC: the kernel's
+# 11-minute NTP writes would move the base behind userspace's saved copy.
+CONFIG_RTC_DRV_RETU=y
+# CONFIG_RTC_DRV_TWL92330 is not set
+CONFIG_RTC_HCTOSYS=y
+CONFIG_RTC_HCTOSYS_DEVICE="rtc0"
+# CONFIG_RTC_SYSTOHC is not set
+CONFIG_MAGIC_SYSRQ=y
+# Maemo initfs compatibility (patches/6.18/0003-0006)
+CONFIG_NOKIA_N8X0_MAEMO_COMPAT=y
+CONFIG_MFD_RETU_USER=y
+CONFIG_WATCHDOG=y
+CONFIG_OMAP_WATCHDOG=y
+# CONFIG_WATCHDOG_NOWAYOUT is not set
+# Display (patches/6.18/0008): omapdrm with RFBI and the S1D1374x controller
+CONFIG_DRM=y
+CONFIG_DRM_OMAP=y
+CONFIG_OMAP2_DSS_RFBI=y
+CONFIG_DRM_FBDEV_EMULATION=y
+# Panel and Tahvo backlight (0010-0012)
+CONFIG_BACKLIGHT_TAHVO=y
+CONFIG_DRM_PANEL_SHARP_LS041Y3=y
+# No text console on the LCD (Maemo's kernel had none; userspace owns fb0).
+# CONFIG_FRAMEBUFFER_CONSOLE is not set
+# USB networking as a gadget for the rootfs (sshd over USB): TUSB6010 (musb,
+# built in, see config/size-6.18) and g_ether (CDC ECM, RNDIS), a module
+CONFIG_USB_MUSB_TUSB6010=y
+CONFIG_USB_ETH=m
+CONFIG_USB_ETH_RNDIS=y
+# PIO. Mainline's TUSB6010 DMA (USB_TUSB_OMAP_DMA) moves at most one packet
+# per DMA transfer and maps every request for DMA, which on the N810 is
+# slower than PIO: g_ether host-to-device 1.7 MB/s against 2.8 MB/s on the
+# same kernel (use_dma toggled), and 7 KB more kernel. Nokia's driver did
+# multi-packet DMA; until that is ported, PIO. QEMU has no model of the
+# TUSB6010's sync (DMA) window either.
+CONFIG_MUSB_PIO_ONLY=y
+# CONFIG_USB_MUSB_OMAP2PLUS is not set
+# CONFIG_USB_MUSB_DSPS is not set
+# Input (0015): evdev built in (nothing autoloads it), the N810 keyboard
+# (LM8323) and touchscreen (TSC2005) as modules
+CONFIG_INPUT_EVDEV=y
+CONFIG_KEYBOARD_LM8323=m
+CONFIG_TOUCHSCREEN_TSC2005=m
+# N800 (0051): the TSC2301 core, touchscreen and keypad as modules
+CONFIG_MFD_TSC2301=m
+CONFIG_TOUCHSCREEN_TSC2301=m
+CONFIG_KEYBOARD_TSC2301=m
+# Board temperature sensor (0016), hwmon "tmp105"; built in, since DSME
+# looks for it when it starts from the initfs. Its Maemo attributes (0017).
+CONFIG_HWMON=y
+CONFIG_SENSORS_LM75=y
+CONFIG_SENSORS_LM75_N8X0_CRIT=y
+# Audio: the N810 machine driver (TLV320AIC33 on McBSP2); it is no device
+# driver, so the rootfs loads it from /etc/modules
+CONFIG_SND_SOC_NOKIA_N810=m
+# cpufreq (0018): the N8x0 19.2 MHz rate sets through virt_prcm_set;
+# 400 MHz only with config/test-400mhz-6.18 (experimental)
+CONFIG_CPU_FREQ=y
+CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y
+CONFIG_CPU_FREQ_GOV_USERSPACE=y
+CONFIG_CPU_FREQ_GOV_ONDEMAND=y
+# CONFIG_CPU_FREQ_GOV_CONSERVATIVE is not set
+# CONFIG_CPU_FREQ_GOV_SCHEDUTIL is not set
+CONFIG_ARM_OMAP2PLUS_CPUFREQ=y
+# CONFIG_CPUFREQ_DT is not set
+# CONFIG_CPUFREQ_DT_PLATDEV is not set
+# CONFIG_ARM_TI_CPUFREQ is not set
+# WLAN: STLC4560 on McSPI2 (0023/0024), Nokia's 3826.arm from the initfs
+# in the rootfs; generic built-in calibration until a per-unit
+# 3826.eeprom exists
+CONFIG_WLAN_VENDOR_INTERSIL=y
+CONFIG_P54_COMMON=m
+CONFIG_P54_SPI=m
+CONFIG_P54_SPI_DEFAULT_EEPROM=y
+# LP5521 RGB LED and TSL2563 light sensor on I2C2 (0027)
+CONFIG_LEDS_CLASS_MULTICOLOR=m
+CONFIG_LEDS_LP55XX_COMMON=m
+CONFIG_LEDS_LP5521=m
+CONFIG_SENSORS_TSL2563=m
+# Built-in command line, as Nokia had one (root=1f03 rootfstype=jffs2): NOLO
+# passes none when booting from flash; one from NOLO or 0xFFFF -b wins
+CONFIG_CMDLINE="root=1f03 rootfstype=jffs2 ro console=ttyS2,115200n8"
+# ARMv6K exclusives (LDREX{B,H,D}, STREX{B,H,D}, CLREX) for user space: the
+# ARM1136 r0 lacks them and LLVM-built code (Rust) uses them (patch 0048)
+CONFIG_ARMV6K_EMULATE=y
+# Bluetooth (0053): CSR BC4 on UART1, Nokia H4+ through hci_nokia on serdev
+# (hci_uart.ko); bc4fw.bin from the initfs (firmware_class.path, set by the
+# rootfs S03firmware). Modules, as omap2plus_defconfig has them; serdev
+# and the firmware loader are built in.
+CONFIG_BT=m
+CONFIG_BT_HCIUART=m
+CONFIG_BT_HCIUART_SERDEV=y
+CONFIG_BT_HCIUART_H4=y
+CONFIG_BT_HCIUART_NOKIA=m
+CONFIG_SERIAL_DEV_BUS=y
+CONFIG_SERIAL_DEV_CTRL_TTYPORT=y
+CONFIG_FW_LOADER=y
+# CMA for the display buffers (omapdrm dumb buffers, which the MBX renders
+# into): 24 MB, allocations aligned to 16 pages (64 KB) instead of 256 (1 MB),
+# so 1.5 MB fullscreen buffers pack at 1.5 MB, not 2 MB: Weston's and a
+# fullscreen client's no longer run out (CREATE_DUMB ENOMEM, cma ret -16)
+CONFIG_CMA_SIZE_MBYTES=24
+CONFIG_CMA_ALIGNMENT=4
+# The system dma-heap: Wayland clients' buffers (kms_swrast's shared ones
+# that aren't scanned out) in scattered pages, which the MBX maps through
+# its MMU; CMA left to what the display controller (no IOMMU) scans out.
+CONFIG_DMABUF_HEAPS=y
+CONFIG_DMABUF_HEAPS_SYSTEM=y
+# A panic restarts after 10 s instead of hanging (the battery draining, the
+# charger as it was until the Retu watchdog bites); an oops panics, so one
+# that kills BME mid-charge ends in patch 0006's charger-off and a restart
+# rather than a PWM left as it was
+CONFIG_PANIC_TIMEOUT=10
+CONFIG_PANIC_ON_OOPS=y
+# The OneNAND's OTP block through the MTD OTP calls (OTPSELECT on
+# /dev/mtd1): the CAL's factory blocks are there, this unit's wlan-mac and
+# bt-id (n810-wlan-cal reads them, read only; never lock the OTP area)
+CONFIG_MTD_ONENAND_OTP=y

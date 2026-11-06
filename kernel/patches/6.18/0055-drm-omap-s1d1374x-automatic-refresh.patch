@@ -1,0 +1,157 @@
+drm/omap: s1d1374x: refresh rate for full frames
+
+With omapdrm.refresh 0 (the default) the panel runs at the rate at which
+a whole frame goes out in two scans: its transfer time plus the setup
+around it (15% and 2 ms, as measured) as two frame periods, to the
+nearest Hz. That is 40 Hz on the N810, the one rate a 37-42 Hz sweep
+found even: 98 of 120 flips 50 ms apart, against 42-73 at the others.
+Full 800x480 frames then come at an even pace and don't tear, at the
+cost of small updates topping out at 40 a second instead of the
+bootloader's 55.7.
+
+omapdrm.refresh_auto=1 instead keeps the bootloader's rate and lowers
+it only while updates come that can't go out ahead of the scan, until
+half a second of updates that fit in one. Each switch retunes the panel
+and the tear sync, which can show as a glitch (a scroll that switched
+nearly every frame showed stacked copies), so it is off by default. A
+refresh value still sets the rate by hand. The timing line is logged at
+info level once.
+
+On the N810, full-frame 800x480 flips: 108 of 120 at 50 ms, 17.8 fps.
+
+--- a/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
++++ b/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
+@@ -76,7 +76,8 @@
+ 	int te_line;			/* updates start here; -1: no TE */
+ 	u64 pix_tx, line_upd;		/* ps to send a pixel, to scan a line */
+ 	int vndp_boot;			/* VNDP as the bootloader left it; -1 */
+-	unsigned int refresh_set;	/* the refresh parameter last applied */
++	unsigned int refresh_set;	/* the refresh rate last applied, Hz */
++	unsigned long slow_until;	/* jiffies: back to the bootloader's rate */
+ };
+ 
+ static bool tearsync = true;
+@@ -87,12 +88,25 @@
+  * The panel's refresh rate in Hz, lowered from the bootloader's by adding
+  * vertical non-display lines (VNDP, 2..255 lines): a full frame that takes
+  * longer than a scan to send can then go out in two scans without the
+- * second overtaking it. 0: as the bootloader set it. Applied before the
+- * next update.
++ * second overtaking it. 0: the rate at which a whole frame takes two
++ * scans (40 Hz on the N810), so full frames don't tear and come at an even
++ * pace; a rate above the bootloader's gives the bootloader's. Applied
++ * before the next update.
+  */
+ static unsigned int refresh;
+ module_param(refresh, uint, 0644);
+-MODULE_PARM_DESC(refresh, "Panel refresh rate in Hz (0: the bootloader's; only lowers it)");
++MODULE_PARM_DESC(refresh, "Panel refresh rate in Hz (0: a whole frame's two-scan rate, or automatic; only lowers it)");
++
++/*
++ * With refresh 0: the bootloader's rate, lowered to the two-scan rate only
++ * while updates come that can't go out ahead of the scan (a full 800x480
++ * frame, about 45-50 ms), until half a second of updates that fit in one
++ * scan. Small updates then go out up to 55.7 Hz instead of 40, but each
++ * switch retunes the panel and can show as a glitch, so it is off.
++ */
++static bool refresh_auto;
++module_param(refresh_auto, bool, 0644);
++MODULE_PARM_DESC(refresh_auto, "With refresh 0, lower the rate only while large updates are sent");
+ 
+ #define drm_bridge_to_s1d1374x(b) container_of(b, struct s1d1374x, bridge)
+ 
+@@ -248,12 +262,13 @@
+ 	}
+ 	s1d1374x_write_reg(ctrl, BLIZZARD_VNDP, vndp);
+ 	ctrl->refresh_set = hz;
+-	dev_info(ctrl->dev, "refresh %u Hz asked: HNDP %u, VNDP %lu lines (bootloader %d)\n",
+-		 hz, hndp, vndp, ctrl->vndp_boot);
++	dev_dbg(ctrl->dev, "refresh %u Hz asked: HNDP %u, VNDP %lu lines (bootloader %d)\n",
++		hz, hndp, vndp, ctrl->vndp_boot);
+ }
+ 
+ static void s1d1374x_setup_te(struct s1d1374x *ctrl)
+ {
++	static bool told;		/* the timing at info level once */
+ 	u8 hsw = s1d1374x_read_reg(ctrl, BLIZZARD_HSW);
+ 	u8 vsw = s1d1374x_read_reg(ctrl, BLIZZARD_VSW);
+ 	unsigned int hdisp = s1d1374x_read_reg(ctrl, BLIZZARD_HDISP) * 8;
+@@ -315,13 +330,14 @@
+ 	ctrl->pix_tx = pix_tx;
+ 	ctrl->line_upd = line_upd;
+ 
+-	dev_info(ctrl->dev,
++	dev_printk(told ? KERN_DEBUG : KERN_INFO, ctrl->dev,
+ 		 "panel %ux%u, %lu Hz pixel clock, %lu.%lu Hz; tearing effect on %s, line %d (%llu ps a pixel sent, %llu a line scanned)\n",
+ 		 hdisp, vdisp, pix_clk,
+ 		 pix_clk * 10 / ((hdisp + hndp) * (vdisp + vndp)) / 10,
+ 		 pix_clk * 10 / ((hdisp + hndp) * (vdisp + vndp)) % 10,
+ 		 use_ndp ? "non-display periods" : use_hsvs ? "HSYNC|VSYNC" : "VSYNC",
+ 		 ctrl->te_line, pix_tx, line_upd);
++	told = true;
+ }
+ 
+ /* Wait until the last window has been written to the controller's SDRAM */
+@@ -337,6 +353,21 @@
+ 	}
+ }
+ 
++/*
++ * The rate at which an update of w x h pixels takes two scans: its
++ * transfer time plus the setup around it (measured on the N810: about 15%
++ * and 2 ms), as two frame periods, to the nearest Hz. A full 800x480 frame
++ * gives 40 Hz, which a sweep found to be the one even rate: 98 of 120
++ * flips 50 ms apart, against 55-73 at 37-39 and 41 Hz.
++ */
++static unsigned int s1d1374x_two_scan_hz(struct s1d1374x *ctrl, u16 w, u16 h)
++{
++	u64 cost = (u64)w * h * ctrl->pix_tx;		/* ps */
++
++	cost = div_u64(cost * 115, 100) + 2000000000ULL;
++	return (unsigned int)div64_u64(2 * 1000000000000ULL + cost / 2, cost);
++}
++
+ static int s1d1374x_prepare_update(void *data, u16 x, u16 y, u16 w, u16 h,
+ 				   u16 frame_w, u16 frame_h)
+ {
+@@ -359,11 +390,39 @@
+ 		ctrl->te_line = -1;
+ 		if (tearsync)
+ 			s1d1374x_setup_te(ctrl);
+-	} else if (refresh != ctrl->refresh_set) {
++	} else if (refresh && refresh != ctrl->refresh_set) {
+ 		s1d1374x_set_refresh(ctrl, refresh);
+ 		ctrl->te_line = -1;
+ 		if (tearsync)
+ 			s1d1374x_setup_te(ctrl);
++	} else if (!refresh) {
++		/* 0: the bootloader's rate */
++		unsigned int want = refresh_auto ? 0 :
++			s1d1374x_two_scan_hz(ctrl, ctrl->panel_w, ctrl->panel_h);
++
++		/* lines it covers on the panel: a smaller frame is scaled up */
++		u32 oh = ctrl->panel_h && frame_h && frame_h < ctrl->panel_h ?
++			 (u32)h * ctrl->panel_h / frame_h : h;
++
++		if (refresh_auto && ctrl->te_line >= 0 &&
++		    (u64)w * h * ctrl->pix_tx >= (u64)oh * ctrl->line_upd) {
++			/*
++			 * One slow rate, a whole frame's: rates worked out per
++			 * update follow each update's height (scrolling) and
++			 * retune the panel nearly every frame, which puts rows
++			 * of an update in the wrong scan
++			 */
++			want = s1d1374x_two_scan_hz(ctrl, ctrl->panel_w, ctrl->panel_h);
++			ctrl->slow_until = jiffies + msecs_to_jiffies(500);
++		} else if (ctrl->refresh_set && time_before(jiffies, ctrl->slow_until)) {
++			want = ctrl->refresh_set;	/* stay slow a while */
++		}
++		if (want != ctrl->refresh_set) {
++			s1d1374x_set_refresh(ctrl, want);
++			ctrl->te_line = -1;
++			if (tearsync)
++				s1d1374x_setup_te(ctrl);
++		}
+ 	}
+ 
+ 	/*

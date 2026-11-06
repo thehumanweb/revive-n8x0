@@ -1,0 +1,29 @@
+p54spi: add an spi_device_id table
+
+With the devicetree match only, the SPI core warns at registration:
+"SPI driver p54spi has no spi_device_id for st,stlc4560". Add the table
+(it also gives the "spi:stlc4560" module alias).
+
+--- a/drivers/net/wireless/intersil/p54/p54spi.c
++++ b/drivers/net/wireless/intersil/p54/p54spi.c
+@@ -665,6 +665,12 @@
+ };
+ MODULE_DEVICE_TABLE(of, p54spi_of_ids);
+ 
++static const struct spi_device_id p54spi_ids[] = {
++	{ "stlc4560" },
++	{ }
++};
++MODULE_DEVICE_TABLE(spi, p54spi_ids);
++
+ static struct spi_driver p54spi_driver = {
+ 	.driver = {
+ 		.name		= "p54spi",
+@@ -672,6 +678,7 @@
+ 	},
+ 
+ 	.probe		= p54spi_probe,
++	.id_table	= p54spi_ids,
+ 	.remove		= p54spi_remove,
+ };
+ 

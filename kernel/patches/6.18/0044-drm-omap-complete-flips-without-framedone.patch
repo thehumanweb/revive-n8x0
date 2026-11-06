@@ -1,0 +1,173 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] drm/omap: complete manual-update flips that get no FRAMEDONE
+
+A manual-update flip completes only from the FRAMEDONE interrupt. Two
+paths ended an update without it and left the flip pending: RFBI's
+FRAMEDONE timeout released the bus but not the CRTC, and a failing
+update() cleared pending without sending the flip's event. Either way
+the commit's flip_done never completed, so every later page flip was
+refused with -EBUSY, and RFBI's fallback to the internal trigger never
+got to run.
+
+Add dss_mgr_cancel_update(): it disables the LCD channel, stalled
+waiting for the output, and completes the flip the way FRAMEDONE does.
+RFBI's timeout calls it, the update() error path completes the flip
+too, and the timeout work is no longer deferrable (on an idle CPU a
+deferrable 250 ms could be much longer).
+
+---
+--- a/drivers/gpu/drm/omapdrm/omap_crtc.c
++++ b/drivers/gpu/drm/omapdrm/omap_crtc.c
+@@ -106,6 +106,23 @@
+ 	dispc_mgr_enable(priv->dispc, channel, true);
+ }
+ 
++static void omap_crtc_complete_update(struct drm_crtc *crtc);
++
++/*
++ * End a manual update that will never see FRAMEDONE (the output gave up
++ * waiting for it): stop the LCD channel, stalled waiting for the output,
++ * and complete the pending flip as FRAMEDONE would. Otherwise the flip
++ * stays pending and every later commit is refused with -EBUSY.
++ */
++void omap_crtc_dss_cancel_update(struct omap_drm_private *priv,
++				 enum omap_channel channel)
++{
++	struct drm_crtc *crtc = priv->channels[channel]->crtc;
++
++	dispc_mgr_enable(priv->dispc, channel, false);
++	omap_crtc_complete_update(crtc);
++}
++
+ /* Called only from the encoder enable/disable and suspend/resume handlers. */
+ void omap_crtc_set_enabled(struct drm_crtc *crtc, bool enable)
+ {
+@@ -342,28 +359,36 @@
+ 	drm_send_event_timestamp_locked(crtc->dev, &e->base, now);
+ }
+ 
+-void omap_crtc_framedone_irq(struct drm_crtc *crtc, uint32_t irqstatus)
++/* A manual update is over: send the flip event and let commits go on. */
++static void omap_crtc_complete_update(struct drm_crtc *crtc)
+ {
+ 	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
++	unsigned long flags;
+ 
+-	if (!omap_crtc->framedone_handler)
+-		return;
+-
+-	omap_crtc->framedone_handler(omap_crtc->framedone_handler_data);
+-
+-	spin_lock(&crtc->dev->event_lock);
++	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+ 	/* Send the vblank event if one has been requested. */
+ 	if (omap_crtc->event) {
+ 		omap_crtc_send_framedone_event(crtc, omap_crtc->event);
+ 		omap_crtc->event = NULL;
+ 	}
+ 	omap_crtc->pending = false;
+-	spin_unlock(&crtc->dev->event_lock);
++	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+ 
+ 	/* Wake up omap_atomic_complete. */
+ 	wake_up(&omap_crtc->pending_wait);
+ }
+ 
++void omap_crtc_framedone_irq(struct drm_crtc *crtc, uint32_t irqstatus)
++{
++	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
++
++	if (!omap_crtc->framedone_handler)
++		return;
++
++	omap_crtc->framedone_handler(omap_crtc->framedone_handler_data);
++	omap_crtc_complete_update(crtc);
++}
++
+ void omap_crtc_flush(struct drm_crtc *crtc)
+ {
+ 	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
+@@ -381,19 +406,19 @@
+ 	struct omap_crtc *omap_crtc =
+ 			container_of(data, struct omap_crtc, update_work.work);
+ 	struct omap_dss_device *dssdev = omap_crtc->pipe->output;
+-	struct drm_device *dev = omap_crtc->base.dev;
+ 	int ret;
+ 
+ 	if (!dssdev || !dssdev->dsi_ops || !dssdev->dsi_ops->update)
+ 		return;
+ 
++	/*
++	 * No update, no FRAMEDONE: complete the flip here. Clearing pending
++	 * alone dropped the flip's event, and the commit waiting for it was
++	 * never done, so every later one got -EBUSY.
++	 */
+ 	ret = dssdev->dsi_ops->update(dssdev);
+-	if (ret < 0) {
+-		spin_lock_irq(&dev->event_lock);
+-		omap_crtc->pending = false;
+-		spin_unlock_irq(&dev->event_lock);
+-		wake_up(&omap_crtc->pending_wait);
+-	}
++	if (ret < 0)
++		omap_crtc_complete_update(&omap_crtc->base);
+ }
+ 
+ static s16 omap_crtc_s31_32_to_s2_8(s64 coef)
+--- a/drivers/gpu/drm/omapdrm/dss/omapdss.h
++++ b/drivers/gpu/drm/omapdrm/dss/omapdss.h
+@@ -277,6 +277,8 @@
+ 
+ void omap_crtc_dss_start_update(struct omap_drm_private *priv,
+ 				       enum omap_channel channel);
++void omap_crtc_dss_cancel_update(struct omap_drm_private *priv,
++				 enum omap_channel channel);
+ void omap_crtc_set_enabled(struct drm_crtc *crtc, bool enable);
+ int omap_crtc_dss_enable(struct omap_drm_private *priv, enum omap_channel channel);
+ void omap_crtc_dss_disable(struct omap_drm_private *priv, enum omap_channel channel);
+@@ -300,6 +302,7 @@
+ int dss_mgr_enable(struct omap_dss_device *dssdev);
+ void dss_mgr_disable(struct omap_dss_device *dssdev);
+ void dss_mgr_start_update(struct omap_dss_device *dssdev);
++void dss_mgr_cancel_update(struct omap_dss_device *dssdev);
+ int dss_mgr_register_framedone_handler(struct omap_dss_device *dssdev,
+ 		void (*handler)(void *), void *data);
+ void dss_mgr_unregister_framedone_handler(struct omap_dss_device *dssdev,
+--- a/drivers/gpu/drm/omapdrm/dss/output.c
++++ b/drivers/gpu/drm/omapdrm/dss/output.c
+@@ -113,6 +113,12 @@
+ 					   dssdev->dispc_channel);
+ }
+ 
++void dss_mgr_cancel_update(struct omap_dss_device *dssdev)
++{
++	omap_crtc_dss_cancel_update(dssdev->dss->mgr_ops_priv,
++				    dssdev->dispc_channel);
++}
++
+ int dss_mgr_register_framedone_handler(struct omap_dss_device *dssdev,
+ 		void (*handler)(void *), void *data)
+ {
+--- a/drivers/gpu/drm/omapdrm/dss/rfbi.c
++++ b/drivers/gpu/drm/omapdrm/dss/rfbi.c
+@@ -344,6 +344,8 @@
+ 		rfbi->te = false;
+ 	}
+ 	rfbi_update_done(rfbi);
++	/* Stop the stalled LCD channel and complete the flip */
++	dss_mgr_cancel_update(&rfbi->output);
+ }
+ 
+ static int rfbi_update(struct omap_dss_device *dssdev)
+@@ -610,8 +612,9 @@
+ 
+ 	rfbi->pdev = pdev;
+ 	sema_init(&rfbi->bus_sem, 1);
+-	INIT_DEFERRABLE_WORK(&rfbi->framedone_timeout_work,
+-			     rfbi_framedone_timeout_work_callback);
++	/* Not deferrable: on an idle CPU that could be far more than 250 ms */
++	INIT_DELAYED_WORK(&rfbi->framedone_timeout_work,
++			  rfbi_framedone_timeout_work_callback);
+ 	platform_set_drvdata(pdev, rfbi);
+ 
+ 	rfbi->base = devm_platform_ioremap_resource(pdev, 0);

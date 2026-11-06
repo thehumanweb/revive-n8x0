@@ -1,0 +1,28 @@
+drm/omap: dss: don't warn about fck rounding differences
+
+dss_set_fck_rate() warned when the clock framework's rate differed at all
+from the requested one. The request comes from integer division of the
+parent rate, so a few Hz of rounding is normal: on OMAP2420 (N800/N810)
+every boot warned "clk rate mismatch: 131657142 != 131657144". Warn only
+about differences above 10 ppm.
+
+diff -uN a/drivers/gpu/drm/omapdrm/dss/dss.c b/drivers/gpu/drm/omapdrm/dss/dss.c
+--- a/drivers/gpu/drm/omapdrm/dss/dss.c
++++ b/drivers/gpu/drm/omapdrm/dss/dss.c
+@@ -652,8 +652,14 @@
+ 
+ 	dss->dss_clk_rate = clk_get_rate(dss->dss_clk);
+ 
+-	WARN_ONCE(dss->dss_clk_rate != rate, "clk rate mismatch: %lu != %lu",
+-		  dss->dss_clk_rate, rate);
++	/*
++	 * The requested rate comes from integer division of the parent rate
++	 * and may differ from what the clock framework rounds to by a few Hz
++	 * (e.g. 131657142 vs 131657144 on OMAP2420); only warn about a real
++	 * mismatch.
++	 */
++	WARN_ONCE(abs_diff(dss->dss_clk_rate, rate) > rate / 100000,
++		  "clk rate mismatch: %lu != %lu", dss->dss_clk_rate, rate);
+ 
+ 	return 0;
+ }

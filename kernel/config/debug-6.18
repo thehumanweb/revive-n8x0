@@ -1,0 +1,4 @@
+# QEMU debugging: symbol names in oopses. Makes the image too big for the
+# N810 kernel partition (scripts/build-6.18.sh warns).
+# Usage: scripts/prepare-6.18.sh config/debug-6.18
+CONFIG_KALLSYMS=y

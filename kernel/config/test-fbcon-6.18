@@ -1,0 +1,4 @@
+# Test only: text console on the LCD, to watch manual updates keep flowing.
+# Use with: scripts/prepare-6.18.sh config/test-fbcon-6.18; boot with
+# console=ttyS2 console=tty0 (tty0 last, so /dev/console is the LCD).
+CONFIG_FRAMEBUFFER_CONSOLE=y

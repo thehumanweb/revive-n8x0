@@ -1,0 +1,31 @@
+# mbxaccess: Imagination's MBX DDK access driver (GPLv2), for the
+# OMAP2420's PowerVR MBX Lite on Linux 6.18. Out of tree:
+#   kernel/scripts/build-mbx.sh
+obj-m := mbxaccess.o
+mbxaccess-y := \
+	gpl/driver/mbxaccess.o \
+	gpl/driver/malloc_debug.o \
+	services/env/linux/mmap.o \
+	gpl/driver/mbxaccess_iowrapper.o \
+	gpl/driver/mbxaccess_mbxmem.o \
+	gpl/driver/mbxaccess_memwrapper.o \
+	gpl/driver/mbxaccess_mmapwrapper.o \
+	gpl/driver/mbxaccess_procwrapper.o \
+	gpl/driver/mbxaccess_pvrclassjtable.o \
+	gpl/driver/mbxaccess_timerwrapper.o \
+	gpl/driver/mbxaccess_virtmemwrapper.o \
+	services/env/linux/mm.o \
+	services/env/linux/mutex.o
+
+ccflags-y := -I$(src) -I$(src)/gpl/include -I$(src)/includeint \
+	-I$(src)/include -I$(src)/services/include \
+	-I$(src)/services/env/linux -I$(src)/gpl/include/driver \
+	-I$(src)/gpl/include/common -I$(src)/hwdefs \
+	-I$(src)/includeext -I$(src)/system/omap24xx \
+	-I$(src)/system/include \
+	-include linux/version.h \
+	-DAUTOCONF_INCLUDED -DLINUX -DOMAP2420 -DKBUILD -DMBX_GPL \
+	-DMONTAVISTA_PM -DSUPPORT_POWER_MANAGEMENT -DPVR_KERNEL \
+	-DMBXACCESS_DEVICE='"mbx"' -DDBG_MOD_NAME='"KERNL"' \
+	-DPVR_BUILD_TYPE='"release"' -DPVR_BUILD_DIR='"omap2420_linux"' \
+	-DPVR_BUILD_DATE='"6.18"'

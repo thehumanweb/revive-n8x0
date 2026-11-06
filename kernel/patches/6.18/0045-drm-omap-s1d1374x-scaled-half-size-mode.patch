@@ -1,0 +1,176 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] drm/omap: s1d1374x: scale a half-size mode up to the panel
+
+The N8x0's RFBI sends a full 800x480 RGB565 frame to the S1D13745 in
+about 42 ms, so updates can't keep up with the panel's 18 ms scan: the
+frame rate is capped and full-screen updates tear. The controller can
+scale: it takes an input and an output window, and Nokia's omapfb
+used that (OMAPFB_FORMAT_FLAG_DOUBLE, liqbase's low-res mode).
+
+Offer a 400x240 mode on the panel besides 800x480, and have the
+controller scale any frame smaller than the panel (its size read from
+HDISP/VDISP) up to all of it. An update then sends a quarter of the
+pixels. As in Nokia's driver, a frame sent faster than the panel scans
+its output starts in the vertical blank, and the S1D13745's first
+unscaled whole-screen write after scaled ones uses the background data
+source.
+
+---
+--- a/drivers/gpu/drm/panel/panel-sharp-ls041y3.c
++++ b/drivers/gpu/drm/panel/panel-sharp-ls041y3.c
+@@ -288,6 +288,25 @@
+ 	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+ };
+ 
++/*
++ * Half the size in each direction: the S1D13745 scales it up to the panel
++ * (s1d1374x_prepare_update()), so an update sends a quarter of the pixels.
++ */
++static const struct drm_display_mode ls041y3_half_mode = {
++	.clock = 21940,
++	.hdisplay = 400,
++	.hsync_start = 400 + 20,
++	.hsync_end = 400 + 20 + 50,
++	.htotal = 400 + 20 + 50 + 15,
++	.vdisplay = 240,
++	.vsync_start = 240 + 1,
++	.vsync_end = 240 + 1 + 2,
++	.vtotal = 240 + 1 + 2 + 3,
++	.width_mm = 89,
++	.height_mm = 53,
++	.type = DRM_MODE_TYPE_DRIVER,
++};
++
+ static int ls041y3_get_modes(struct drm_panel *panel,
+ 			     struct drm_connector *connector)
+ {
+@@ -300,10 +319,17 @@
+ 	drm_mode_set_name(mode);
+ 	drm_mode_probed_add(connector, mode);
+ 
++	mode = drm_mode_duplicate(connector->dev, &ls041y3_half_mode);
++	if (!mode)
++		return -ENOMEM;
++
++	drm_mode_set_name(mode);
++	drm_mode_probed_add(connector, mode);
++
+ 	connector->display_info.width_mm = ls041y3_mode.width_mm;
+ 	connector->display_info.height_mm = ls041y3_mode.height_mm;
+ 
+-	return 1;
++	return 2;
+ }
+ 
+ static const struct drm_panel_funcs ls041y3_funcs = {
+--- a/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
++++ b/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
+@@ -5,7 +5,8 @@
+  * The controller has its own frame memory and drives the LCD panel; the
+  * host sends it pixel rectangles. Before each RFBI update, set its input
+  * and output window and point the register index at the memory data port,
+- * so the 16-bit pixels DISPC sends next land in the right place.
++ * so the 16-bit pixels DISPC sends next land in the right place. A mode
++ * smaller than the panel is scaled up to it by the controller.
+  *
+  * The bootloader (NOLO on the N800/N810) sets up the controller's PLL,
+  * SDRAM and panel timings; they are kept as found. The RFBI bus timings
+@@ -55,6 +56,7 @@
+ 
+ #define BLIZZARD_SRC_WRITE_LCD		0x00	/* S1D13744 */
+ #define BLIZZARD_SRC_WRITE_LCD_DESTRUCTIVE 0x01	/* S1D13745 */
++#define BLIZZARD_SRC_WRITE_LCD_BACKGROUND 0x00	/* S1D13745 */
+ 
+ struct s1d1374x {
+ 	struct drm_bridge bridge;
+@@ -66,10 +68,13 @@
+ 	struct rfbi_device *rfbi;
+ 	u8 data_source;
+ 	bool identified;
++	bool zoomed;			/* the last update was scaled */
++	unsigned int panel_w, panel_h;	/* from the controller's timing */
+ 
+ 	unsigned long sys_clk;		/* Hz */
+ 	unsigned int we_cycle;		/* ps, the RFBI write cycle */
+ 	int te_line;			/* updates start here; -1: no TE */
++	u64 pix_tx, line_upd;		/* ps to send a pixel, to scan a line */
+ };
+ 
+ static bool tearsync = true;
+@@ -116,6 +121,9 @@
+ 		dev_warn(ctrl->dev, "unknown revision %#04x, assuming S1D13745\n",
+ 			 rev);
+ 	}
++	ctrl->panel_w = s1d1374x_read_reg(ctrl, BLIZZARD_HDISP) * 8;
++	ctrl->panel_h = s1d1374x_read_reg(ctrl, BLIZZARD_VDISP0) |
++		(s1d1374x_read_reg(ctrl, BLIZZARD_VDISP1) & 0x03) << 8;
+ 	ctrl->identified = true;
+ }
+ 
+@@ -264,6 +272,8 @@
+ 	b |= BIT(3);					/* TE output on */
+ 	s1d1374x_write_reg(ctrl, BLIZZARD_NDISP_CTRL_STATUS, b);
+ 	ctrl->te_line = use_hsvs ? 1 : 0;
++	ctrl->pix_tx = pix_tx;
++	ctrl->line_upd = line_upd;
+ 
+ 	dev_info(ctrl->dev,
+ 		 "panel %ux%u, %lu Hz pixel clock, %lu.%lu Hz; tearing effect on %s, line %d (%llu ps a pixel sent, %llu a line scanned)\n",
+@@ -293,6 +303,7 @@
+ 	u8 cmd = BLIZZARD_INPUT_WIN_X_START_0;
+ 	u8 regs[18];
+ 	u16 x_end = w - 1, y_end = h - 1;
++	u16 out_w = w, out_h = h;
+ 
+ 	if (!ctrl->identified) {
+ 		int r = s1d1374x_setup_clocks(ctrl);
+@@ -305,18 +316,45 @@
+ 			s1d1374x_setup_te(ctrl);
+ 	}
+ 
++	/* A smaller frame is scaled up to the whole panel */
++	if (ctrl->panel_w && ctrl->panel_h &&
++	    (w < ctrl->panel_w || h < ctrl->panel_h)) {
++		out_w = ctrl->panel_w;
++		out_h = ctrl->panel_h;
++	}
++
+ 	s1d1374x_wait_line_buffer(ctrl);
+-	if (ctrl->te_line >= 0)
+-		rfbi_set_te_line(ctrl->rfbi, ctrl->te_line);
++	if (ctrl->te_line >= 0) {
++		/*
++		 * A frame sent faster than the panel scans its output starts
++		 * in the vertical blank (Nokia's enable_tearsync())
++		 */
++		bool ahead = (u64)w * h * ctrl->pix_tx < (u64)out_h * ctrl->line_upd;
+ 
+-	/* Input window, then output window (same, no scaling): 0x6c - 0x8a */
++		rfbi_set_te_line(ctrl->rfbi, ahead ? 0 : ctrl->te_line);
++	}
++
++	/* Input window, then output window: 0x6c - 0x8a */
+ 	regs[0] = 0;		regs[1] = 0;		/* X start */
+ 	regs[2] = 0;		regs[3] = 0;		/* Y start */
+ 	regs[4] = x_end;	regs[5] = x_end >> 8;	/* X end */
+ 	regs[6] = y_end;	regs[7] = y_end >> 8;	/* Y end */
+-	memcpy(&regs[8], &regs[0], 8);
++	regs[8] = 0;		regs[9] = 0;
++	regs[10] = 0;		regs[11] = 0;
++	regs[12] = out_w - 1;	regs[13] = (out_w - 1) >> 8;
++	regs[14] = out_h - 1;	regs[15] = (out_h - 1) >> 8;
+ 	regs[16] = BLIZZARD_COLOR_RGB565;		/* 0x8c input format */
+ 	regs[17] = ctrl->data_source;			/* 0x8e data source */
++	/*
++	 * The S1D13745's first unscaled whole-screen write after scaled ones
++	 * goes to the background (Nokia's set_window_regs())
++	 */
++	if (out_w != w || out_h != h)
++		ctrl->zoomed = true;
++	else if (ctrl->zoomed && ctrl->data_source == BLIZZARD_SRC_WRITE_LCD_DESTRUCTIVE) {
++		regs[17] = BLIZZARD_SRC_WRITE_LCD_BACKGROUND;
++		ctrl->zoomed = false;
++	}
+ 
+ 	/* Leaves the register index at 0x90, the display memory data port */
+ 	rfbi_write_command(ctrl->rfbi, &cmd, 1);

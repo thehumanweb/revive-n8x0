@@ -1,0 +1,117 @@
+mmc: omap: cover_switch ready for poll only on a change
+
+The cover switch file notifies a change, as sysfs files can, but like
+every kernfs file it is ready for reading at all times. The Nokia N8x0's
+Maemo DSME select()s it for reading (as it did on the 2.6.21 kernel,
+whose sysfs_poll() reported only changes) and spun on it: 900 reads in
+four seconds. Make it a kernfs file of its own whose poll reports only
+changes; reading and the change notification stay as they were.
+
+--- a/drivers/mmc/host/omap.c
++++ b/drivers/mmc/host/omap.c
+@@ -12,6 +12,7 @@
+ #include <linux/moduleparam.h>
+ #include <linux/init.h>
+ #include <linux/ioport.h>
++#include <linux/kernfs.h>
+ #include <linux/platform_device.h>
+ #include <linux/interrupt.h>
+ #include <linux/dmaengine.h>
+@@ -28,6 +29,8 @@
+ #include <linux/slab.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/platform_data/mmc-omap.h>
++#include <linux/poll.h>
++#include <linux/seq_file.h>
+ #include <linux/workqueue.h>
+ 
+ 
+@@ -109,6 +112,7 @@
+ 	struct work_struct	cover_bh_work;
+ 	struct timer_list       cover_timer;
+ 	unsigned		cover_open;
++	struct kernfs_node	*cover_kn;
+ 
+ 	struct mmc_request      *mrq;
+ 	struct mmc_omap_host    *host;
+@@ -315,18 +319,31 @@
+ 	return 0;
+ }
+ 
+-static ssize_t
+-mmc_omap_show_cover_switch(struct device *dev, struct device_attribute *attr,
+-			   char *buf)
++static int mmc_omap_cover_switch_show(struct seq_file *sf, void *v)
+ {
+-	struct mmc_host *mmc = container_of(dev, struct mmc_host, class_dev);
+-	struct mmc_omap_slot *slot = mmc_priv(mmc);
++	struct kernfs_open_file *of = sf->private;
++	struct mmc_omap_slot *slot = of->kn->priv;
+ 
+-	return sprintf(buf, "%s\n", mmc_omap_cover_is_open(slot) ? "open" :
+-		       "closed");
++	seq_printf(sf, "%s\n", mmc_omap_cover_is_open(slot) ? "open" :
++		   "closed");
++	return 0;
+ }
+ 
+-static DEVICE_ATTR(cover_switch, S_IRUGO, mmc_omap_show_cover_switch, NULL);
++/*
++ * Ready for poll() and select() only on a change, as sysfs was when this
++ * file was added: the Nokia N8x0's DSME select()s it for reading, and a
++ * plain attribute, ready at all times, made it spin.
++ */
++static __poll_t mmc_omap_cover_switch_poll(struct kernfs_open_file *of,
++					   poll_table *wait)
++{
++	return kernfs_generic_poll(of, wait) & (EPOLLERR | EPOLLPRI);
++}
++
++static const struct kernfs_ops mmc_omap_cover_switch_ops = {
++	.seq_show	= mmc_omap_cover_switch_show,
++	.poll		= mmc_omap_cover_switch_poll,
++};
+ 
+ static ssize_t
+ mmc_omap_show_slot_name(struct device *dev, struct device_attribute *attr,
+@@ -872,7 +889,8 @@
+ 	cover_open = mmc_omap_cover_is_open(slot);
+ 	if (cover_open != slot->cover_open) {
+ 		slot->cover_open = cover_open;
+-		sysfs_notify(&slot->mmc->class_dev.kobj, NULL, "cover_switch");
++		if (slot->cover_kn)
++			kernfs_notify(slot->cover_kn);
+ 	}
+ 
+ 	queue_work(system_bh_highpri_wq, &slot->cover_bh_work);
+@@ -1333,10 +1351,16 @@
+ 	}
+ 
+ 	if (slot->pdata->get_cover_state != NULL) {
+-		r = device_create_file(&mmc->class_dev,
+-					&dev_attr_cover_switch);
+-		if (r < 0)
++		slot->cover_kn = __kernfs_create_file(mmc->class_dev.kobj.sd,
++					"cover_switch", S_IFREG | 0444,
++					GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, 0,
++					&mmc_omap_cover_switch_ops, slot,
++					NULL, NULL);
++		if (IS_ERR(slot->cover_kn)) {
++			r = PTR_ERR(slot->cover_kn);
++			slot->cover_kn = NULL;
+ 			goto err_remove_slot_name;
++		}
+ 		queue_work(system_bh_wq, &slot->cover_bh_work);
+ 	}
+ 
+@@ -1356,8 +1380,8 @@
+ 
+ 	if (slot->pdata->name != NULL)
+ 		device_remove_file(&mmc->class_dev, &dev_attr_slot_name);
+-	if (slot->pdata->get_cover_state != NULL)
+-		device_remove_file(&mmc->class_dev, &dev_attr_cover_switch);
++	if (slot->cover_kn)
++		kernfs_remove(slot->cover_kn);
+ 
+ 	cancel_work_sync(&slot->cover_bh_work);
+ 	timer_delete_sync(&slot->cover_timer);

@@ -1,0 +1,21 @@
+ARM: dts: n8x0: TMP105 temperature sensor
+
+The N800/N810 have a TMP105 on I2C1 at 0x48, next to Menelaus (as QEMU's
+n800/n810 machines model them); Maemo's DSME watches it to power off at
+a critical temperature. lm75 drives it as a hwmon device "tmp105".
+
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
+@@ -45,6 +45,12 @@
+ &i2c1 {
+ 	clock-frequency = <400000>;
+ 
++	/* Board temperature, DSME's thermal shutdown (A0 grounded) */
++	temperature-sensor@48 {
++		compatible = "ti,tmp105";
++		reg = <0x48>;
++	};
++
+ 	pmic@72 {
+ 		compatible = "menelaus";
+ 		reg = <0x72>;

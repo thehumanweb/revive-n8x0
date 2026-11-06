@@ -1,0 +1,32 @@
+ARM: /proc/cpuinfo Hardware is the devicetree's model
+
+Booted with a devicetree, every OMAP2420 board shares one machine
+descriptor, so /proc/cpuinfo said "Hardware : Generic OMAP2420
+(Flattened Device Tree)" on the N810. Show the devicetree's model
+instead (of_flat_dt_get_machine_name(), copied, as the flat tree isn't
+kept in that form): "Nokia N810". The descriptor's name stays in
+dump_stack()'s hardware line.
+
+--- a/arch/arm/kernel/setup.c
++++ b/arch/arm/kernel/setup.c
+@@ -1121,6 +1121,20 @@
+ 
+ 	machine_desc = mdesc;
+ 	machine_name = mdesc->name;
++	/*
++	 * Booted with a devicetree, /proc/cpuinfo's Hardware line is the
++	 * board's model ("Nokia N810") rather than the shared machine
++	 * descriptor's name ("Generic OMAP2420 (Flattened Device Tree)")
++	 */
++	if (initial_boot_params) {
++		static char dt_model[64] __ro_after_init;
++		const char *model = of_flat_dt_get_machine_name();
++
++		if (model && *model) {
++			strscpy(dt_model, model, sizeof(dt_model));
++			machine_name = dt_model;
++		}
++	}
+ 	dump_stack_set_arch_desc("%s", mdesc->name);
+ 
+ 	if (mdesc->reboot_mode != REBOOT_HARD)

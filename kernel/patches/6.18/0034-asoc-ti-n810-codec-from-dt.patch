@@ -1,0 +1,56 @@
+ASoC: ti: n810: find the codec by its devicetree node
+
+The N8x0 boots from devicetree only, where the AIC33 is an I2C client
+of the DT ("1-0018"), but the DAI link still named the codec component
+as the board-file device was named ("tlv320aic3x-codec.1-0018"): the
+card waited for it forever, without a word, and the N810 had no sound
+card. Look the codec up by its node (compatible "ti,tlv320aic33").
+
+--- a/sound/soc/ti/n810.c
++++ b/sound/soc/ti/n810.c
+@@ -16,6 +16,7 @@
+ 
+ #include <asm/mach-types.h>
+ #include <linux/gpio/consumer.h>
++#include <linux/of.h>
+ #include <linux/module.h>
+ #include <linux/platform_data/asoc-ti-mcbsp.h>
+ 
+@@ -291,9 +292,21 @@
+ 	     !of_machine_is_compatible("nokia,n810-wimax")))
+ 		return -ENODEV;
+ 
++	/*
++	 * The codec is the AIC33 on I2C2 in the devicetree; its component is
++	 * named after the I2C client ("1-0018"), not the board-file name
++	 */
++	aic33_codecs[0].of_node = of_find_compatible_node(NULL, NULL,
++							  "ti,tlv320aic33");
++	if (!aic33_codecs[0].of_node)
++		return -ENODEV;
++	aic33_codecs[0].name = NULL;
++
+ 	n810_snd_device = platform_device_alloc("soc-audio", -1);
+-	if (!n810_snd_device)
++	if (!n810_snd_device) {
++		of_node_put(aic33_codecs[0].of_node);
+ 		return -ENOMEM;
++	}
+ 
+ 	platform_set_drvdata(n810_snd_device, &snd_soc_n810);
+ 	err = platform_device_add(n810_snd_device);
+@@ -350,12 +363,14 @@
+ 	platform_device_del(n810_snd_device);
+ err1:
+ 	platform_device_put(n810_snd_device);
++	of_node_put(aic33_codecs[0].of_node);
+ 
+ 	return err;
+ }
+ 
+ static void __exit n810_soc_exit(void)
+ {
++	of_node_put(aic33_codecs[0].of_node);
+ 	clk_put(sys_clkout2_src);
+ 	clk_put(sys_clkout2);
+ 	clk_put(func96m_clk);

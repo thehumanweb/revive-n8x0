@@ -1,0 +1,27 @@
+ARM: OMAP2: n8x0: fix the N810 audio amplifier GPIO lookups
+
+The N810 machine driver (sound/soc/ti/n810.c) asks for "headphone" and
+"speaker" GPIOs; the lookup table offered "headset", and named GPIO
+chips "gpio-0-15" and "gpio-80-111", which don't exist: the OMAP2420's
+GPIO banks are "gpio-0-31" ... "gpio-96-127", as the board's other
+tables use. snd-soc-n810 failed to load (-ENOENT), so there was no
+sound card. The amplifiers are GPIO 10 and 101 (Nokia's
+board-n800-audio.c: RX44_HEADSET_AMP_GPIO, RX44_SPEAKER_AMP_GPIO).
+
+--- a/arch/arm/mach-omap2/board-n8x0.c
++++ b/arch/arm/mach-omap2/board-n8x0.c
+@@ -480,11 +480,12 @@
+ 	.late_init = n8x0_menelaus_late_init,
+ };
+ 
++/* The N810's headset (GPIO 10) and speaker (GPIO 101) amplifiers */
+ static struct gpiod_lookup_table nokia810_asoc_gpio_table = {
+ 	.dev_id = "soc-audio",
+ 	.table = {
+-		GPIO_LOOKUP("gpio-0-15", 10, "headset", GPIO_ACTIVE_HIGH),
+-		GPIO_LOOKUP("gpio-80-111", 21, "speaker", GPIO_ACTIVE_HIGH),
++		GPIO_LOOKUP("gpio-0-31", 10, "headphone", GPIO_ACTIVE_HIGH),
++		GPIO_LOOKUP("gpio-96-127", 5, "speaker", GPIO_ACTIVE_HIGH),
+ 		{ }
+ 	},
+ };

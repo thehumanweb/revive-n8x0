@@ -1,0 +1,154 @@
+drm/display: bridge connector: optional HDMI, audio and CEC support
+
+DRM_BRIDGE_CONNECTOR unconditionally selects the HDMI state, HDMI audio
+and HDMI CEC helpers (and through them the CEC core), so every driver
+that terminates its bridge chain with drm_bridge_connector, omapdrm
+included, carries them. The N800/N810 have a fixed panel and no HDMI;
+the helpers and the CEC core cost 13 KB of the compressed image, which
+must fit a 2.1 MB partition.
+
+Add DRM_BRIDGE_CONNECTOR_HDMI (default y, visible with EXPERT). Without
+it the helpers aren't selected, the calls into them compile away, and
+drm_bridge_connector_init() refuses bridge chains with HDMI, HDMI/DP
+audio or CEC operations (-EOPNOTSUPP) instead of silently ignoring them.
+
+--- a/drivers/gpu/drm/display/Kconfig
++++ b/drivers/gpu/drm/display/Kconfig
+@@ -16,12 +16,24 @@
+ 
+ config DRM_BRIDGE_CONNECTOR
+ 	bool
+-	select DRM_DISPLAY_HDMI_AUDIO_HELPER
+-	select DRM_DISPLAY_HDMI_CEC_HELPER
+-	select DRM_DISPLAY_HDMI_STATE_HELPER
++	select DRM_DISPLAY_HDMI_AUDIO_HELPER if DRM_BRIDGE_CONNECTOR_HDMI
++	select DRM_DISPLAY_HDMI_CEC_HELPER if DRM_BRIDGE_CONNECTOR_HDMI
++	select DRM_DISPLAY_HDMI_STATE_HELPER if DRM_BRIDGE_CONNECTOR_HDMI
+ 	help
+ 	  DRM connector implementation terminating DRM bridge chains.
+ 
++config DRM_BRIDGE_CONNECTOR_HDMI
++	bool "HDMI, HDMI/DP audio and CEC support in the bridge connector" if EXPERT
++	depends on DRM_BRIDGE_CONNECTOR
++	default y
++	help
++	  Support bridges with HDMI, HDMI or DisplayPort audio, or CEC
++	  operations in the bridge connector. This pulls in the HDMI state,
++	  audio and CEC helpers and the CEC core.
++
++	  Say N only for devices without such outputs (e.g. a fixed panel);
++	  bridge chains using these operations then fail to get a connector.
++
+ config DRM_DISPLAY_DP_AUX_CEC
+ 	bool "Enable DisplayPort CEC-Tunneling-over-AUX HDMI support"
+ 	select DRM_DISPLAY_DP_HELPER
+--- a/drivers/gpu/drm/display/drm_bridge_connector.c
++++ b/drivers/gpu/drm/display/drm_bridge_connector.c
+@@ -125,6 +125,9 @@
+ 	struct drm_bridge *bridge_hdmi_cec;
+ };
+ 
++/* Without it, no HDMI, audio or CEC bridge is ever recorded below */
++#define BRIDGE_CONNECTOR_HDMI IS_ENABLED(CONFIG_DRM_BRIDGE_CONNECTOR_HDMI)
++
+ #define to_drm_bridge_connector(x) \
+ 	container_of(x, struct drm_bridge_connector, base)
+ 
+@@ -213,7 +216,7 @@
+ 	if (detect) {
+ 		status = detect->funcs->detect(detect, connector);
+ 
+-		if (hdmi)
++		if (BRIDGE_CONNECTOR_HDMI && hdmi)
+ 			drm_atomic_helper_connector_hdmi_hotplug(connector, status);
+ 
+ 		drm_bridge_connector_hpd_notify(connector, status);
+@@ -240,7 +243,7 @@
+ 		to_drm_bridge_connector(connector);
+ 	struct drm_bridge *hdmi = bridge_connector->bridge_hdmi;
+ 
+-	if (hdmi)
++	if (BRIDGE_CONNECTOR_HDMI && hdmi)
+ 		drm_atomic_helper_connector_hdmi_force(connector);
+ }
+ 
+@@ -264,7 +267,7 @@
+ 		to_drm_bridge_connector(connector);
+ 
+ 	drm_atomic_helper_connector_reset(connector);
+-	if (bridge_connector->bridge_hdmi)
++	if (BRIDGE_CONNECTOR_HDMI && bridge_connector->bridge_hdmi)
+ 		__drm_atomic_helper_connector_hdmi_reset(connector,
+ 							 connector->state);
+ }
+@@ -357,7 +360,7 @@
+ 	struct drm_bridge_connector *bridge_connector =
+ 		to_drm_bridge_connector(connector);
+ 
+-	if (bridge_connector->bridge_hdmi)
++	if (BRIDGE_CONNECTOR_HDMI && bridge_connector->bridge_hdmi)
+ 		return drm_hdmi_connector_mode_valid(connector, mode);
+ 
+ 	return MODE_OK;
+@@ -369,7 +372,7 @@
+ 	struct drm_bridge_connector *bridge_connector =
+ 		to_drm_bridge_connector(connector);
+ 
+-	if (bridge_connector->bridge_hdmi)
++	if (BRIDGE_CONNECTOR_HDMI && bridge_connector->bridge_hdmi)
+ 		return drm_atomic_helper_connector_hdmi_check(connector, state);
+ 
+ 	return 0;
+@@ -681,6 +684,13 @@
+ 			bridge_connector->bridge_detect = bridge;
+ 		if (bridge->ops & DRM_BRIDGE_OP_MODES)
+ 			bridge_connector->bridge_modes = bridge;
++		if (!BRIDGE_CONNECTOR_HDMI &&
++		    (bridge->ops & (DRM_BRIDGE_OP_HDMI |
++				    DRM_BRIDGE_OP_HDMI_AUDIO |
++				    DRM_BRIDGE_OP_DP_AUDIO |
++				    DRM_BRIDGE_OP_HDMI_CEC_NOTIFIER |
++				    DRM_BRIDGE_OP_HDMI_CEC_ADAPTER)))
++			return ERR_PTR(-EOPNOTSUPP);
+ 		if (bridge->ops & DRM_BRIDGE_OP_HDMI) {
+ 			if (bridge_connector->bridge_hdmi)
+ 				return ERR_PTR(-EBUSY);
+@@ -772,7 +782,7 @@
+ 	if (connector_type == DRM_MODE_CONNECTOR_Unknown)
+ 		return ERR_PTR(-EINVAL);
+ 
+-	if (bridge_connector->bridge_hdmi) {
++	if (BRIDGE_CONNECTOR_HDMI && bridge_connector->bridge_hdmi) {
+ 		if (!connector->ycbcr_420_allowed)
+ 			supported_formats &= ~BIT(HDMI_COLORSPACE_YUV420);
+ 
+@@ -794,8 +804,9 @@
+ 			return ERR_PTR(ret);
+ 	}
+ 
+-	if (bridge_connector->bridge_hdmi_audio ||
+-	    bridge_connector->bridge_dp_audio) {
++	if (BRIDGE_CONNECTOR_HDMI &&
++	    (bridge_connector->bridge_hdmi_audio ||
++	     bridge_connector->bridge_dp_audio)) {
+ 		struct device *dev;
+ 		struct drm_bridge *bridge;
+ 
+@@ -816,7 +827,7 @@
+ 			return ERR_PTR(ret);
+ 	}
+ 
+-	if (bridge_connector->bridge_hdmi_cec &&
++	if (BRIDGE_CONNECTOR_HDMI && bridge_connector->bridge_hdmi_cec &&
+ 	    bridge_connector->bridge_hdmi_cec->ops & DRM_BRIDGE_OP_HDMI_CEC_NOTIFIER) {
+ 		bridge = bridge_connector->bridge_hdmi_cec;
+ 
+@@ -827,7 +838,7 @@
+ 			return ERR_PTR(ret);
+ 	}
+ 
+-	if (bridge_connector->bridge_hdmi_cec &&
++	if (BRIDGE_CONNECTOR_HDMI && bridge_connector->bridge_hdmi_cec &&
+ 	    bridge_connector->bridge_hdmi_cec->ops & DRM_BRIDGE_OP_HDMI_CEC_ADAPTER) {
+ 		bridge = bridge_connector->bridge_hdmi_cec;
+ 

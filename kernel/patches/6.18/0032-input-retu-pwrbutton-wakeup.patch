@@ -1,0 +1,28 @@
+Input: retu-pwrbutton - wake the system from suspend
+
+The Retu power key (Nokia 770, N800, N810) could not wake the system
+from suspend to RAM: its interrupt was never armed for wakeup. Make the
+device a wakeup source with its interrupt as wake IRQ; regmap-irq passes
+the wake setting on to Retu's interrupt line.
+
+--- a/drivers/input/misc/retu-pwrbutton.c
++++ b/drivers/input/misc/retu-pwrbutton.c
+@@ -25,6 +25,7 @@
+ #include <linux/mfd/retu.h>
+ #include <linux/interrupt.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_wakeirq.h>
+ 
+ #define RETU_STATUS_PWRONX (1 << 5)
+ 
+@@ -73,7 +74,9 @@
+ 	if (error)
+ 		return error;
+ 
+-	return 0;
++	/* The power key wakes the system from suspend */
++	device_init_wakeup(&pdev->dev, true);
++	return devm_pm_set_wake_irq(&pdev->dev, irq);
+ }
+ 
+ static struct platform_driver retu_pwrbutton_driver = {

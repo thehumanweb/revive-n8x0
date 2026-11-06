@@ -1,0 +1,121 @@
+ARM: OMAP2: n8x0-maemo: /sys/devices/platform/musb_hdrc/mode
+
+DSME's peripheral module reads the USB cable and role from
+/sys/devices/platform/musb_hdrc/mode ("b_idle", "b_peripheral",
+"a_host", ...). It opens it once, early in the initfs, and select()s it
+for reading. musb's mode attribute is now below musb-tusb/
+musb-hdrc.<n>.auto, and like every kernfs file reads as ready at all
+times: linked to, it made DSME spin (900 reads in a minute). Present
+the file at boot with the state musb last notified (0029, "b_idle"
+until then), polling only changes as the gpio-switch state files do.
+
+--- a/arch/arm/mach-omap2/n8x0-maemo.c
++++ b/arch/arm/mach-omap2/n8x0-maemo.c
+@@ -14,6 +14,8 @@
+  *    to the Tahvo backlight.
+  *  - /sys/devices/platform/gpio-switch/<name>/state: the GPIO switches
+  *    (keyboard slide, lock, headphone jack, GPS) from NOLO's tags.
++ *  - /sys/devices/platform/musb_hdrc/mode: the USB role and cable state
++ *    ("b_idle", "b_peripheral", "a_host", ...), which DSME reads.
+  */
+ 
+ #include <linux/backlight.h>
+@@ -34,6 +36,7 @@
+ #include <linux/suspend.h>
+ #include <linux/sysfs.h>
+ #include <linux/unaligned.h>
++#include <linux/usb/musb.h>
+ #include <linux/workqueue.h>
+ 
+ #include "common.h"
+@@ -517,6 +520,60 @@
+ 		platform_device_put(pdev);
+ }
+ 
++#if IS_BUILTIN(CONFIG_USB_MUSB_HDRC)
++/*
++ * DSME opens musb_hdrc/mode once, early in the initfs, and select()s it
++ * for reading. musb's own mode attribute moved (musb-tusb/
++ * musb-hdrc.<n>.auto) and, as every kernfs file, reads as ready at all
++ * times, so DSME spun on it: a file of its own with the state musb last
++ * notified, polling only changes.
++ */
++static const char *musb_mode = "b_idle";
++static struct kernfs_node *musb_mode_kn;
++
++static int musb_mode_show(struct seq_file *sf, void *v)
++{
++	seq_printf(sf, "%s\n", READ_ONCE(musb_mode));
++	return 0;
++}
++
++static const struct kernfs_ops musb_mode_ops = {
++	.seq_show	= musb_mode_show,
++	.poll		= n8x0_switch_state_poll,
++};
++
++static int n8x0_musb_mode_notify(struct notifier_block *nb,
++				 unsigned long state, void *name)
++{
++	WRITE_ONCE(musb_mode, name);
++	if (!IS_ERR_OR_NULL(musb_mode_kn))
++		kernfs_notify(musb_mode_kn);
++	return NOTIFY_OK;
++}
++
++static struct notifier_block n8x0_musb_mode_nb = {
++	.notifier_call = n8x0_musb_mode_notify,
++};
++
++static void __init n8x0_maemo_musb_init(void)
++{
++	struct platform_device *pdev;
++
++	pdev = platform_device_register_simple("musb_hdrc",
++					       PLATFORM_DEVID_NONE, NULL, 0);
++	if (IS_ERR(pdev))
++		return;
++	musb_mode_kn = __kernfs_create_file(pdev->dev.kobj.sd, "mode",
++				S_IFREG | 0444, GLOBAL_ROOT_UID,
++				GLOBAL_ROOT_GID, 0, &musb_mode_ops,
++				NULL, NULL, NULL);
++	blocking_notifier_chain_register(&musb_mode_notifier,
++					 &n8x0_musb_mode_nb);
++}
++#else
++static inline void n8x0_maemo_musb_init(void) { }
++#endif
++
+ static int __init n8x0_maemo_init(void)
+ {
+ 	struct device_node *chosen;
+@@ -544,6 +601,7 @@
+ 
+ 	n8x0_maemo_omapfb_init();
+ 	n8x0_maemo_switches_init();
++	n8x0_maemo_musb_init();
+ 
+ 	return sysfs_create_file(power_kobj, &sleep_while_idle_attr.attr);
+ }
+--- a/arch/arm/mach-omap2/Kconfig
++++ b/arch/arm/mach-omap2/Kconfig
+@@ -265,6 +265,7 @@
+ 	depends on MACH_NOKIA_N8X0 && PROC_FS
+ 	depends on BACKLIGHT_CLASS_DEVICE=y
+ 	depends on GPIOLIB && INPUT=y
++	depends on USB_MUSB_HDRC=y || USB_MUSB_HDRC=n
+ 	help
+ 	  Interfaces Maemo's initfs (linuxrc, DSME, BME, kicker) expects
+ 	  from Nokia's 2.6.21 kernel: /proc/bootreason and
+@@ -272,8 +273,9 @@
+ 	  /sys/power/sleep_while_idle, the OMAP watchdog as /dev/omap_wdt,
+ 	  the Retu watchdog as /sys/devices/platform/retu-watchdog/period,
+ 	  omapfb's backlight_level and backlight_max for the Tahvo
+-	  backlight, and the GPIO switches from NOLO's tags as
+-	  /sys/devices/platform/gpio-switch/<name>/state.
++	  backlight, the GPIO switches from NOLO's tags as
++	  /sys/devices/platform/gpio-switch/<name>/state, and musb's mode
++	  as /sys/devices/platform/musb_hdrc/mode.
+ 
+ config MACH_NOKIA_N8X0
+ 	bool "Nokia N800/N810"

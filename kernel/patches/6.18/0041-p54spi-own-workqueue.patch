@@ -1,0 +1,80 @@
+wifi: p54spi: run the worker on a workqueue of its own
+
+p54spi's worker sends the commands and frames to the chip and takes its
+replies, and ran on mac80211's ordered workqueue. Bringing the interface
+up, p54_config() waits for statistics replies with the wiphy lock held;
+the worker that would send the request and take the reply could wait
+behind work needing that lock, so each wait ran into its one second
+timeout (five warnings on a Nokia N810). Give it an ordered workqueue of
+its own.
+
+--- a/drivers/net/wireless/intersil/p54/p54spi.c
++++ b/drivers/net/wireless/intersil/p54/p54spi.c
+@@ -373,7 +373,7 @@
+ 	struct spi_device *spi = config;
+ 	struct p54s_priv *priv = spi_get_drvdata(spi);
+ 
+-	ieee80211_queue_work(priv->hw, &priv->work);
++	queue_work(priv->wq, &priv->work);
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -461,7 +461,7 @@
+ 	list_add_tail(&di->tx_list, &priv->tx_pending);
+ 	spin_unlock_irqrestore(&priv->tx_lock, flags);
+ 
+-	ieee80211_queue_work(priv->hw, &priv->work);
++	queue_work(priv->wq, &priv->work);
+ }
+ 
+ static void p54spi_work(struct work_struct *work)
+@@ -603,10 +603,21 @@
+ 		goto err_free;
+ 	}
+ 
++	/*
++	 * The worker sends commands and frames and takes the replies; on
++	 * mac80211's ordered workqueue it can wait behind work that needs the
++	 * wiphy lock, which is held while p54_config() waits for a reply.
++	 */
++	priv->wq = alloc_ordered_workqueue("p54spi", 0);
++	if (!priv->wq) {
++		ret = -ENOMEM;
++		goto err_free_gpio_power;
++	}
++
+ 	ret = request_irq(spi->irq, p54spi_interrupt, IRQF_NO_AUTOEN, "p54spi", priv->spi);
+ 	if (ret < 0) {
+ 		dev_err(&priv->spi->dev, "request_irq() failed");
+-		goto err_free_gpio_power;
++		goto err_destroy_wq;
+ 	}
+ 
+ 	priv->irq = spi->irq;
+@@ -637,6 +648,8 @@
+ err_free_common:
+ 	release_firmware(priv->firmware);
+ 	free_irq(priv->irq, spi);
++err_destroy_wq:
++	destroy_workqueue(priv->wq);
+ err_free_gpio_power:
+ 	gpiod_put(priv->gpio_powerdown);
+ err_free:
+@@ -651,6 +664,7 @@
+ 	p54_unregister_common(priv->hw);
+ 
+ 	free_irq(priv->irq, spi);
++	destroy_workqueue(priv->wq);
+ 	gpiod_put(priv->gpio_powerdown);
+ 	release_firmware(priv->firmware);
+ 
+--- a/drivers/net/wireless/intersil/p54/p54spi.h
++++ b/drivers/net/wireless/intersil/p54/p54spi.h
+@@ -95,6 +95,7 @@
+ 	struct ieee80211_hw *hw;
+ 	struct spi_device *spi;
+ 
++	struct workqueue_struct *wq;
+ 	struct work_struct work;
+ 
+ 	struct mutex mutex;

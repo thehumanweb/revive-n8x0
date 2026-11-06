@@ -1,0 +1,249 @@
+# Size: the zImage (with appended DTB) must fit NOLO's 0x220000 kernel
+# partition. Built in: what the kernel and the stock initfs boot use
+# (OneNAND/jffs2, Retu/Tahvo, watchdogs, display, serial, unix sockets).
+# Drivers for later (USB, MMC, sound, WLAN, input, ...) are modules for
+# the rootfs. Merged after config/local-6.18 by scripts/prepare-6.18.sh.
+CONFIG_CC_OPTIMIZE_FOR_SIZE=y
+CONFIG_KERNEL_XZ=y
+# Debugging and tracing that ends up in the image
+# CONFIG_FTRACE is not set
+# CONFIG_KPROBES is not set
+# CONFIG_PROFILING is not set
+# CONFIG_PERF_EVENTS is not set
+# CONFIG_IKCONFIG is not set
+# No symbol names in oopses (~240 KB of the image): decode the addresses
+# against build/obj-6.18.58/System.map. For debugging in QEMU, where the
+# size doesn't matter, prepare without this fragment.
+# CONFIG_KALLSYMS is not set
+# CONFIG_SLUB_DEBUG is not set
+# CONFIG_DEBUG_GPIO is not set
+# CONFIG_BLK_DEBUG_FS is not set
+# CONFIG_USB_GADGET_DEBUG is not set
+# CONFIG_SND_DEBUG is not set
+# CONFIG_SND_VERBOSE_PROCFS is not set
+# CONFIG_IO_URING is not set
+# CONFIG_BPF_SYSCALL is not set
+# CONFIG_CGROUPS is not set
+# CONFIG_NAMESPACES is not set
+# CONFIG_AUDIT is not set
+# Nothing the 2420 has
+# CONFIG_PCI is not set
+# CONFIG_ATA is not set
+# CONFIG_NET_VENDOR_TI is not set
+# CONFIG_TI_CPSW is not set
+# CONFIG_PHYLIB is not set
+# CONFIG_ETHERNET is not set
+# CONFIG_OMAP2_DSS_VENC is not set
+# CONFIG_OMAP2_DSS_HDMI_COMMON is not set
+# CONFIG_OMAP4_DSS_HDMI is not set
+# CONFIG_OMAP5_DSS_HDMI is not set
+# CONFIG_OMAP2_DSS_SDI is not set
+# CONFIG_OMAP2_DSS_DSI is not set
+# CONFIG_DRM_MIPI_DSI is not set
+# CONFIG_TI_EDMA is not set
+# CONFIG_TI_DMA_CROSSBAR is not set
+# CONFIG_OMAP_IOMMU is not set
+# CONFIG_TI_PIPE3 is not set
+# CONFIG_PHY_TI_GMII_SEL is not set
+# CONFIG_OMAP_CONTROL_PHY is not set
+# CONFIG_TI_SOC_THERMAL is not set
+# CONFIG_TI_PWMSS is not set
+# CONFIG_REGULATOR_CPCAP is not set
+# CONFIG_REGULATOR_LP872X is not set
+# CONFIG_REGULATOR_LP873X is not set
+# CONFIG_REGULATOR_LP87565 is not set
+# CONFIG_REGULATOR_PALMAS is not set
+# CONFIG_REGULATOR_PBIAS is not set
+# CONFIG_REGULATOR_TI_ABB is not set
+# CONFIG_REGULATOR_TPS65023 is not set
+# CONFIG_REGULATOR_TPS6507X is not set
+# CONFIG_REGULATOR_TPS65217 is not set
+# CONFIG_REGULATOR_TPS65218 is not set
+# CONFIG_REGULATOR_TPS65219 is not set
+# CONFIG_REGULATOR_TPS65910 is not set
+# CONFIG_REGULATOR_TWL4030 is not set
+# Networking: unix sockets and IPv4 built in, the rest modules or off
+# CONFIG_IPV6 is not set
+# CONFIG_XFRM_USER is not set
+# CONFIG_NET_KEY is not set
+# CONFIG_INET_ESP is not set
+# CONFIG_NET_SCHED is not set
+# CONFIG_NETFILTER is not set
+# CONFIG_BRIDGE is not set
+# CONFIG_VLAN_8021Q is not set
+# CONFIG_NET_DSA is not set
+# CONFIG_CAN is not set
+# CONFIG_ETHTOOL_NETLINK is not set
+# CONFIG_IP_PNP is not set
+# WLAN (p54spi, config/local-6.18) as modules; an unsigned regdb, so that cfg80211
+# doesn't pull X.509/PKCS#7 and the keyring in built in
+CONFIG_CFG80211=m
+CONFIG_MAC80211=m
+CONFIG_CFG80211_CERTIFICATION_ONUS=y
+# CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is not set
+# No cellular modem
+# CONFIG_PHONET is not set
+# Filesystems: jffs2, proc, sysfs, tmpfs built in
+CONFIG_EXT4_FS=m
+# CONFIG_EXT2_FS is not set
+CONFIG_FAT_FS=m
+CONFIG_MSDOS_FS=m
+CONFIG_VFAT_FS=m
+# CONFIG_UBIFS_FS is not set
+# CONFIG_NFS_FS is not set
+# CONFIG_NFSD is not set
+# CONFIG_ROOT_NFS is not set
+# CONFIG_SQUASHFS is not set
+# CONFIG_BTRFS_FS is not set
+# CONFIG_ZRAM is not set
+# Later peripherals: modules; MMC and USB built in, as Maemo had them:
+# DSME's peripheral module opens mmc_host/mmc{0,1}/cover_switch and
+# musb_hdrc/mode once at its start, in the initfs, before any rootfs
+# module could load (+64 KB, +74 KB)
+CONFIG_SCSI=m
+CONFIG_MMC=y
+CONFIG_MMC_OMAP=y
+CONFIG_HID=m
+CONFIG_USB_COMMON=y
+CONFIG_USB=y
+CONFIG_USB_GADGET=y
+CONFIG_USB_MUSB_HDRC=y
+CONFIG_NOP_USB_XCEIV=y
+CONFIG_SOUND=m
+CONFIG_SND=m
+CONFIG_MEDIA_SUPPORT=m
+# CONFIG_INPUT_JOYSTICK is not set
+# CONFIG_INPUT_TABLET is not set
+# MTD: OneNAND only
+# CONFIG_MTD_CFI is not set
+# CONFIG_MTD_JEDECPROBE is not set
+# CONFIG_MTD_PHYSMAP is not set
+# CONFIG_MTD_RAW_NAND is not set
+# CONFIG_MTD_SPI_NOR is not set
+# CONFIG_MTD_UBI is not set
+# CONFIG_MTD_OOPS is not set
+# Crypto, compression and block extras
+# CONFIG_CRYPTO_ZSTD is not set
+CONFIG_CRYPTO_RSA=m
+CONFIG_CRYPTO_KRB5=m
+CONFIG_CRYPTO_CAMELLIA=m
+CONFIG_CRYPTO_AUTHENC=m
+CONFIG_CRYPTO_SHA512=m
+CONFIG_CRYPTO_MICHAEL_MIC=m
+CONFIG_CRYPTO_CMAC=m
+CONFIG_CRYPTO_CTS=m
+CONFIG_CRYPTO_DEFLATE=m
+CONFIG_CRYPTO_AES=m
+CONFIG_CRYPTO_ECB=m
+CONFIG_CRYPTO_CBC=m
+CONFIG_CRYPTO_HMAC=m
+CONFIG_CRYPTO_SHA256=m
+CONFIG_CRYPTO_SHA1=m
+# CONFIG_CRYPTO_HW is not set
+# CONFIG_SECURITY is not set
+# CONFIG_IOSCHED_BFQ is not set
+# CONFIG_MQ_IOSCHED_KYBER is not set
+# CONFIG_BLK_DEV_INITRD is not set
+# CONFIG_LOGO is not set
+# Networking extras
+# CONFIG_IP_ADVANCED_ROUTER is not set
+# CONFIG_IP_MULTICAST is not set
+# CONFIG_IP_MROUTE is not set
+# CONFIG_NET_IPIP is not set
+# CONFIG_NET_IPGRE_DEMUX is not set
+# CONFIG_INET_DIAG is not set
+# CONFIG_TCP_CONG_ADVANCED is not set
+# CONFIG_SYN_COOKIES is not set
+# CONFIG_BPF_JIT is not set
+# CONFIG_NET_PKTGEN is not set
+# Network device drivers: only the WLAN menu (p54spi, modules); no
+# Ethernet, PHY, MDIO, USB network, WAN or virtual drivers
+CONFIG_NETDEVICES=y
+# CONFIG_NET_CORE is not set
+# CONFIG_ETHERNET is not set
+# CONFIG_PHYLIB is not set
+# CONFIG_USB_NET_DRIVERS is not set
+# CONFIG_WAN is not set
+# CONFIG_PPP is not set
+# CONFIG_SLIP is not set
+# Other boards' DRM drivers (they pull the DP/HDMI helpers into omapdrm)
+# CONFIG_DRM_TILCDC is not set
+# CONFIG_DRM_PANEL_DSI_CM is not set
+# CONFIG_DRM_PANEL_LG_LB035Q02 is not set
+# CONFIG_DRM_PANEL_NEC_NL8048HL11 is not set
+# CONFIG_DRM_PANEL_SHARP_LS037V7DW01 is not set
+# CONFIG_DRM_PANEL_SONY_ACX565AKM is not set
+# CONFIG_DRM_PANEL_EDP is not set
+# CONFIG_DRM_PANEL_SIMPLE is not set
+# CONFIG_DRM_PANEL_TPO_TD028TTEC1 is not set
+# CONFIG_DRM_PANEL_TPO_TD043MTEA1 is not set
+# CONFIG_DRM_DISPLAY_CONNECTOR is not set
+# CONFIG_DRM_I2C_NXP_TDA998X is not set
+# CONFIG_DRM_SIMPLE_BRIDGE is not set
+# CONFIG_DRM_TI_TFP410 is not set
+# CONFIG_DRM_TI_TPD12S015 is not set
+# No HDMI: drop the bridge connector's HDMI/audio/CEC helpers (0014)
+# CONFIG_DRM_BRIDGE_CONNECTOR_HDMI is not set
+# CONFIG_REMOTEPROC is not set
+# CONFIG_QUOTA is not set
+# CONFIG_KEYS is not set
+# Serial: the OMAP UARTs only
+# CONFIG_SERIAL_8250_DEPRECATED_OPTIONS is not set
+# CONFIG_SERIAL_8250_16550A_VARIANTS is not set
+# CONFIG_SERIAL_8250_EXTENDED is not set
+# CONFIG_SERIAL_8250_FSL is not set
+# CONFIG_SERIAL_8250_DMA is not set
+CONFIG_SERIAL_8250_NR_UARTS=4
+CONFIG_SERIAL_8250_RUNTIME_UARTS=4
+# Misc
+# CONFIG_THERMAL is not set
+# CONFIG_MAILBOX is not set
+# CONFIG_IOMMU_SUPPORT is not set
+# CONFIG_MEDIA_CEC_SUPPORT is not set
+# CONFIG_SND_OSSEMUL is not set
+# CONFIG_BINFMT_MISC is not set
+# (CONFIG_POSIX_MQUEUE stays: BME's nosemu_init needs it)
+# CONFIG_NVMEM_SYSFS is not set
+# Other boards' PMICs, GPIO expanders and peripherals
+# CONFIG_MFD_CPCAP is not set
+# CONFIG_MFD_PALMAS is not set
+# CONFIG_MFD_TPS65217 is not set
+# CONFIG_MFD_TI_LP873X is not set
+# CONFIG_MFD_TI_LP87565 is not set
+# CONFIG_MFD_TPS65218 is not set
+# CONFIG_MFD_TPS65219 is not set
+# CONFIG_MFD_TPS65910 is not set
+# CONFIG_TWL4030_CORE is not set
+# CONFIG_TWL6040_CORE is not set
+# CONFIG_MFD_OMAP_USB_HOST is not set
+# CONFIG_GPIO_PCF857X is not set
+# CONFIG_EEPROM_93CX6 is not set
+# CONFIG_PPS is not set
+# CONFIG_PTP_1588_CLOCK is not set
+# CONFIG_RC_CORE is not set
+# CONFIG_W1 is not set
+# CONFIG_LCD_CLASS_DEVICE is not set
+# CONFIG_MACH_NOKIA_N810_WIMAX is not set
+# No L2 cache on the 2420; 128 MB needs no highmem
+# CONFIG_CACHE_L2X0 is not set
+# CONFIG_HIGHMEM is not set
+# CONFIG_KEXEC is not set
+# CONFIG_CRASH_DUMP is not set
+# CONFIG_CRAMFS is not set
+# CONFIG_BLK_DEV_RAM is not set
+CONFIG_BLK_DEV_LOOP=m
+# CONFIG_EFI_PARTITION is not set
+# CONFIG_DEBUG_FS is not set
+# CONFIG_SCHEDSTATS is not set
+# CONFIG_BSD_PROCESS_ACCT is not set
+# Linker and allocator size options
+CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y
+CONFIG_SLUB_TINY=y
+# CONFIG_MODVERSIONS is not set
+# Keys, X.509/PKCS#7 and krb5: only AFS's rxrpc and module signing use them
+# CONFIG_AF_RXRPC is not set
+# CONFIG_CRYPTO_KRB5ENC is not set
+# CONFIG_DNS_RESOLVER is not set
+# CONFIG_SYSTEM_TRUSTED_KEYRING is not set
+# CONFIG_ASYMMETRIC_KEY_TYPE is not set
+# CONFIG_KEYS is not set

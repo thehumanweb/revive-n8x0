@@ -1,0 +1,305 @@
+drm/omap: s1d1374x, rfbi: bus timings from the controller's clocks
+
+The RFBI bus timings came from the bootloader and were lost when the DSS
+was reset at boot (on a real N810 the controller then read as revision
+0x00). Set them as Nokia's omapfb did (blizzard_setup_clocks(),
+calc_reg_timing(), rfbi_convert_timings()): register access timings for
+the controller's input clock (CLKI, the N8x0's 19.2 MHz oscillator),
+then, with its PLL locked, for the system clock the PLL makes, at the
+first RFBI clock divider they fit. RFBI gets rfbi_get_tick_ps() and
+rfbi_set_timings(); the N8x0 DT names the controller's input clock.
+
+--- a/drivers/gpu/drm/omapdrm/dss/dss.h
++++ b/drivers/gpu/drm/omapdrm/dss/dss.h
+@@ -223,6 +223,20 @@
+ void rfbi_write_data(struct rfbi_device *rfbi, const u8 *buf, size_t len);
+ void rfbi_read_data(struct rfbi_device *rfbi, u8 *buf, size_t len);
+ 
++/* Bus timings in picoseconds from the start of a cycle */
++struct rfbi_timings {
++	unsigned int cs_on, cs_off;
++	unsigned int we_on, we_off;
++	unsigned int re_on, re_off;
++	unsigned int access;
++	unsigned int we_cycle, re_cycle;
++	unsigned int cs_pulse;
++};
++
++unsigned long rfbi_get_tick_ps(struct rfbi_device *rfbi);
++int rfbi_set_timings(struct rfbi_device *rfbi, const struct rfbi_timings *t,
++		     int div);
++
+ struct dss_lcd_mgr_config {
+ 	enum dss_io_pad_mode io_pad_mode;
+ 
+--- a/drivers/gpu/drm/omapdrm/dss/rfbi.c
++++ b/drivers/gpu/drm/omapdrm/dss/rfbi.c
+@@ -15,6 +15,7 @@
+ 
+ #define DSS_SUBSYS_NAME "RFBI"
+ 
++#include <linux/clk.h>
+ #include <linux/component.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+@@ -44,6 +45,8 @@
+ #define RFBI_READ		0x0058
+ #define RFBI_STATUS		0x005c
+ #define RFBI_CONFIG0		0x0060
++#define RFBI_ONOFF_TIME0	0x0064
++#define RFBI_CYCLE_TIME0	0x0068
+ #define RFBI_DATA_CYCLE1_0	0x006c
+ 
+ #define RFBI_CONTROL_ENABLE	BIT(0)
+@@ -53,7 +56,7 @@
+ #define RFBI_CONFIG0_PARALLEL_MASK	(3 << 0)
+ #define RFBI_CONFIG0_PARALLEL_8		(0 << 0)
+ #define RFBI_CONFIG0_PARALLEL_16	(3 << 0)
+-#define RFBI_CONFIG0_CLKDIV2		BIT(4)	/* timing, set by bootloader */
++#define RFBI_CONFIG0_CLKDIV2		BIT(4)	/* timing ticks: L4 clock / 2 */
+ 
+ struct rfbi_device {
+ 	struct platform_device *pdev;
+@@ -173,6 +176,66 @@
+ 	}
+ }
+ 
++/*
++ * Bus timings, set by the client for its controller (Nokia's omapfb did so
++ * from the controller's clock; the bootloader's don't survive a DSS reset).
++ * RFBI counts in L4 interface clock ticks, optionally halved.
++ */
++unsigned long rfbi_get_tick_ps(struct rfbi_device *rfbi)
++{
++	struct clk *ick = clk_get(NULL, "dss_ick");
++	unsigned long rate;
++
++	if (IS_ERR(ick))
++		return 0;
++	rate = clk_get_rate(ick);
++	clk_put(ick);
++
++	return rate ? 1000000000UL / (rate / 1000) : 0;
++}
++
++/* With the bus held. After Nokia's rfbi_convert_timings(). */
++int rfbi_set_timings(struct rfbi_device *rfbi, const struct rfbi_timings *t,
++		     int div)
++{
++	unsigned long tick = rfbi_get_tick_ps(rfbi) * div;
++	unsigned int cson, csoff, weon, weoff, reon, reoff;
++	unsigned int actim, wecyc, recyc, cspulse;
++	u32 l;
++
++	if (!tick || div < 1 || div > 2)
++		return -EINVAL;
++
++#define TICKS(ps)	DIV_ROUND_UP(ps, tick)
++	weon = TICKS(t->we_on);
++	weoff = max(TICKS(t->we_off), weon + 1);
++	reon = TICKS(t->re_on);
++	reoff = max(TICKS(t->re_off), reon + 1);
++	cson = TICKS(t->cs_on);
++	csoff = max3(TICKS(t->cs_off), cson + 1, max(weoff, reoff));
++	actim = max(TICKS(t->access), reon + 1);
++	wecyc = max(TICKS(t->we_cycle), weoff);
++	recyc = max(TICKS(t->re_cycle), reoff);
++	cspulse = TICKS(t->cs_pulse);
++#undef TICKS
++
++	if (weon > 0x0f || reon > 0x0f || cson > 0x0f || weoff > 0x3f ||
++	    reoff > 0x3f || csoff > 0x3f || actim > 0x3f || wecyc > 0x3f ||
++	    recyc > 0x3f || cspulse > 0x3f)
++		return -ERANGE;
++
++	rfbi_write_reg(rfbi, RFBI_ONOFF_TIME0, cson | csoff << 4 | weon << 10 |
++		       weoff << 14 | reon << 20 | reoff << 24);
++	rfbi_write_reg(rfbi, RFBI_CYCLE_TIME0, wecyc | recyc << 6 |
++		       cspulse << 12 | actim << 22);
++	l = rfbi_read_reg(rfbi, RFBI_CONFIG0) & ~RFBI_CONFIG0_CLKDIV2;
++	if (div == 2)
++		l |= RFBI_CONFIG0_CLKDIV2;
++	rfbi_write_reg(rfbi, RFBI_CONFIG0, l);
++
++	return 0;
++}
++
+ /* -----------------------------------------------------------------------------
+  * Manual update
+  */
+@@ -368,10 +431,7 @@
+ {
+ 	u32 l;
+ 
+-	/*
+-	 * No soft reset: the bootloader set the bus timings for the
+-	 * controller (ONOFF/CYCLE_TIME0, CONFIG0 clock divider).
+-	 */
++	/* The client sets the bus timings (ONOFF/CYCLE_TIME0, clock divider) */
+ 	l = rfbi_read_reg(rfbi, RFBI_SYSCONFIG);
+ 	l |= (1 << 0) | (2 << 3);		/* autoidle, smart idle */
+ 	rfbi_write_reg(rfbi, RFBI_SYSCONFIG, l);
+--- a/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
++++ b/drivers/gpu/drm/omapdrm/dss/s1d1374x.c
+@@ -8,18 +8,22 @@
+  * so the 16-bit pixels DISPC sends next land in the right place.
+  *
+  * The bootloader (NOLO on the N800/N810) sets up the controller's PLL,
+- * SDRAM and panel timings; they are kept as found. The panel, on port 1,
+- * is the next bridge.
++ * SDRAM and panel timings; they are kept as found. The RFBI bus timings
++ * are set here from the controller's clocks, as Nokia's driver did: first
++ * for its input clock, then, once its PLL is locked, for the system clock.
++ * The panel, on port 1, is the next bridge.
+  *
+  * Register use after Nokia's omapfb blizzard.c (Imre Deak, Juha Yrjölä).
+  */
+ 
+ #define DSS_SUBSYS_NAME "S1D1374X"
+ 
++#include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/jiffies.h>
+ #include <linux/kernel.h>
++#include <linux/math64.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/of_graph.h>
+@@ -33,6 +37,10 @@
+ 
+ #define BLIZZARD_REV_CODE		0x00
+ #define BLIZZARD_CONFIG			0x02
++#define BLIZZARD_PLL_DIV		0x04
++#define BLIZZARD_PLL_CLOCK_SYNTH_0	0x08
++#define BLIZZARD_PLL_CLOCK_SYNTH_1	0x0a
++#define BLIZZARD_CLK_SRC		0x0e
+ #define BLIZZARD_INPUT_WIN_X_START_0	0x6c
+ #define BLIZZARD_NDISP_CTRL_STATUS	0xe8
+ 
+@@ -47,6 +55,7 @@
+ 	struct device *dev;
+ 	struct device_node *rfbi_node;
+ 	struct gpio_desc *powerdown;
++	struct clk *ext_clk;
+ 	struct rfbi_device *rfbi;
+ 	u8 data_source;
+ 	bool identified;
+@@ -89,6 +98,79 @@
+ 	ctrl->identified = true;
+ }
+ 
++/*
++ * Register access timings for a system clock of sysclk Hz, at the first
++ * RFBI clock divider they fit (Nokia's calc_reg_timing(): CS on at 0, WE
++ * and RE on at 2 ns, access 12.2 ns later, cycles 2 SYSCLK + 2 ns).
++ */
++static int s1d1374x_set_timings(struct s1d1374x *ctrl, unsigned long sysclk)
++{
++	unsigned long tick = rfbi_get_tick_ps(ctrl->rfbi);
++	unsigned int systim = 1000000000 / (sysclk / 1000);	/* ps */
++	struct rfbi_timings t;
++	int div;
++
++	for (div = 1; tick && div <= 2; div++) {
++		unsigned long bus = tick * div;
++
++#define R(ps)	roundup((ps), bus)
++		t.cs_on = 0;
++		t.we_on = R(2000);
++		t.re_on = R(2000);
++		t.access = R(t.re_on + 12200);
++		t.we_off = R(t.we_on + 1000);
++		t.re_off = R(t.re_on + 13000);
++		t.cs_off = R(t.re_off + 1000);
++		t.we_cycle = max_t(unsigned int, R(2 * systim + 2000), t.we_off);
++		t.re_cycle = max_t(unsigned int, R(2 * systim + 2000), t.re_off);
++		t.cs_pulse = 0;
++#undef R
++		if (!rfbi_set_timings(ctrl->rfbi, &t, div))
++			return 0;
++	}
++
++	dev_err(ctrl->dev, "no RFBI timings for a %lu Hz controller\n",
++		sysclk);
++	return -ERANGE;
++}
++
++/* Bus timings for the input clock, then for the PLL's (blizzard_setup_clocks) */
++static int s1d1374x_setup_clocks(struct s1d1374x *ctrl)
++{
++	unsigned long ext = ctrl->ext_clk ? clk_get_rate(ctrl->ext_clk) : 0;
++	unsigned long sys = ext;
++	u8 src, pll_div;
++	int r;
++
++	if (!ext)
++		ext = sys = 19200000;	/* the N8x0's oscillator */
++
++	r = s1d1374x_set_timings(ctrl, ext);
++	if (r)
++		return r;
++
++	pll_div = s1d1374x_read_reg(ctrl, BLIZZARD_PLL_DIV);
++	if (!(pll_div & BIT(7))) {
++		dev_err(ctrl->dev, "PLL not locked\n");
++		return -ENODEV;
++	}
++
++	src = s1d1374x_read_reg(ctrl, BLIZZARD_CLK_SRC);
++	if (!(src & (3 << 1))) {	/* system clock from the PLL */
++		u32 mul = s1d1374x_read_reg(ctrl, BLIZZARD_PLL_CLOCK_SYNTH_0) |
++			  (s1d1374x_read_reg(ctrl, BLIZZARD_PLL_CLOCK_SYNTH_1) &
++			   0x0f) << 11;
++
++		sys = div_u64((u64)ext * mul, (pll_div & 0x3f) + 1);
++	}
++
++	r = s1d1374x_set_timings(ctrl, sys);
++	if (!r)
++		dev_info(ctrl->dev, "system clock %lu Hz (input %lu Hz)\n",
++			 sys, ext);
++	return r;
++}
++
+ /* Wait until the last window has been written to the controller's SDRAM */
+ static void s1d1374x_wait_line_buffer(struct s1d1374x *ctrl)
+ {
+@@ -109,8 +191,13 @@
+ 	u8 regs[18];
+ 	u16 x_end = w - 1, y_end = h - 1;
+ 
+-	if (!ctrl->identified)
++	if (!ctrl->identified) {
++		int r = s1d1374x_setup_clocks(ctrl);
++
++		if (r)
++			return r;
+ 		s1d1374x_identify(ctrl);
++	}
+ 
+ 	s1d1374x_wait_line_buffer(ctrl);
+ 
+@@ -194,6 +281,12 @@
+ 		return dev_err_probe(&pdev->dev, PTR_ERR(ctrl->powerdown),
+ 				     "powerdown GPIO\n");
+ 
++	/* The controller's input clock (CLKI): its rate sets the bus timings */
++	ctrl->ext_clk = devm_clk_get_optional_enabled(&pdev->dev, NULL);
++	if (IS_ERR(ctrl->ext_clk))
++		return dev_err_probe(&pdev->dev, PTR_ERR(ctrl->ext_clk),
++				     "input clock\n");
++
+ 	ctrl->next_bridge = devm_drm_of_get_bridge(&pdev->dev,
+ 						   pdev->dev.of_node, 1, 0);
+ 	if (IS_ERR(ctrl->next_bridge))
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
+@@ -151,6 +151,7 @@
+ 	display-controller {
+ 		compatible = "epson,s1d13745";
+ 		powerdown-gpios = <&gpio1 15 GPIO_ACTIVE_LOW>;	/* high: on */
++		clocks = <&osc_ck>;	/* 19.2 MHz, as Nokia's board code */
+ 
+ 		ports {
+ 			#address-cells = <1>;

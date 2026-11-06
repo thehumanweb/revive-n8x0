@@ -1,0 +1,438 @@
+rtc: Retu RTC as a retu-mfd cell
+
+The N8x0 had no working RTC: Menelaus's finds no 32 kHz oscillator on
+the board, and mainline never had a driver for Retu's (Nokia's lived in
+drivers/cbus in the linux-omap and Maemo trees), so the clock came from
+a saved file and NTP.
+
+Ported from Nokia's 2.6.21 retu-rtc.c (GPL, Copyright (C) 2004, 2005
+Nokia Corporation, Paul Mundt, Igor Stoppa) to an rtc class driver
+(CONFIG_RTC_DRV_RETU, "retu-rtc", a retu-mfd cell without a DT node, so
+both DTBs are unchanged; the N800's Retu gets it too). relghuar's
+rtc-retu.c (linux-stable-nokia-tablets) was not a usable base: it takes
+the date from the system clock, puts the day counter in tm_mday and
+writes RTCHMR, which Nokia never wrote.
+
+The hardware, as Nokia's driver used it: seconds (RTCDSR[5:0]), minutes
+(RTCHMR[5:0]) and hours (RTCHMR[12:8]) run free and wrap at 24 h into an
+8-bit day counter (RTCDSR[15:8]) that sticks at 255. Any write to RTCDSR
+clears the day counter (bit 6, temperature shutdown, written back);
+hours, minutes and seconds can't be set. The counters are read as Nokia
+did (each register twice, DSR again after HMR until it agrees).
+
+The date base: time = base + counter, counter = days * 86400 +
+h * 3600 + m * 60 + s. set_time() clears the day counter and keeps
+base = time - counter (s since 1970, UTC, 64 bits) in memory;
+read_time() returns base + counter. The range is 254 days plus up to
+24 h after the last set_time(); after that the day counter is stuck at
+255 and read_time() fails (-EINVAL), as it does while no base is known.
+Resolution is 1 s (the seconds phase is not settable). The rtc's range
+is 2000..9999.
+
+The base doesn't survive a reboot, and Retu has nowhere to keep it: as
+with Nokia's driver, whose sysfs "time" gave userspace the raw counters,
+userspace keeps the date. The rtc device gets two attributes:
+- base (rw): the base; read -ENODATA while unknown. Saved by userspace
+  after setting the RTC, written back at boot before hwclock -s.
+- counter (ro): the counter in seconds.
+A base write is accepted only while RTCHMAR's alarm field holds 24:60
+(alarm off, as Nokia's driver wrote it on disabling an alarm), which
+set_time() writes (RTC watchdog bits kept). Nokia's reset after a power
+loss, done at probe when RTCCALR reads 0 (CC1 bit 0 pulsed, RTCHMAR
+0x7f3f, RTCCALR 0x00c0), leaves 31:63 there, so a base saved before the
+reset is refused (-ESTALE). RTCHMAR and RTCCALR writes wait for a
+seconds tick (Nokia: they must come within 0.9 s of one); the seconds
+counter is polled for it instead of taking Retu's RTCS interrupt.
+
+So HCTOSYS finds no base at boot ("unable to read the hardware clock");
+S02clock restores it and runs hwclock -s. SYSTOHC must stay off: its
+writes clear the day counter behind userspace's saved base.
+
+Not ported: alarms (RTCA; Nokia's alarm, alarm_expired), the calibration
+and reset sysfs files, the RTC watchdog.
+
+QEMU's Retu model returns 0 for RTCDSR/RTCHMR/RTCHMAR and ignores
+writes to them (cbus.c: "TODO"), so QEMU tests only the plumbing: on
+n810 and n800 the driver probes as rtc0 (hctosys: no base); hwclock -r
+fails until hwclock -w, then reads back what was written (the counter
+stays 0, "seconds counter not running" once); a base write is refused
+(RTCHMAR stays 0). Not on hardware.
+
+diff -ruN a/drivers/mfd/retu-mfd.c b/drivers/mfd/retu-mfd.c
+--- a/drivers/mfd/retu-mfd.c	2026-10-27 06:54:38.541293162 +0100
++++ b/drivers/mfd/retu-mfd.c	2026-10-27 11:42:00.740889894 +0100
+@@ -79,7 +79,10 @@
+ 		.name		= "retu-pwrbutton",
+ 		.resources	= retu_pwrbutton_res,
+ 		.num_resources	= ARRAY_SIZE(retu_pwrbutton_res),
+-	}
++	},
++	{
++		.name		= "retu-rtc",
++	},
+ };
+ 
+ /*
+diff -ruN a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
+--- a/drivers/rtc/Kconfig	2026-10-21 10:32:29.000000000 +0200
++++ b/drivers/rtc/Kconfig	2026-10-27 11:42:00.740889894 +0100
+@@ -655,6 +655,19 @@
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called rtc-rc5t619.
+ 
++config RTC_DRV_RETU
++	tristate "Nokia Retu RTC"
++	depends on MFD_RETU
++	help
++	  If you say yes here you get support for the RTC in Nokia's Retu
++	  (N770, N800, N810): hours, minutes and seconds that can't be set
++	  and a day counter that stops at 255. The date is a base time kept
++	  in memory, which userspace saves and restores through the RTC's
++	  "base" attribute. No alarms.
++
++	  This driver can also be built as a module. If so, the module
++	  will be called rtc-retu.
++
+ config RTC_DRV_S35390A
+ 	tristate "Seiko Instruments S-35390A"
+ 	select BITREVERSE
+diff -ruN a/drivers/rtc/Makefile b/drivers/rtc/Makefile
+--- a/drivers/rtc/Makefile	2026-10-21 10:32:29.000000000 +0200
++++ b/drivers/rtc/Makefile	2026-10-27 11:42:00.739889889 +0100
+@@ -162,6 +162,7 @@
+ obj-$(CONFIG_RTC_DRV_RX8581)	+= rtc-rx8581.o
+ obj-$(CONFIG_RTC_DRV_RZN1)	+= rtc-rzn1.o
+ obj-$(CONFIG_RTC_DRV_RENESAS_RTCA3)	+= rtc-renesas-rtca3.o
++obj-$(CONFIG_RTC_DRV_RETU)	+= rtc-retu.o
+ obj-$(CONFIG_RTC_DRV_S32G)	+= rtc-s32g.o
+ obj-$(CONFIG_RTC_DRV_S35390A)	+= rtc-s35390a.o
+ obj-$(CONFIG_RTC_DRV_S3C)	+= rtc-s3c.o
+diff -ruN a/drivers/rtc/rtc-retu.c b/drivers/rtc/rtc-retu.c
+--- a/drivers/rtc/rtc-retu.c	1970-01-01 01:00:00.000000000 +0100
++++ b/drivers/rtc/rtc-retu.c	2026-10-27 11:41:41.932796805 +0100
+@@ -0,0 +1,325 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Retu RTC
++ *
++ * Ported from Nokia's 2.6.21 drivers/cbus/retu-rtc.c (Copyright (C) 2004,
++ * 2005 Nokia Corporation, Paul Mundt and Igor Stoppa) to an rtc class
++ * driver on the retu-mfd regmap.
++ *
++ * Retu's RTC is not a calendar. It counts seconds (RTCDSR[5:0]), minutes
++ * (RTCHMR[5:0]) and hours (RTCHMR[12:8]) as free-running counters that
++ * wrap at 24 h into an 8-bit day counter (RTCDSR[15:8]), which sticks at
++ * 255. The only write is to RTCDSR: anything written clears the day
++ * counter (bit 6, the temperature shutdown flag, is written back as it
++ * was); hours, minutes and seconds keep running and can't be set.
++ *
++ * So the time is base + counter, counter = days * 86400 + h * 3600 +
++ * m * 60 + s. set_time() clears the day counter and keeps
++ * base = time - counter in memory; read_time() returns base + counter.
++ * The base doesn't survive a reboot: userspace saves it from the "base"
++ * attribute after setting the clock and writes it back at boot, as
++ * Maemo's userspace kept the date for Nokia's driver (which only showed
++ * the raw counters in sysfs). Until a base is known, and once the day
++ * counter has stuck at 255 (254 days and up to 24 h after the last
++ * set_time()), read_time() fails with -EINVAL.
++ *
++ * A base write is accepted only while RTCHMAR holds 24:60 (alarm off, as
++ * Nokia's driver wrote it when an alarm was disabled), which set_time()
++ * writes. Nokia's reset, done at probe when the calibration register
++ * reads 0 (both batteries were empty), leaves 31:63 there, so a base
++ * saved before the counters were reset is refused.
++ *
++ * RTCHMR, RTCHMAR and RTCCALR must be accessed within 0.9 s of a seconds
++ * tick (Nokia's driver waited for the seconds interrupt); here the
++ * seconds counter is polled for the tick before RTCHMAR/RTCCALR writes.
++ *
++ * No alarms.
++ */
++
++#include <linux/delay.h>
++#include <linux/kernel.h>
++#include <linux/mfd/retu.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/platform_device.h>
++#include <linux/rtc.h>
++
++#define RETU_REG_RTCDSR		0x03	/* days [15:8], seconds [5:0] */
++#define RETU_REG_RTCHMR		0x04	/* hours [12:8], minutes [5:0] */
++#define RETU_REG_RTCHMAR	0x05	/* alarm hours/minutes, RTC watchdog */
++#define RETU_REG_RTCCALR	0x06	/* calibration [7:0] */
++
++#define RETU_RTCDSR_TSD		BIT(6)	/* temperature shutdown */
++#define RETU_RTCHMAR_HM		0x1f3f
++#define RETU_RTCHMAR_WD		0x6000
++#define RETU_RTCHMAR_OFF	((24 << 8) | 60)	/* alarm off: time set */
++#define RETU_RTCHMAR_RESET	0x7f3f	/* Nokia's reset: alarm and WD off */
++#define RETU_RTCCALR_DEFAULT	0x00c0
++
++#define RETU_RTC_DAYS_STUCK	255
++
++struct retu_rtc {
++	struct retu_dev *rdev;
++	struct device *dev;
++	struct mutex lock;
++	time64_t base;
++	bool base_valid;
++};
++
++/* Seconds since the day counter was cleared, as Nokia read it */
++static int retu_rtc_counter(struct retu_rtc *rtc, u32 *counter)
++{
++	int dsr, hmr, dsr2, tries = 10;
++	unsigned int d, h, m, s;
++
++	do {
++		/*
++		 * Nokia: "Not being in_interrupt() for a retu rtc IRQ, we
++		 * need to read twice for consistency". DSR again after HMR
++		 * catches a minute, hour or day carry in between.
++		 */
++		retu_read(rtc->rdev, RETU_REG_RTCDSR);
++		dsr = retu_read(rtc->rdev, RETU_REG_RTCDSR);
++		retu_read(rtc->rdev, RETU_REG_RTCHMR);
++		hmr = retu_read(rtc->rdev, RETU_REG_RTCHMR);
++		retu_read(rtc->rdev, RETU_REG_RTCDSR);
++		dsr2 = retu_read(rtc->rdev, RETU_REG_RTCDSR);
++		if (dsr < 0 || hmr < 0 || dsr2 < 0)
++			return -EIO;
++	} while (dsr != dsr2 && --tries);
++	if (!tries)
++		return -EIO;
++
++	d = (dsr >> 8) & 0xff;
++	h = (hmr >> 8) & 0x1f;
++	m = hmr & 0x3f;
++	s = dsr & 0x3f;
++	if (h > 23 || m > 59 || s > 59) {
++		dev_warn_ratelimited(rtc->dev, "bad counters %04x %04x\n",
++				     dsr, hmr);
++		return -EIO;
++	}
++	if (d == RETU_RTC_DAYS_STUCK) {
++		dev_warn_ratelimited(rtc->dev,
++				     "day counter stuck at 255: time unknown\n");
++		return -EINVAL;
++	}
++
++	*counter = ((d * 24 + h) * 60 + m) * 60 + s;
++	return 0;
++}
++
++/* Wait for a seconds tick: RTCHMAR/RTCCALR accesses must follow one */
++static void retu_rtc_barrier(struct retu_rtc *rtc)
++{
++	int s0 = retu_read(rtc->rdev, RETU_REG_RTCDSR) & 0x3f;
++	int i;
++
++	for (i = 0; i < 110; i++) {
++		msleep(10);
++		if ((retu_read(rtc->rdev, RETU_REG_RTCDSR) & 0x3f) != s0)
++			return;
++	}
++	dev_warn_once(rtc->dev, "seconds counter not running\n");
++}
++
++static int retu_rtc_read_time(struct device *dev, struct rtc_time *tm)
++{
++	struct retu_rtc *rtc = dev_get_drvdata(dev);
++	u32 counter;
++	int ret;
++
++	mutex_lock(&rtc->lock);
++	if (!rtc->base_valid) {
++		ret = -EINVAL;
++		goto out;
++	}
++	ret = retu_rtc_counter(rtc, &counter);
++	if (!ret)
++		rtc_time64_to_tm(rtc->base + counter, tm);
++out:
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++static int retu_rtc_set_time(struct device *dev, struct rtc_time *tm)
++{
++	struct retu_rtc *rtc = dev_get_drvdata(dev);
++	time64_t t = rtc_tm_to_time64(tm);
++	u32 counter;
++	int dsr, hmar, ret;
++
++	mutex_lock(&rtc->lock);
++
++	/* Clear the day counter, keep the temperature shutdown flag */
++	dsr = retu_read(rtc->rdev, RETU_REG_RTCDSR);
++	if (dsr < 0) {
++		ret = dsr;
++		goto out;
++	}
++	ret = retu_write(rtc->rdev, RETU_REG_RTCDSR, dsr & RETU_RTCDSR_TSD);
++	if (ret)
++		goto out;
++	ret = retu_rtc_counter(rtc, &counter);
++	if (ret)
++		goto out;
++	rtc->base = t - counter;
++	rtc->base_valid = true;
++
++	/* Mark the counters as set (alarm off), keep the RTC watchdog bits */
++	hmar = retu_read(rtc->rdev, RETU_REG_RTCHMAR);
++	if (hmar >= 0 && (hmar & RETU_RTCHMAR_HM) != RETU_RTCHMAR_OFF) {
++		retu_rtc_barrier(rtc);
++		retu_write(rtc->rdev, RETU_REG_RTCHMAR,
++			   (hmar & RETU_RTCHMAR_WD) | RETU_RTCHMAR_OFF);
++	}
++out:
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++static const struct rtc_class_ops retu_rtc_ops = {
++	.read_time	= retu_rtc_read_time,
++	.set_time	= retu_rtc_set_time,
++};
++
++/* "base": the time (s since 1970, UTC) at which the counter read zero */
++static ssize_t base_show(struct device *dev, struct device_attribute *attr,
++			 char *buf)
++{
++	struct retu_rtc *rtc = dev_get_drvdata(dev->parent);
++	ssize_t ret;
++
++	mutex_lock(&rtc->lock);
++	ret = rtc->base_valid ? sysfs_emit(buf, "%lld\n", rtc->base) : -ENODATA;
++	mutex_unlock(&rtc->lock);
++	return ret;
++}
++
++static ssize_t base_store(struct device *dev, struct device_attribute *attr,
++			  const char *buf, size_t count)
++{
++	struct retu_rtc *rtc = dev_get_drvdata(dev->parent);
++	s64 base;
++	int hmar, ret;
++
++	ret = kstrtos64(buf, 0, &base);
++	if (ret)
++		return ret;
++
++	mutex_lock(&rtc->lock);
++	hmar = retu_read(rtc->rdev, RETU_REG_RTCHMAR);
++	if (hmar < 0) {
++		ret = hmar;
++	} else if ((hmar & RETU_RTCHMAR_HM) != RETU_RTCHMAR_OFF) {
++		/* not set since the counters were reset */
++		ret = -ESTALE;
++	} else {
++		rtc->base = base;
++		rtc->base_valid = true;
++	}
++	mutex_unlock(&rtc->lock);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_RW(base);
++
++/* "counter": seconds counted since the day counter was cleared */
++static ssize_t counter_show(struct device *dev, struct device_attribute *attr,
++			    char *buf)
++{
++	struct retu_rtc *rtc = dev_get_drvdata(dev->parent);
++	u32 counter;
++	int ret;
++
++	mutex_lock(&rtc->lock);
++	ret = retu_rtc_counter(rtc, &counter);
++	mutex_unlock(&rtc->lock);
++	return ret ? ret : sysfs_emit(buf, "%u\n", counter);
++}
++static DEVICE_ATTR_RO(counter);
++
++static struct attribute *retu_rtc_attrs[] = {
++	&dev_attr_base.attr,
++	&dev_attr_counter.attr,
++	NULL
++};
++
++static const struct attribute_group retu_rtc_group = {
++	.attrs = retu_rtc_attrs,
++};
++
++/* Nokia's reset after a power loss (calibration register reads 0) */
++static int retu_rtc_reset(struct retu_rtc *rtc)
++{
++	int cc1, ret;
++
++	cc1 = retu_read(rtc->rdev, RETU_REG_CC1);
++	if (cc1 < 0)
++		return cc1;
++	ret = retu_write(rtc->rdev, RETU_REG_CC1, cc1 | 0x0001);
++	if (!ret)
++		ret = retu_write(rtc->rdev, RETU_REG_CC1, cc1 & ~0x0001);
++	if (ret)
++		return ret;
++
++	retu_rtc_barrier(rtc);
++	/* Alarm and RTC watchdog off; calibration to Nokia's default */
++	ret = retu_write(rtc->rdev, RETU_REG_RTCHMAR, RETU_RTCHMAR_RESET);
++	if (!ret)
++		ret = retu_write(rtc->rdev, RETU_REG_RTCCALR,
++				 RETU_RTCCALR_DEFAULT);
++	return ret;
++}
++
++static int retu_rtc_probe(struct platform_device *pdev)
++{
++	struct retu_dev *rdev = dev_get_drvdata(pdev->dev.parent);
++	struct rtc_device *rtc_dev;
++	struct retu_rtc *rtc;
++	int cal, ret;
++
++	rtc = devm_kzalloc(&pdev->dev, sizeof(*rtc), GFP_KERNEL);
++	if (!rtc)
++		return -ENOMEM;
++	rtc->rdev = rdev;
++	rtc->dev = &pdev->dev;
++	mutex_init(&rtc->lock);
++	platform_set_drvdata(pdev, rtc);
++
++	cal = retu_read(rdev, RETU_REG_RTCCALR);
++	if (cal < 0)
++		return cal;
++	if (!(cal & 0xff)) {
++		dev_info(&pdev->dev, "RTC lost power: resetting it\n");
++		ret = retu_rtc_reset(rtc);
++		if (ret)
++			return ret;
++	}
++
++	rtc_dev = devm_rtc_allocate_device(&pdev->dev);
++	if (IS_ERR(rtc_dev))
++		return PTR_ERR(rtc_dev);
++
++	rtc_dev->ops = &retu_rtc_ops;
++	rtc_dev->range_min = RTC_TIMESTAMP_BEGIN_2000;
++	rtc_dev->range_max = RTC_TIMESTAMP_END_9999;
++
++	ret = rtc_add_group(rtc_dev, &retu_rtc_group);
++	if (ret)
++		return ret;
++
++	return devm_rtc_register_device(rtc_dev);
++}
++
++static struct platform_driver retu_rtc_driver = {
++	.probe		= retu_rtc_probe,
++	.driver		= {
++		.name	= "retu-rtc",
++	},
++};
++module_platform_driver(retu_rtc_driver);
++
++MODULE_ALIAS("platform:retu-rtc");
++MODULE_DESCRIPTION("Retu RTC");
++MODULE_AUTHOR("Paul Mundt and Igor Stoppa");
++MODULE_LICENSE("GPL");

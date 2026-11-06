@@ -1,0 +1,42 @@
+drm/omap: scan out ARGB8888 on OMAP2's graphics plane as XRGB8888
+
+OMAP2's DISPC has no per-pixel alpha, so its graphics plane lists only
+XRGB8888 among the 32-bit formats, and a framebuffer in ARGB8888 can't
+be shown: SDL2's KMS/DRM driver renders into ARGB8888 GBM surfaces
+(the format is fixed in SDL), and every page flip failed with EINVAL.
+With nothing below the plane to blend with, the alpha byte doesn't
+matter: list ARGB8888 for the OMAP2 graphics plane and program it as
+XRGB8888 (mode 0x8; OMAP3's ARGB32 mode 0xc doesn't exist on OMAP2).
+
+--- a/drivers/gpu/drm/omapdrm/dss/dispc.c
++++ b/drivers/gpu/drm/omapdrm/dss/dispc.c
+@@ -1026,10 +1026,16 @@
+ 	dispc_write_reg(dispc, DISPC_OVL_ROW_INC(plane), inc);
+ }
+ 
++static const struct dispc_features omap24xx_dispc_feats;
++
+ static void dispc_ovl_set_color_mode(struct dispc_device *dispc,
+ 				     enum omap_plane_id plane, u32 fourcc)
+ {
+ 	u32 m = 0;
++
++	/* OMAP2 has no per-pixel alpha: its ARGB8888 is XRGB8888 */
++	if (fourcc == DRM_FORMAT_ARGB8888 && dispc->feat == &omap24xx_dispc_feats)
++		fourcc = DRM_FORMAT_XRGB8888;
+ 	if (plane != OMAP_DSS_GFX) {
+ 		switch (fourcc) {
+ 		case DRM_FORMAT_NV12:
+@@ -3989,10 +3995,10 @@
+ 
+ static const u32 *omap2_dispc_supported_color_modes[] = {
+ 
+-	/* OMAP_DSS_GFX */
++	/* OMAP_DSS_GFX; ARGB8888 shown as XRGB8888 */
+ 	COLOR_ARRAY(
+ 	DRM_FORMAT_RGBX4444, DRM_FORMAT_RGB565,
+-	DRM_FORMAT_XRGB8888, DRM_FORMAT_RGB888),
++	DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_RGB888),
+ 
+ 	/* OMAP_DSS_VIDEO1 */
+ 	COLOR_ARRAY(

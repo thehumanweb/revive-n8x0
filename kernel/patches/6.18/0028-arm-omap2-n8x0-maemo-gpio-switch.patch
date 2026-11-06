@@ -1,0 +1,425 @@
+ARM: OMAP2: n8x0-maemo: GPIO switches
+
+Maemo's userspace reads the N8x0's switches as Nokia's gpio-switch
+driver provided them: /sys/devices/platform/gpio-switch/<name>/ with
+state ("open"/"closed", "disconnected"/"connected", "inactive"/
+"active"), type and direction. DSME's peripheral module waits on
+headphone, slide, cam_act and bat_cover; mce uses slide, kb_lock and
+cam_act, multimediad headphone, gpsdriver writes gps_reset and
+gps_wakeup.
+
+As Nokia did, the switches come from NOLO's tags (OMAP_TAG_GPIO_SWITCH:
+name, GPIO, type, inverted, output), with board-n810.c's debounce times
+(200 ms for the slide, lock and headphone; 10 ms otherwise). Inputs
+notify state on a change, and, as 2.6.21's sysfs_poll() did, poll
+reports only changes (kernfs reports files readable at all times,
+which a select() for reading would see continuously). Outputs keep
+NOLO's level and are set by writing state.
+
+The slide and the headphone jack are also an input device ("N8x0
+switches": SW_KEYPAD_SLIDE, SW_HEADPHONE_INSERT) for other userspace.
+
+--- a/arch/arm/mach-omap2/n8x0-maemo.c
++++ b/arch/arm/mach-omap2/n8x0-maemo.c
+@@ -12,13 +12,21 @@
+  *  - /sys/devices/platform/omapfb/panel/backlight_{level,max}, which DSME
+  *    sets to dim and blank the display. omapfb is gone; they pass through
+  *    to the Tahvo backlight.
++ *  - /sys/devices/platform/gpio-switch/<name>/state: the GPIO switches
++ *    (keyboard slide, lock, headphone jack, GPS) from NOLO's tags.
+  */
+ 
+ #include <linux/backlight.h>
++#include <linux/gpio/consumer.h>
++#include <linux/gpio/machine.h>
+ #include <linux/init.h>
++#include <linux/input.h>
++#include <linux/interrupt.h>
+ #include <linux/kernel.h>
++#include <linux/kernfs.h>
+ #include <linux/kobject.h>
+ #include <linux/of.h>
++#include <linux/poll.h>
+ #include <linux/platform_device.h>
+ #include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
+@@ -26,6 +34,7 @@
+ #include <linux/suspend.h>
+ #include <linux/sysfs.h>
+ #include <linux/unaligned.h>
++#include <linux/workqueue.h>
+ 
+ #include "common.h"
+ 
+@@ -49,6 +58,333 @@
+ 	return 0;
+ }
+ 
++/*
++ * GPIO switches, as Nokia's gpio-switch driver had them: NOLO lists them
++ * in its tags (name, GPIO, type, flags), each becomes
++ * /sys/devices/platform/gpio-switch/<name>/ with state, type and
++ * direction. DSME (peripheral module) waits on headphone, slide,
++ * cam_act and bat_cover; mce, multimediad and gpsdriver use them too.
++ * state reads "open"/"closed", "disconnected"/"connected" or
++ * "inactive"/"active", and sets an output.
++ */
++#define OMAP_TAG_GPIO_SWITCH	0x4f06	/* char name[12], u16 gpio, flags:4 type:4 */
++
++#define GPIO_SW_TYPE_COVER	0	/* high: closed */
++#define GPIO_SW_TYPE_CONNECTION	1	/* high: connected */
++#define GPIO_SW_TYPE_ACTIVITY	2	/* high: active */
++#define GPIO_SW_FLAG_INVERTED	0x1
++#define GPIO_SW_FLAG_OUTPUT	0x2
++
++#define N8X0_MAX_SWITCHES	8
++
++struct n8x0_switch {
++	char name[13];
++	u16 gpio;
++	u8 flags;
++	u8 type;
++	unsigned int debounce_ms;
++	unsigned int input_code;	/* SW_*, or 0 */
++	bool state;
++	struct gpio_desc *gpiod;
++	struct kernfs_node *state_kn;
++	struct delayed_work work;
++};
++
++static struct n8x0_switch switches[N8X0_MAX_SWITCHES];
++static int nr_switches;
++static struct input_dev *switch_input;
++
++static const char * const switch_states[][2] = {
++	[GPIO_SW_TYPE_COVER]		= { "open", "closed" },
++	[GPIO_SW_TYPE_CONNECTION]	= { "disconnected", "connected" },
++	[GPIO_SW_TYPE_ACTIVITY]		= { "inactive", "active" },
++};
++
++static const char * const switch_types[] = {
++	[GPIO_SW_TYPE_COVER]		= "cover",
++	[GPIO_SW_TYPE_CONNECTION]	= "connection",
++	[GPIO_SW_TYPE_ACTIVITY]		= "activity",
++};
++
++/*
++ * Nokia's board-n810.c: debounce times (ms) for switches it knew; others
++ * 10 ms. Input events for userspace other than Maemo's.
++ */
++static const struct {
++	const char *name;
++	unsigned int debounce_ms;
++	unsigned int input_code;
++} switch_board[] = {
++	{ "headphone",	200,	SW_HEADPHONE_INSERT },
++	{ "cam_act",	200 },
++	{ "cam_turn",	100 },
++	{ "slide",	200,	SW_KEYPAD_SLIDE },
++	{ "kb_lock",	200 },
++};
++
++static void __init n8x0_maemo_add_switch(const u8 *data, u16 len)
++{
++	struct n8x0_switch *sw;
++	u16 tf;
++	int i;
++
++	if (nr_switches == N8X0_MAX_SWITCHES)
++		return;
++	sw = &switches[nr_switches];
++	strscpy(sw->name, data, sizeof(sw->name));
++	sw->gpio = get_unaligned_le16(data + 12);
++	/* QEMU writes flags | type << 4 right after the GPIO, the bit
++	 * fields of Nokia's struct may start at 16: the other is zero */
++	tf = get_unaligned_le16(data + 14);
++	if (len >= 18)
++		tf |= get_unaligned_le16(data + 16);
++	sw->flags = tf & 0xf;
++	sw->type = (tf >> 4) & 0xf;
++	if (!sw->name[0] || sw->type >= ARRAY_SIZE(switch_types))
++		return;
++
++	sw->debounce_ms = 10;
++	for (i = 0; i < ARRAY_SIZE(switch_board); i++)
++		if (!strcmp(sw->name, switch_board[i].name)) {
++			sw->debounce_ms = switch_board[i].debounce_ms;
++			sw->input_code = switch_board[i].input_code;
++		}
++	nr_switches++;
++}
++
++static bool n8x0_switch_read(struct n8x0_switch *sw)
++{
++	return gpiod_get_raw_value_cansleep(sw->gpiod) ^
++		!!(sw->flags & GPIO_SW_FLAG_INVERTED);
++}
++
++static void n8x0_switch_report(struct n8x0_switch *sw)
++{
++	if (!switch_input || !sw->input_code)
++		return;
++	/* SW_KEYPAD_SLIDE: keyboard out, i.e. the slide "open" */
++	input_report_switch(switch_input, sw->input_code,
++			    sw->type == GPIO_SW_TYPE_COVER ? !sw->state : sw->state);
++	input_sync(switch_input);
++}
++
++static void n8x0_switch_work(struct work_struct *work)
++{
++	struct n8x0_switch *sw = container_of(to_delayed_work(work),
++					      struct n8x0_switch, work);
++	bool state = n8x0_switch_read(sw);
++
++	if (state == sw->state)
++		return;
++	WRITE_ONCE(sw->state, state);
++	kernfs_notify(sw->state_kn);
++	n8x0_switch_report(sw);
++	pr_info("%s (GPIO %d) is now %s\n", sw->name, sw->gpio,
++		switch_states[sw->type][state]);
++}
++
++static irqreturn_t n8x0_switch_irq(int irq, void *data)
++{
++	struct n8x0_switch *sw = data;
++
++	mod_delayed_work(system_wq, &sw->work,
++			 msecs_to_jiffies(sw->debounce_ms));
++	return IRQ_HANDLED;
++}
++
++static int n8x0_switch_state_show(struct seq_file *sf, void *v)
++{
++	struct kernfs_open_file *of = sf->private;
++	struct n8x0_switch *sw = of->kn->priv;
++
++	seq_printf(sf, "%s\n", switch_states[sw->type][READ_ONCE(sw->state)]);
++	return 0;
++}
++
++static ssize_t n8x0_switch_state_write(struct kernfs_open_file *of, char *buf,
++				       size_t bytes, loff_t off)
++{
++	struct n8x0_switch *sw = of->kn->priv;
++	const char * const *str = switch_states[sw->type];
++	char state[16];
++	bool on;
++
++	if (!(sw->flags & GPIO_SW_FLAG_OUTPUT))
++		return -EPERM;
++	if (sscanf(buf, "%15s", state) != 1)
++		return -EINVAL;
++	if (!strcmp(state, str[0]))
++		on = false;
++	else if (!strcmp(state, str[1]))
++		on = true;
++	else
++		return -EINVAL;
++
++	WRITE_ONCE(sw->state, on);
++	gpiod_set_raw_value_cansleep(sw->gpiod,
++				     on ^ !!(sw->flags & GPIO_SW_FLAG_INVERTED));
++	return bytes;
++}
++
++/*
++ * As with 2.6.21's sysfs_poll(), report only a change: kernfs reports
++ * files readable at all times, which would wake a select() for reading
++ * (as DSME uses for the TMP105 alarm) continuously.
++ */
++static __poll_t n8x0_switch_state_poll(struct kernfs_open_file *of,
++				       poll_table *wait)
++{
++	return kernfs_generic_poll(of, wait) & (EPOLLERR | EPOLLPRI);
++}
++
++static const struct kernfs_ops n8x0_switch_state_ops = {
++	.seq_show	= n8x0_switch_state_show,
++	.write		= n8x0_switch_state_write,
++	.poll		= n8x0_switch_state_poll,
++};
++
++static ssize_t type_show(struct device *dev, struct device_attribute *attr,
++			 char *buf)
++{
++	struct n8x0_switch *sw = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%s\n", switch_types[sw->type]);
++}
++
++static ssize_t direction_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct n8x0_switch *sw = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%s\n", sw->flags & GPIO_SW_FLAG_OUTPUT ?
++			  "output" : "input");
++}
++
++static DEVICE_ATTR_RO(type);
++static DEVICE_ATTR_RO(direction);
++
++static struct attribute *n8x0_switch_attrs[] = {
++	&dev_attr_type.attr,
++	&dev_attr_direction.attr,
++	NULL
++};
++ATTRIBUTE_GROUPS(n8x0_switch);
++
++static int __init n8x0_switch_add(struct device *parent, int i)
++{
++	struct n8x0_switch *sw = &switches[i];
++	struct platform_device *pdev;
++	int ret, irq;
++
++	sw->gpiod = devm_gpiod_get_index(parent, "switch", i, GPIOD_ASIS);
++	if (IS_ERR(sw->gpiod))
++		return PTR_ERR(sw->gpiod);
++
++	if (sw->flags & GPIO_SW_FLAG_OUTPUT) {
++		/* Keep what NOLO set */
++		ret = gpiod_direction_output_raw(sw->gpiod,
++				gpiod_get_raw_value_cansleep(sw->gpiod));
++	} else {
++		ret = gpiod_direction_input(sw->gpiod);
++	}
++	if (ret)
++		return ret;
++	sw->state = n8x0_switch_read(sw);
++
++	pdev = platform_device_alloc(sw->name, PLATFORM_DEVID_NONE);
++	if (!pdev)
++		return -ENOMEM;
++	pdev->dev.parent = parent;
++	pdev->dev.groups = n8x0_switch_groups;
++	platform_set_drvdata(pdev, sw);
++	ret = platform_device_add(pdev);
++	if (ret) {
++		platform_device_put(pdev);
++		return ret;
++	}
++
++	sw->state_kn = __kernfs_create_file(pdev->dev.kobj.sd, "state",
++				S_IFREG | 0644, GLOBAL_ROOT_UID,
++				GLOBAL_ROOT_GID, 0, &n8x0_switch_state_ops,
++				sw, NULL, NULL);
++	if (IS_ERR(sw->state_kn))
++		return PTR_ERR(sw->state_kn);
++
++	pr_info("%s (GPIO %d) is %s\n", sw->name, sw->gpio,
++		switch_states[sw->type][sw->state]);
++	if (sw->flags & GPIO_SW_FLAG_OUTPUT)
++		return 0;
++
++	INIT_DELAYED_WORK(&sw->work, n8x0_switch_work);
++	irq = gpiod_to_irq(sw->gpiod);
++	if (irq < 0)
++		return irq;
++	return devm_request_irq(parent, irq, n8x0_switch_irq,
++				IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
++				sw->name, sw);
++}
++
++static void __init n8x0_maemo_switches_init(void)
++{
++	struct gpiod_lookup_table *lookup;
++	struct platform_device *parent;
++	int i, codes = 0;
++
++	if (!nr_switches)
++		return;
++
++	parent = platform_device_register_simple("gpio-switch",
++						 PLATFORM_DEVID_NONE, NULL, 0);
++	if (IS_ERR(parent))
++		return;
++
++	/* The OMAP GPIO banks are "gpio-<first>-<last>", 32 lines each */
++	lookup = kzalloc(struct_size(lookup, table, nr_switches + 1),
++			 GFP_KERNEL);
++	if (!lookup)
++		return;
++	lookup->dev_id = dev_name(&parent->dev);
++	for (i = 0; i < nr_switches; i++) {
++		unsigned int base = switches[i].gpio & ~31;
++
++		lookup->table[i] = (struct gpiod_lookup)GPIO_LOOKUP_IDX(
++			kasprintf(GFP_KERNEL, "gpio-%u-%u", base, base + 31),
++			switches[i].gpio & 31, "switch", i, GPIO_ACTIVE_HIGH);
++		if (switches[i].input_code &&
++		    !(switches[i].flags & GPIO_SW_FLAG_OUTPUT))
++			codes++;
++	}
++	gpiod_add_lookup_table(lookup);
++
++	if (codes) {
++		switch_input = devm_input_allocate_device(&parent->dev);
++		if (switch_input) {
++			switch_input->name = "N8x0 switches";
++			switch_input->phys = "gpio-switch/input0";
++			for (i = 0; i < nr_switches; i++)
++				if (switches[i].input_code &&
++				    !(switches[i].flags & GPIO_SW_FLAG_OUTPUT))
++					input_set_capability(switch_input, EV_SW,
++						switches[i].input_code);
++		}
++	}
++
++	for (i = 0; i < nr_switches; i++) {
++		int ret = n8x0_switch_add(&parent->dev, i);
++
++		if (ret)
++			pr_err("gpio-switch: %s (GPIO %d): %d\n",
++			       switches[i].name, switches[i].gpio, ret);
++	}
++
++	if (switch_input && input_register_device(switch_input))
++		switch_input = NULL;
++	for (i = 0; i < nr_switches; i++)
++		if (!(switches[i].flags & GPIO_SW_FLAG_OUTPUT) &&
++		    !IS_ERR_OR_NULL(switches[i].gpiod))
++			n8x0_switch_report(&switches[i]);
++}
++
+ static void __init n8x0_maemo_parse_tags(const u8 *p, int len)
+ {
+ 	const u8 *end = p + len;
+@@ -68,6 +404,8 @@
+ 				component_versions + component_versions_len,
+ 				sizeof(component_versions) - component_versions_len,
+ 				"%-12.12s%.12s\n", data, data + 12);
++		else if (tag == OMAP_TAG_GPIO_SWITCH && tlen >= 16)
++			n8x0_maemo_add_switch(data, tlen);
+ 
+ 		p = data + ALIGN(tlen, 4);
+ 	}
+@@ -205,6 +543,7 @@
+ 				   component_version_show);
+ 
+ 	n8x0_maemo_omapfb_init();
++	n8x0_maemo_switches_init();
+ 
+ 	return sysfs_create_file(power_kobj, &sleep_while_idle_attr.attr);
+ }
+--- a/arch/arm/mach-omap2/Kconfig
++++ b/arch/arm/mach-omap2/Kconfig
+@@ -264,14 +264,16 @@
+ 	bool "Maemo userspace compatibility for N800/N810"
+ 	depends on MACH_NOKIA_N8X0 && PROC_FS
+ 	depends on BACKLIGHT_CLASS_DEVICE=y
++	depends on GPIOLIB && INPUT=y
+ 	help
+ 	  Interfaces Maemo's initfs (linuxrc, DSME, BME, kicker) expects
+ 	  from Nokia's 2.6.21 kernel: /proc/bootreason and
+ 	  /proc/component_version from NOLO's tags,
+ 	  /sys/power/sleep_while_idle, the OMAP watchdog as /dev/omap_wdt,
+ 	  the Retu watchdog as /sys/devices/platform/retu-watchdog/period,
+-	  and omapfb's backlight_level and backlight_max for the Tahvo
+-	  backlight.
++	  omapfb's backlight_level and backlight_max for the Tahvo
++	  backlight, and the GPIO switches from NOLO's tags as
++	  /sys/devices/platform/gpio-switch/<name>/state.
+ 
+ config MACH_NOKIA_N8X0
+ 	bool "Nokia N800/N810"

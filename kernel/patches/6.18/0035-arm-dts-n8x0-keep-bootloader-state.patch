@@ -1,0 +1,38 @@
+ARM: dts: n8x0: keep the bootloader's GPIO outputs
+
+NOLO drives GPIO outputs nothing in the kernel claims, the S1D13745's
+power-down line (GPIO 15) and the LP5521's among them. The hwmod code
+soft-reset the GPIO banks at boot, which turned them all into inputs:
+on a real N810 the display controller powered down (it read as revision
+0x00, "line buffer not ready", and the screen stayed dark) and the
+LP5521 stopped answering (QEMU's models don't care). Nokia's kernel
+never reset the GPIO banks: ti,no-reset-on-init for them.
+
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n8x0-common.dtsi
+@@ -206,3 +206,25 @@
+ 		powerdown-gpios = <&gpio4 1 GPIO_ACTIVE_LOW>; /* gpio 97 */
+ 	};
+ };
++
++/*
++ * Keep the GPIO outputs NOLO drives that no driver claims (the S1D13745's
++ * power-down line, GPIO 15, among them, until its driver takes it). Nokia's
++ * kernel never reset the GPIO banks; a reset at boot turned GPIO 15 into an
++ * input, which powered the display controller down.
++ */
++&gpio1 {
++	ti,no-reset-on-init;
++};
++
++&gpio2 {
++	ti,no-reset-on-init;
++};
++
++&gpio3 {
++	ti,no-reset-on-init;
++};
++
++&gpio4 {
++	ti,no-reset-on-init;
++};

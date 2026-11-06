@@ -1,0 +1,144 @@
+ARM: OMAP2: n8x0-maemo: omapfb panel backlight_level for DSME
+
+DSME's inactivity blanking (libinactivity-blank) dims and blanks the
+display through /sys/devices/platform/omapfb/panel/backlight_level, and
+Maemo's test server reads backlight_max there. omapfb is gone: register
+a driverless "omapfb" platform device for the directory, with both
+attributes passing through to the "tahvo-backlight" backlight device.
+As with omapfb, a level above the maximum is refused (-EINVAL).
+
+--- a/arch/arm/mach-omap2/Kconfig
++++ b/arch/arm/mach-omap2/Kconfig
+@@ -251,12 +251,15 @@
+ config NOKIA_N8X0_MAEMO_COMPAT
+ 	bool "Maemo userspace compatibility for N800/N810"
+ 	depends on MACH_NOKIA_N8X0 && PROC_FS
++	depends on BACKLIGHT_CLASS_DEVICE=y
+ 	help
+ 	  Interfaces Maemo's initfs (linuxrc, DSME, BME, kicker) expects
+ 	  from Nokia's 2.6.21 kernel: /proc/bootreason and
+ 	  /proc/component_version from NOLO's tags,
+-	  /sys/power/sleep_while_idle, the OMAP watchdog as /dev/omap_wdt
+-	  and the Retu watchdog as /sys/devices/platform/retu-watchdog/period.
++	  /sys/power/sleep_while_idle, the OMAP watchdog as /dev/omap_wdt,
++	  the Retu watchdog as /sys/devices/platform/retu-watchdog/period,
++	  and omapfb's backlight_level and backlight_max for the Tahvo
++	  backlight.
+ 
+ config MACH_NOKIA_N8X0
+ 	bool "Nokia N800/N810"
+--- a/arch/arm/mach-omap2/n8x0-maemo.c
++++ b/arch/arm/mach-omap2/n8x0-maemo.c
+@@ -9,12 +9,17 @@
+  *    conversion keeps them in /chosen/linux,atag-board.
+  *  - /sys/power/sleep_while_idle, which BME clears while charging. Nothing
+  *    acts on it here; the value is kept and changes are logged.
++ *  - /sys/devices/platform/omapfb/panel/backlight_{level,max}, which DSME
++ *    sets to dim and blank the display. omapfb is gone; they pass through
++ *    to the Tahvo backlight.
+  */
+ 
++#include <linux/backlight.h>
+ #include <linux/init.h>
+ #include <linux/kernel.h>
+ #include <linux/kobject.h>
+ #include <linux/of.h>
++#include <linux/platform_device.h>
+ #include <linux/proc_fs.h>
+ #include <linux/seq_file.h>
+ #include <linux/string.h>
+@@ -92,6 +97,85 @@
+ 	__ATTR(sleep_while_idle, 0644, sleep_while_idle_show,
+ 	       sleep_while_idle_store);
+ 
++#define N8X0_BACKLIGHT		"tahvo-backlight"
++
++static ssize_t backlight_level_show(struct device *dev,
++				    struct device_attribute *attr, char *buf)
++{
++	struct backlight_device *bd = backlight_device_get_by_name(N8X0_BACKLIGHT);
++	ssize_t ret;
++
++	if (!bd)
++		return -ENODEV;
++	ret = sysfs_emit(buf, "%d\n", bd->props.brightness);
++	put_device(&bd->dev);
++	return ret;
++}
++
++static ssize_t backlight_level_store(struct device *dev,
++				     struct device_attribute *attr,
++				     const char *buf, size_t n)
++{
++	struct backlight_device *bd;
++	unsigned long level;
++	int ret;
++
++	if (kstrtoul(buf, 10, &level))
++		return -EINVAL;
++
++	bd = backlight_device_get_by_name(N8X0_BACKLIGHT);
++	if (!bd)
++		return -ENODEV;
++	ret = backlight_device_set_brightness(bd, level);
++	put_device(&bd->dev);
++	return ret ? ret : n;
++}
++
++static ssize_t backlight_max_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct backlight_device *bd = backlight_device_get_by_name(N8X0_BACKLIGHT);
++	ssize_t ret;
++
++	if (!bd)
++		return -ENODEV;
++	ret = sysfs_emit(buf, "%d\n", bd->props.max_brightness);
++	put_device(&bd->dev);
++	return ret;
++}
++
++static DEVICE_ATTR_RW(backlight_level);
++static DEVICE_ATTR_RO(backlight_max);
++
++static struct attribute *omapfb_panel_attrs[] = {
++	&dev_attr_backlight_level.attr,
++	&dev_attr_backlight_max.attr,
++	NULL
++};
++
++static const struct attribute_group omapfb_panel_group = {
++	.name	= "panel",
++	.attrs	= omapfb_panel_attrs,
++};
++
++static const struct attribute_group *omapfb_groups[] = {
++	&omapfb_panel_group,
++	NULL
++};
++
++/* A device with no driver, for its sysfs directory */
++static void __init n8x0_maemo_omapfb_init(void)
++{
++	struct platform_device *pdev;
++
++	pdev = platform_device_alloc("omapfb", PLATFORM_DEVID_NONE);
++	if (!pdev)
++		return;
++	pdev->dev.groups = omapfb_groups;
++	if (platform_device_add(pdev))
++		platform_device_put(pdev);
++}
++
+ static int __init n8x0_maemo_init(void)
+ {
+ 	struct device_node *chosen;
+@@ -117,6 +201,8 @@
+ 		proc_create_single("component_version", 0444, NULL,
+ 				   component_version_show);
+ 
++	n8x0_maemo_omapfb_init();
++
+ 	return sysfs_create_file(power_kobj, &sleep_while_idle_attr.attr);
+ }
+ late_initcall(n8x0_maemo_init);

@@ -1,0 +1,56 @@
+wifi: p54: wake up for every DTIM in power save
+
+p54_set_ps() programs all four PSM wake intervals with
+conf.listen_interval. p54 does not set max_listen_interval, so this is
+mac80211's default of 5 beacons regardless of the AP's DTIM period. With
+a DTIM period of 1 or 3 the firmware is told to sleep across DTIM
+beacons and can miss buffered broadcast/multicast frames.
+
+Nokia's own UMAC for the same STLC45xx LM20 firmware (umac.ko 2.0.7,
+dpsm_start()/dpsm_lmac()) programs the intervals with the DTIM period
+and uses a beacon_rssi_skip_max of 60, as does the former stlc45xx
+driver. Do the same, but never exceed the listen interval advertised to
+the AP. mac80211 only enables PS once the DTIM period is known, so
+conf.ps_dtim_period is valid here whenever PSM is requested.
+
+Not yet tested on hardware.
+
+--- a/drivers/net/wireless/intersil/p54/fwio.c
++++ b/drivers/net/wireless/intersil/p54/fwio.c
+@@ -597,7 +597,7 @@
+ 	struct sk_buff *skb;
+ 	struct p54_psm *psm;
+ 	unsigned int i;
+-	u16 mode;
++	u16 mode, interval;
+ 
+ 	if (priv->hw->conf.flags & IEEE80211_CONF_PS &&
+ 	    !priv->powersave_override)
+@@ -611,16 +611,24 @@
+ 	if (!skb)
+ 		return -ENOMEM;
+ 
++	/*
++	 * Wake up for every DTIM beacon, like Nokia's umac does, so that
++	 * buffered broadcast/multicast traffic is not missed. Never sleep
++	 * longer than the listen interval we advertised to the AP.
++	 */
++	interval = priv->hw->conf.listen_interval;
++	if (priv->hw->conf.ps_dtim_period)
++		interval = min_t(u16, interval, priv->hw->conf.ps_dtim_period);
++
+ 	psm = skb_put(skb, sizeof(*psm));
+ 	psm->mode = cpu_to_le16(mode);
+ 	psm->aid = cpu_to_le16(priv->aid);
+ 	for (i = 0; i < ARRAY_SIZE(psm->intervals); i++) {
+-		psm->intervals[i].interval =
+-			cpu_to_le16(priv->hw->conf.listen_interval);
++		psm->intervals[i].interval = cpu_to_le16(interval);
+ 		psm->intervals[i].periods = cpu_to_le16(1);
+ 	}
+ 
+-	psm->beacon_rssi_skip_max = 200;
++	psm->beacon_rssi_skip_max = 60;
+ 	psm->rssi_delta_threshold = 0;
+ 	psm->nr = 1;
+ 	psm->exclude[0] = WLAN_EID_TIM;

@@ -1,0 +1,162 @@
+ARM: OMAP2: n8x0: Maemo compatibility (bootreason, component_version, sleep_while_idle)
+
+CONFIG_NOKIA_N8X0_MAEMO_COMPAT: /proc/bootreason and /proc/component_version
+from NOLO's tags (needs 0003), and /sys/power/sleep_while_idle, which
+Maemo's linuxrc and BME write.
+diff -uN a/arch/arm/mach-omap2/Kconfig b/arch/arm/mach-omap2/Kconfig
+--- a/arch/arm/mach-omap2/Kconfig
++++ b/arch/arm/mach-omap2/Kconfig
+@@ -247,6 +247,16 @@
+ 
+ config MACH_NOKIA_N810_WIMAX
+ 	bool
++
++config NOKIA_N8X0_MAEMO_COMPAT
++	bool "Maemo userspace compatibility for N800/N810"
++	depends on MACH_NOKIA_N8X0 && PROC_FS
++	help
++	  Interfaces Maemo's initfs (linuxrc, DSME, BME, kicker) expects
++	  from Nokia's 2.6.21 kernel: /proc/bootreason and
++	  /proc/component_version from NOLO's tags,
++	  /sys/power/sleep_while_idle, the OMAP watchdog as /dev/omap_wdt
++	  and the Retu watchdog as /sys/devices/platform/retu-watchdog/period.
+ 
+ config MACH_NOKIA_N8X0
+ 	bool "Nokia N800/N810"
+diff -uN a/arch/arm/mach-omap2/Makefile b/arch/arm/mach-omap2/Makefile
+--- a/arch/arm/mach-omap2/Makefile
++++ b/arch/arm/mach-omap2/Makefile
+@@ -210,6 +210,7 @@
+ # Specific board support
+ obj-$(CONFIG_MACH_OMAP_GENERIC)		+= board-generic.o pdata-quirks.o
+ obj-$(CONFIG_MACH_NOKIA_N8X0)		+= board-n8x0.o
++obj-$(CONFIG_NOKIA_N8X0_MAEMO_COMPAT)	+= n8x0-maemo.o
+ 
+ # Platform specific device init code
+ 
+diff -uN a/arch/arm/mach-omap2/n8x0-maemo.c b/arch/arm/mach-omap2/n8x0-maemo.c
+--- a/arch/arm/mach-omap2/n8x0-maemo.c
++++ b/arch/arm/mach-omap2/n8x0-maemo.c
+@@ -0,0 +1,122 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Maemo userspace compatibility for the Nokia N800/N810.
++ *
++ * Maemo's initfs (linuxrc, DSME, BME) expects interfaces from Nokia's 2.6.21
++ * kernel:
++ *  - /proc/bootreason and /proc/component_version, from NOLO's OMAP tags.
++ *    NOLO passes them as ATAG_BOARD; the decompressor's ATAG to DT
++ *    conversion keeps them in /chosen/linux,atag-board.
++ *  - /sys/power/sleep_while_idle, which BME clears while charging. Nothing
++ *    acts on it here; the value is kept and changes are logged.
++ */
++
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/kobject.h>
++#include <linux/of.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
++#include <linux/string.h>
++#include <linux/suspend.h>
++#include <linux/sysfs.h>
++#include <linux/unaligned.h>
++
++#define OMAP_TAG_BOOT_REASON	0x4f80	/* char reason_str[12] */
++#define OMAP_TAG_VERSION_STR	0x4f82	/* char component[12], version[12] */
++
++static char boot_reason[13];
++/* The bootloader tag area is 1 KiB, so this holds every version tag */
++static char component_versions[1024];
++static int component_versions_len;
++
++static int bootreason_show(struct seq_file *m, void *v)
++{
++	seq_printf(m, "%s\n", boot_reason);
++	return 0;
++}
++
++static int component_version_show(struct seq_file *m, void *v)
++{
++	seq_write(m, component_versions, component_versions_len);
++	return 0;
++}
++
++static void __init n8x0_maemo_parse_tags(const u8 *p, int len)
++{
++	const u8 *end = p + len;
++
++	while (p + 4 <= end) {
++		u16 tag = get_unaligned_le16(p);
++		u16 tlen = get_unaligned_le16(p + 2);
++		const u8 *data = p + 4;
++
++		if (data + tlen > end)
++			break;
++
++		if (tag == OMAP_TAG_BOOT_REASON && tlen >= 12)
++			strscpy(boot_reason, data, sizeof(boot_reason));
++		else if (tag == OMAP_TAG_VERSION_STR && tlen >= 24)
++			component_versions_len += scnprintf(
++				component_versions + component_versions_len,
++				sizeof(component_versions) - component_versions_len,
++				"%-12.12s%.12s\n", data, data + 12);
++
++		p = data + ALIGN(tlen, 4);
++	}
++}
++
++static unsigned short sleep_while_idle = 1;
++
++static ssize_t sleep_while_idle_show(struct kobject *kobj,
++				     struct kobj_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%hu\n", sleep_while_idle);
++}
++
++static ssize_t sleep_while_idle_store(struct kobject *kobj,
++				      struct kobj_attribute *attr,
++				      const char *buf, size_t n)
++{
++	unsigned short value;
++
++	if (kstrtou16(buf, 10, &value) || value > 1)
++		return -EINVAL;
++	if (value != sleep_while_idle)
++		pr_info("sleep_while_idle: %hu\n", value);
++	sleep_while_idle = value;
++	return n;
++}
++
++static struct kobj_attribute sleep_while_idle_attr =
++	__ATTR(sleep_while_idle, 0644, sleep_while_idle_show,
++	       sleep_while_idle_store);
++
++static int __init n8x0_maemo_init(void)
++{
++	struct device_node *chosen;
++	const void *tags;
++	int len = 0;
++
++	if (!of_machine_is_compatible("nokia,n8x0"))
++		return 0;
++
++	chosen = of_find_node_by_path("/chosen");
++	tags = chosen ? of_get_property(chosen, "linux,atag-board", &len) : NULL;
++	if (tags)
++		n8x0_maemo_parse_tags(tags, len);
++	else
++		pr_warn("n8x0-maemo: no NOLO tags (/chosen/linux,atag-board)\n");
++	of_node_put(chosen);
++
++	if (boot_reason[0]) {
++		pr_info("Bootup reason: %s\n", boot_reason);
++		proc_create_single("bootreason", 0444, NULL, bootreason_show);
++	}
++	if (component_versions_len)
++		proc_create_single("component_version", 0444, NULL,
++				   component_version_show);
++
++	return sysfs_create_file(power_kobj, &sleep_while_idle_attr.attr);
++}
++late_initcall(n8x0_maemo_init);

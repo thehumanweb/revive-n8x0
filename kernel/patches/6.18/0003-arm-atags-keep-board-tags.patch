@@ -1,0 +1,36 @@
+ARM: atags_to_fdt: keep ATAG_BOARD as /chosen/linux,atag-board
+
+Nokia's NOLO on the N800/N810 passes OMAP tags (boot reason, component
+versions) as ATAG_BOARD. With ARM_ATAG_DTB_COMPAT they were dropped; keep
+the payload so platform code can read it from the DT.
+
+diff -uN a/arch/arm/boot/compressed/atags_to_fdt.c b/arch/arm/boot/compressed/atags_to_fdt.c
+--- a/arch/arm/boot/compressed/atags_to_fdt.c
++++ b/arch/arm/boot/compressed/atags_to_fdt.c
+@@ -201,6 +201,13 @@
+ 					initrd_start);
+ 			setprop_cell(fdt, "/chosen", "linux,initrd-end",
+ 					initrd_start + initrd_size);
++		} else if (atag->hdr.tag == ATAG_BOARD) {
++			/*
++			 * Board-specific tags, e.g. the OMAP tags Nokia's NOLO
++			 * passes on the N800/N810 (boot reason, versions).
++			 */
++			setprop(fdt, "/chosen", "linux,atag-board", &atag->u,
++				(atag->hdr.size - 2) * 4);
+ 		} else if (atag->hdr.tag == ATAG_SERIAL) {
+ 			char serno[16+2];
+ 			hex_str(serno, atag->u.serialnr.high);
+diff -uN a/arch/arm/include/uapi/asm/setup.h b/arch/arm/include/uapi/asm/setup.h
+--- a/arch/arm/include/uapi/asm/setup.h
++++ b/arch/arm/include/uapi/asm/setup.h
+@@ -123,6 +123,9 @@
+ /* command line: \0 terminated string */
+ #define ATAG_CMDLINE	0x54410009
+ 
++/* board-specific data, e.g. OMAP tags from Nokia's NOLO bootloader */
++#define ATAG_BOARD	0x414f4d50
++
+ struct tag_cmdline {
+ 	char	cmdline[1];	/* this is the minimum size */
+ };

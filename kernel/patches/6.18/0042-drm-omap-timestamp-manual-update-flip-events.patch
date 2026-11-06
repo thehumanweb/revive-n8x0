@@ -1,0 +1,67 @@
+drm/omap: timestamp manual-update flip events at frame done
+
+omapdrm initialises vblank for all CRTCs, so drm_crtc_send_vblank_event()
+stamps events with the CRTC's last vblank time. A manually updated
+display (RFBI, DSI command mode) never enables vblank interrupts, so that
+time never advances: every flip completion reports the same timestamp.
+Weston on a Nokia N810 (RFBI to an S1D13745) then logs "computed repaint
+delay is abnormal", its fade-in stays black and clients timed by frame
+callbacks do not animate. Send the frame-done event stamped with the
+completion time and a frame count instead.
+
+--- a/drivers/gpu/drm/omapdrm/omap_crtc.c
++++ b/drivers/gpu/drm/omapdrm/omap_crtc.c
+@@ -46,6 +46,7 @@
+ 
+ 	void (*framedone_handler)(void *);
+ 	void *framedone_handler_data;
++	u64 framedone_count;
+ };
+ 
+ /* -----------------------------------------------------------------------------
+@@ -311,6 +312,36 @@
+ 	DBG("%s: apply done", omap_crtc->name);
+ }
+ 
++/*
++ * Manually updated displays get no vblank interrupts, so the vblank time
++ * drm_crtc_send_vblank_event() would report never advances. Stamp the
++ * event with the frame's completion instead.
++ */
++static void omap_crtc_send_framedone_event(struct drm_crtc *crtc,
++					   struct drm_pending_vblank_event *e)
++{
++	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
++	u64 seq = ++omap_crtc->framedone_count;
++	ktime_t now = ktime_get();
++	struct timespec64 tv;
++
++	e->pipe = drm_crtc_index(crtc);
++	switch (e->event.base.type) {
++	case DRM_EVENT_VBLANK:
++	case DRM_EVENT_FLIP_COMPLETE:
++		tv = ktime_to_timespec64(now);
++		e->event.vbl.sequence = seq;
++		e->event.vbl.tv_sec = tv.tv_sec;
++		e->event.vbl.tv_usec = tv.tv_nsec / 1000;
++		break;
++	case DRM_EVENT_CRTC_SEQUENCE:
++		e->event.seq.sequence = seq;
++		e->event.seq.time_ns = ktime_to_ns(now);
++		break;
++	}
++	drm_send_event_timestamp_locked(crtc->dev, &e->base, now);
++}
++
+ void omap_crtc_framedone_irq(struct drm_crtc *crtc, uint32_t irqstatus)
+ {
+ 	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
+@@ -323,7 +354,7 @@
+ 	spin_lock(&crtc->dev->event_lock);
+ 	/* Send the vblank event if one has been requested. */
+ 	if (omap_crtc->event) {
+-		drm_crtc_send_vblank_event(crtc, omap_crtc->event);
++		omap_crtc_send_framedone_event(crtc, omap_crtc->event);
+ 		omap_crtc->event = NULL;
+ 	}
+ 	omap_crtc->pending = false;

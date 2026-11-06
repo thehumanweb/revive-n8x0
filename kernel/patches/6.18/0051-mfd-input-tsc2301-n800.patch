@@ -1,0 +1,1130 @@
+mfd/input: TSC2301 core, touchscreen and keypad; N800 DT node
+
+The Nokia N800 has a TI TSC2301 on McSPI1 CS0: touchscreen, a 4x4
+keypad (its d-pad and hardware keys) and the audio codec. Mainline never
+had a driver for it (Nokia's lived only in the linux-omap and Maemo
+trees), and the N800 DT had no node.
+
+Ported from Nokia's 2.6.21 drivers (tsc2301-core.c, tsc2301_ts.c,
+tsc2301_kp.c; GPL, Copyright (C) 2005-2007 Nokia Corporation, Juha
+Yrjölä, Jarkko Oikarinen, Imre Deak):
+
+- MFD core (CONFIG_MFD_TSC2301, "ti,tsc2301"): regmap over 16-bit SPI
+  words (command = read bit 15 | page << 11 | address << 5, as Nokia
+  sent them; CPU-endian buffers), the reset line pulsed as Nokia did,
+  soft reset (0xbb00), the ADC/DAC reset values as ID check, keypad
+  scanning stopped, the CONFIG2 shadow (bit 15 doesn't read back).
+  The touchscreen and keypad are child devices sharing the chip's DT
+  node. The keypad scan is restarted whenever the touchscreen scanning
+  changes (Nokia's workaround for a scanner that gets stuck busy).
+  The audio codec is not supported yet.
+- Touchscreen (CONFIG_TOUCHSCREEN_TSC2301): the errata's three-step ADC
+  setup (8-sample averaging, 1 ms settling: Nokia's LS041Y3 settings),
+  X/Y/Z1/Z2 read in one burst on DAV (falling edge, threaded), Nokia's
+  filter (touch resistance limits 400 for the first sample and the
+  max-pressure after, positions averaged over 4 samples, lowest
+  resistance of the last 16, 8-unit dead zone), pen up after 20 ms
+  without DAV. Scanning runs only while the input device is open (so
+  "inhibited" replaces Nokia's disable_ts). Standard touchscreen-*
+  properties and ti,x-plate-ohms.
+- Keypad (CONFIG_KEYBOARD_TSC2301): "linux,keymap" with bit = row * 4 +
+  column, unmapped keys masked in KPMASK, KBIRQ (falling edge) in
+  interrupt mode 2 (released by reading KPDATA; Nokia: mode 0 can stick),
+  Nokia's ghost-key filter, all keys released 50 ms after the last
+  interrupt. "label" names the device (Nokia: "Internal keypad"),
+  "autorepeat" as usual.
+
+N800 DT, after Nokia's board-n800.c: McSPI1 CS0 at 6 MHz, DAV gpio103,
+KBIRQ gpio109, reset gpio118, the LS041Y3 panel's touchscreen values
+(N800s with the LPH8923 panel had 180 ohm and 100 us settling), and the
+keymap: Up, Home (F5), Left, Enter, Right, Cycle (Esc), Down, Menu (F4),
+Zoom- (F8), Full screen (F6), Zoom+ (F7).
+
+Not ported: Nokia's sysfs files on the SPI device (pen_down,
+disable_ts, disable_kp) and the IRQs as wakeup sources.
+
+Tested in QEMU's n800 machine only (its TSC2301 model): touch and
+release, keys (Up, Enter, Zoom+, Down), close and inhibit stopping the
+scans, module reload. Not on hardware.
+
+--- a/arch/arm/boot/dts/ti/omap/omap2420-n800.dts
++++ b/arch/arm/boot/dts/ti/omap/omap2420-n800.dts
+@@ -2,8 +2,44 @@
+ /dts-v1/;
+ 
+ #include "omap2420-n8x0-common.dtsi"
++#include <dt-bindings/input/input.h>
+ 
+ / {
+ 	model = "Nokia N800";
+ 	compatible = "nokia,n800", "nokia,n8x0", "ti,omap2420", "ti,omap2";
+ };
++
++&mcspi1 {
++	/* Touchscreen, keypad and audio codec, as in Nokia's board-n800.c */
++	touchscreen@0 {
++		compatible = "ti,tsc2301";
++		reg = <0>;
++		spi-max-frequency = <6000000>;
++		interrupts-extended = <&gpio4 7 IRQ_TYPE_EDGE_FALLING>,	/* gpio103, DAV */
++				      <&gpio4 13 IRQ_TYPE_EDGE_FALLING>;	/* gpio109, KBIRQ */
++		interrupt-names = "dav", "kbirq";
++		reset-gpios = <&gpio4 22 GPIO_ACTIVE_HIGH>;		/* gpio118 */
++		/* For the LS041Y3 panel (Nokia: 180 ohm with the LPH8923) */
++		ti,x-plate-ohms = <280>;
++		touchscreen-size-x = <4096>;
++		touchscreen-size-y = <4096>;
++		touchscreen-max-pressure = <2048>;
++		touchscreen-fuzz-x = <4>;
++		touchscreen-fuzz-y = <7>;
++		touchscreen-fuzz-pressure = <2>;
++		label = "Internal keypad";
++		linux,keymap = <
++			MATRIX_KEY(0, 1, KEY_UP)
++			MATRIX_KEY(0, 2, KEY_F5)	/* home */
++			MATRIX_KEY(1, 0, KEY_LEFT)
++			MATRIX_KEY(1, 1, KEY_ENTER)
++			MATRIX_KEY(1, 2, KEY_RIGHT)
++			MATRIX_KEY(2, 0, KEY_ESC)	/* cycle */
++			MATRIX_KEY(2, 1, KEY_DOWN)
++			MATRIX_KEY(2, 2, KEY_F4)	/* menu */
++			MATRIX_KEY(3, 0, KEY_F8)	/* zoom- */
++			MATRIX_KEY(3, 1, KEY_F6)	/* full screen */
++			MATRIX_KEY(3, 2, KEY_F7)	/* zoom+ */
++		>;
++	};
++};
+--- a/Documentation/devicetree/bindings/mfd/ti,tsc2301.yaml
++++ b/Documentation/devicetree/bindings/mfd/ti,tsc2301.yaml
+@@ -0,0 +1,91 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/mfd/ti,tsc2301.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Texas Instruments TSC2301 touchscreen, keypad and audio controller
++
++maintainers:
++  - Carsten Munk <carsten.munk@gmail.com>
++
++description:
++  The TSC2301 is a 4-wire resistive touchscreen controller with a 4x4
++  keypad scanner and a stereo audio codec, on SPI with 16-bit words. The
++  Nokia N800 uses all three. Keypad bits are numbered row * 4 + column.
++
++allOf:
++  - $ref: /schemas/spi/spi-peripheral-props.yaml#
++  - $ref: /schemas/input/touchscreen/touchscreen.yaml#
++  - $ref: /schemas/input/matrix-keymap.yaml#
++
++properties:
++  compatible:
++    const: ti,tsc2301
++
++  reg:
++    maxItems: 1
++
++  spi-max-frequency:
++    maximum: 33000000
++
++  interrupts:
++    items:
++      - description: DAV, low when touchscreen data is ready
++      - description: KBIRQ, low when a key is down
++
++  interrupt-names:
++    items:
++      - const: dav
++      - const: kbirq
++
++  reset-gpios:
++    maxItems: 1
++
++  ti,x-plate-ohms:
++    description: resistance of the touchscreen's X plates in ohm (default 280)
++
++  label:
++    description: name of the keypad input device
++
++  autorepeat: true
++  linux,keymap: true
++  touchscreen-fuzz-pressure: true
++  touchscreen-fuzz-x: true
++  touchscreen-fuzz-y: true
++  touchscreen-max-pressure: true
++  touchscreen-size-x: true
++  touchscreen-size-y: true
++
++required:
++  - compatible
++  - reg
++  - interrupts
++  - interrupt-names
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/gpio/gpio.h>
++    #include <dt-bindings/input/input.h>
++    #include <dt-bindings/interrupt-controller/irq.h>
++
++    spi {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        touchscreen@0 {
++            compatible = "ti,tsc2301";
++            reg = <0>;
++            spi-max-frequency = <6000000>;
++            interrupts-extended = <&gpio4 7 IRQ_TYPE_EDGE_FALLING>,
++                                  <&gpio4 13 IRQ_TYPE_EDGE_FALLING>;
++            interrupt-names = "dav", "kbirq";
++            reset-gpios = <&gpio4 22 GPIO_ACTIVE_HIGH>;
++            ti,x-plate-ohms = <280>;
++            touchscreen-max-pressure = <2048>;
++            linux,keymap = <MATRIX_KEY(0, 1, KEY_UP)
++                            MATRIX_KEY(1, 1, KEY_ENTER)>;
++        };
++    };
+--- a/drivers/input/keyboard/Kconfig
++++ b/drivers/input/keyboard/Kconfig
+@@ -693,6 +693,16 @@
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called tc3589x-keypad.
+ 
++config KEYBOARD_TSC2301
++	tristate "TSC2301 keypad"
++	depends on MFD_TSC2301
++	select INPUT_MATRIXKMAP
++	help
++	  Say Y here for the 4x4 keypad of a TI TSC2301 (Nokia N800).
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called tsc2301_kp.
++
+ config KEYBOARD_TM2_TOUCHKEY
+ 	tristate "TM2 touchkey support"
+ 	depends on I2C
+--- a/drivers/input/keyboard/Makefile
++++ b/drivers/input/keyboard/Makefile
+@@ -68,5 +68,6 @@
+ obj-$(CONFIG_KEYBOARD_TC3589X)		+= tc3589x-keypad.o
+ obj-$(CONFIG_KEYBOARD_TEGRA)		+= tegra-kbc.o
+ obj-$(CONFIG_KEYBOARD_TM2_TOUCHKEY)	+= tm2-touchkey.o
++obj-$(CONFIG_KEYBOARD_TSC2301)		+= tsc2301_kp.o
+ obj-$(CONFIG_KEYBOARD_TWL4030)		+= twl4030_keypad.o
+ obj-$(CONFIG_KEYBOARD_XTKBD)		+= xtkbd.o
+--- a/drivers/input/keyboard/tsc2301_kp.c
++++ b/drivers/input/keyboard/tsc2301_kp.c
+@@ -0,0 +1,240 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * TI TSC2301 keypad: a 4x4 matrix
++ *
++ * After Nokia's 2.6.21 tsc2301_kp.c,
++ * Copyright (C) 2005-2006 Nokia Corporation
++ * (Jarkko Oikarinen, Juha Yrjölä).
++ *
++ * KPDATA holds one bit per key, bit (row * 4 + column). The chip pulls
++ * KBIRQ low after a scan finds a key down; in interrupt mode 2 reading
++ * KPDATA releases it (Nokia: mode 0 could leave KBIRQ stuck). There is no
++ * release interrupt: keys still down keep interrupting, and with no
++ * interrupt for 50 ms all keys are released.
++ */
++
++#include <linux/input.h>
++#include <linux/input/matrix_keypad.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/tsc2301.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/regmap.h>
++#include <linux/spinlock.h>
++#include <linux/timer.h>
++
++#define TSC2301_KP_ROWS		4
++#define TSC2301_KP_COLS		4
++#define TSC2301_KP_ROW_SHIFT	2
++#define TSC2301_KP_KEYS		(TSC2301_KP_ROWS * TSC2301_KP_COLS)
++#define TSC2301_KP_RELEASE_MS	50
++
++struct tsc2301_kp {
++	struct tsc2301 *tsc;
++	struct input_dev *idev;
++	struct timer_list timer;
++	spinlock_t lock;		/* keys_pressed */
++	int irq;
++	u16 mask;			/* keys not in the keymap */
++	u16 keys_pressed;
++	unsigned short keymap[TSC2301_KP_KEYS];
++};
++
++static void tsc2301_kp_report(struct tsc2301_kp *kp, u16 prev, u16 state)
++{
++	u16 changed = prev ^ state;
++	int i;
++
++	if (!changed)
++		return;
++	for (i = 0; i < TSC2301_KP_KEYS; i++) {
++		if (!(changed & BIT(i)))
++			continue;
++		input_event(kp->idev, EV_MSC, MSC_SCAN, i);
++		input_report_key(kp->idev, kp->keymap[i], state & BIT(i));
++	}
++	input_sync(kp->idev);
++}
++
++/*
++ * Nokia: two keys down in each of two rows, in the same columns, make the
++ * matrix show the other corners of the rectangle too. Drop newly pressed
++ * keys in such a rectangle.
++ */
++static u16 tsc2301_kp_filter_ghosts(u16 prev, u16 state)
++{
++	static const u8 rect_pat[] = { 0x3, 0x5, 0x9, 0x6, 0xa, 0xc };
++	u16 out = state;
++	int r1, r2, i;
++
++	for (r1 = 0; r1 < TSC2301_KP_ROWS; r1++) {
++		u16 row1 = (state >> (r1 * 4)) & 0xf;
++
++		if (!row1)
++			continue;
++		for (r2 = r1 + 1; r2 < TSC2301_KP_ROWS; r2++) {
++			u16 rect = ((state >> (r2 * 4)) & 0xf) & row1;
++
++			if (!rect)
++				continue;
++			for (i = 0; i < ARRAY_SIZE(rect_pat); i++) {
++				u16 m;
++
++				if ((rect & rect_pat[i]) != rect_pat[i])
++					continue;
++				m = (rect_pat[i] << (r1 * 4)) |
++				    (rect_pat[i] << (r2 * 4));
++				out &= ~(m & ~prev);
++			}
++		}
++	}
++	return out;
++}
++
++static irqreturn_t tsc2301_kp_irq(int irq, void *data)
++{
++	struct tsc2301_kp *kp = data;
++	unsigned long flags;
++	unsigned int val;
++	u16 state;
++
++	mod_timer(&kp->timer, jiffies + msecs_to_jiffies(TSC2301_KP_RELEASE_MS));
++
++	if (regmap_read(kp->tsc->regmap, TSC2301_REG_KPDATA, &val))
++		return IRQ_HANDLED;
++
++	spin_lock_irqsave(&kp->lock, flags);
++	state = tsc2301_kp_filter_ghosts(kp->keys_pressed, val & ~kp->mask);
++	tsc2301_kp_report(kp, kp->keys_pressed, state);
++	kp->keys_pressed = state;
++	spin_unlock_irqrestore(&kp->lock, flags);
++
++	return IRQ_HANDLED;
++}
++
++static void tsc2301_kp_release(struct timer_list *t)
++{
++	struct tsc2301_kp *kp = timer_container_of(kp, t, timer);
++	unsigned long flags;
++
++	spin_lock_irqsave(&kp->lock, flags);
++	tsc2301_kp_report(kp, kp->keys_pressed, 0);
++	kp->keys_pressed = 0;
++	spin_unlock_irqrestore(&kp->lock, flags);
++}
++
++static int tsc2301_kp_open(struct input_dev *idev)
++{
++	struct tsc2301_kp *kp = input_get_drvdata(idev);
++	unsigned int val;
++	int ret;
++
++	ret = tsc2301_write_kbc(kp->tsc, 2);
++	if (!ret)
++		ret = tsc2301_kp_scan(kp->tsc, true, kp->mask);
++	if (ret)
++		return ret;
++	/* Nokia read KPDATA once before waiting for interrupts */
++	regmap_read(kp->tsc->regmap, TSC2301_REG_KPDATA, &val);
++	enable_irq(kp->irq);
++	return 0;
++}
++
++static void tsc2301_kp_close(struct input_dev *idev)
++{
++	struct tsc2301_kp *kp = input_get_drvdata(idev);
++
++	disable_irq(kp->irq);
++	tsc2301_kp_scan(kp->tsc, false, kp->mask);
++	timer_delete_sync(&kp->timer);
++	tsc2301_kp_release(&kp->timer);
++}
++
++static void tsc2301_kp_shutdown_timer(void *timer)
++{
++	timer_shutdown_sync(timer);
++}
++
++static int tsc2301_kp_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct tsc2301_kp *kp;
++	struct input_dev *idev;
++	const char *label;
++	int i, ret;
++
++	device_set_of_node_from_dev(dev, dev->parent);
++
++	if (!device_property_present(dev, "linux,keymap"))
++		return -ENODEV;	/* no keypad wired */
++
++	kp = devm_kzalloc(dev, sizeof(*kp), GFP_KERNEL);
++	if (!kp)
++		return -ENOMEM;
++	kp->tsc = dev_get_drvdata(dev->parent);
++	spin_lock_init(&kp->lock);
++	timer_setup(&kp->timer, tsc2301_kp_release, 0);
++
++	kp->irq = fwnode_irq_get_byname(dev_fwnode(dev), "kbirq");
++	if (kp->irq < 0)
++		return dev_err_probe(dev, kp->irq, "no KBIRQ interrupt\n");
++
++	idev = devm_input_allocate_device(dev);
++	if (!idev)
++		return -ENOMEM;
++	kp->idev = idev;
++	if (device_property_read_string(dev, "label", &label))
++		label = "TSC2301 keypad";
++	idev->name = label;
++	idev->phys = "tsc2301/input1";
++	idev->id.bustype = BUS_SPI;
++	idev->open = tsc2301_kp_open;
++	idev->close = tsc2301_kp_close;
++	input_set_drvdata(idev, kp);
++
++	ret = matrix_keypad_build_keymap(NULL, NULL, TSC2301_KP_ROWS,
++					 TSC2301_KP_COLS, kp->keymap, idev);
++	if (ret)
++		return dev_err_probe(dev, ret, "invalid keymap\n");
++	for (i = 0; i < TSC2301_KP_KEYS; i++)
++		if (kp->keymap[i] == KEY_RESERVED)
++			kp->mask |= BIT(i);
++
++	input_set_capability(idev, EV_MSC, MSC_SCAN);
++	if (device_property_read_bool(dev, "autorepeat"))
++		__set_bit(EV_REP, idev->evbit);
++
++	ret = devm_request_threaded_irq(dev, kp->irq, NULL, tsc2301_kp_irq,
++					IRQF_ONESHOT | IRQF_NO_AUTOEN,
++					"tsc2301-kp", kp);
++	if (ret)
++		return ret;
++
++	ret = devm_add_action_or_reset(dev, tsc2301_kp_shutdown_timer,
++				       &kp->timer);
++	if (ret)
++		return ret;
++
++	return input_register_device(idev);
++}
++
++static const struct platform_device_id tsc2301_kp_ids[] = {
++	{ "tsc2301-keypad" },
++	{ }
++};
++MODULE_DEVICE_TABLE(platform, tsc2301_kp_ids);
++
++static struct platform_driver tsc2301_kp_driver = {
++	.driver = {
++		.name = "tsc2301-keypad",
++	},
++	.id_table = tsc2301_kp_ids,
++	.probe = tsc2301_kp_probe,
++};
++module_platform_driver(tsc2301_kp_driver);
++
++MODULE_AUTHOR("Juha Yrjölä <juha.yrjola@nokia.com>");
++MODULE_DESCRIPTION("TI TSC2301 keypad driver");
++MODULE_LICENSE("GPL");
+--- a/drivers/input/touchscreen/Kconfig
++++ b/drivers/input/touchscreen/Kconfig
+@@ -1169,6 +1169,15 @@
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called tsc2005.
+ 
++config TOUCHSCREEN_TSC2301
++	tristate "TSC2301 touchscreen"
++	depends on MFD_TSC2301
++	help
++	  Say Y here for the touchscreen of a TI TSC2301 (Nokia N800).
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called tsc2301_ts.
++
+ config TOUCHSCREEN_TSC2007
+ 	tristate "TSC2007 based touchscreens"
+ 	depends on I2C
+--- a/drivers/input/touchscreen/Makefile
++++ b/drivers/input/touchscreen/Makefile
+@@ -97,6 +97,7 @@
+ obj-$(CONFIG_TOUCHSCREEN_TSC200X_CORE)	+= tsc200x-core.o
+ obj-$(CONFIG_TOUCHSCREEN_TSC2004)	+= tsc2004.o
+ obj-$(CONFIG_TOUCHSCREEN_TSC2005)	+= tsc2005.o
++obj-$(CONFIG_TOUCHSCREEN_TSC2301)	+= tsc2301_ts.o
+ tsc2007-y := tsc2007_core.o
+ tsc2007-$(CONFIG_TOUCHSCREEN_TSC2007_IIO)	+= tsc2007_iio.o
+ obj-$(CONFIG_TOUCHSCREEN_TSC2007)	+= tsc2007.o
+--- a/drivers/input/touchscreen/tsc2301_ts.c
++++ b/drivers/input/touchscreen/tsc2301_ts.c
+@@ -0,0 +1,319 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * TI TSC2301 touchscreen
++ *
++ * After Nokia's 2.6.21 tsc2301_ts.c,
++ * Copyright (C) 2005-2007 Nokia Corporation
++ * (Jarkko Oikarinen, Imre Deak, Juha Yrjölä).
++ *
++ * The chip converts X, Y, Z1 and Z2 by itself while the pen is down and
++ * pulls DAV low when a set is ready; reading it releases DAV. With no DAV
++ * for 20 ms the pen is up. Samples are filtered as Nokia did: the touch
++ * resistance must stay below a limit (a lower one for the first sample),
++ * positions are averaged over 4 samples, the reported pressure is the
++ * lowest resistance of the last 16 samples, and a position within 8 units
++ * of the last one is not reported unless the pressure rose.
++ */
++
++#include <linux/input.h>
++#include <linux/input/touchscreen.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/tsc2301.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/regmap.h>
++#include <linux/spinlock.h>
++#include <linux/timer.h>
++
++#define TSC2301_TS_PENUP_MS		20
++#define TSC2301_TS_SAMPLES		4
++#define TSC2301_TS_P_SAMPLES		16
++#define TSC2301_TS_RECT			8
++#define TSC2301_TS_TOUCH_PRESSURE	400	/* first sample limit */
++#define MAX_12BIT			0xfff
++
++struct tsc2301_ts {
++	struct tsc2301 *tsc;
++	struct input_dev *idev;
++	struct touchscreen_properties prop;
++	struct timer_list penup_timer;
++	spinlock_t lock;		/* filter and pen state */
++	int irq;
++
++	u32 x_plate_ohm;
++	int p_max;
++	int touch_pressure;
++
++	int sample_cnt;
++	int avg_x, avg_y;
++	int p_n;
++	int p_buf[TSC2301_TS_P_SAMPLES];
++	int x, y, p;
++	bool sample_sent;
++	bool pen_down;
++	bool pen_active;
++};
++
++/*
++ * Nokia, after the TSC2301 errata: stop, configure host-controlled
++ * conversions, then hand conversions to the chip. Then a 2.5 V internal
++ * reference (100 us settling) and 340 us precharge, 544 us sense time.
++ * 8-sample averaging and 1 ms settling are Nokia's N800 settings for the
++ * LS041Y3 panel (its LPH8923 used 100 us).
++ */
++static int tsc2301_ts_start(struct tsc2301_ts *ts)
++{
++	struct regmap *map = ts->tsc->regmap;
++	static const u16 adc[] = {
++		TSC2301_ADC_STOP | TSC2301_ADC_RES_12BIT |
++			TSC2301_ADC_CLK_2MHZ | TSC2301_ADC_STAB(7),
++		TSC2301_ADC_FUNC_XYZ | TSC2301_ADC_RES_12BIT |
++			TSC2301_ADC_AVG(3) | TSC2301_ADC_CLK_1MHZ |
++			TSC2301_ADC_STAB(7),
++		TSC2301_ADC_CTRL_BY_TSC | TSC2301_ADC_FUNC_XYZ |
++			TSC2301_ADC_RES_12BIT | TSC2301_ADC_CLK_2MHZ |
++			TSC2301_ADC_AVG(2) | TSC2301_ADC_STAB(3),
++	};
++	int i, ret;
++
++	for (i = 0; i < ARRAY_SIZE(adc); i++) {
++		ret = regmap_write(map, TSC2301_REG_ADC, adc[i]);
++		if (ret)
++			return ret;
++	}
++	ret = regmap_write(map, TSC2301_REG_REF, BIT(4) | BIT(2) | BIT(0));
++	if (!ret)
++		ret = regmap_write(map, TSC2301_REG_CONFIG, 3 << 3 | 2 << 0);
++	tsc2301_kp_restart(ts->tsc);
++	return ret;
++}
++
++static void tsc2301_ts_stop(struct tsc2301_ts *ts)
++{
++	regmap_write(ts->tsc->regmap, TSC2301_REG_ADC, TSC2301_ADC_STOP);
++	tsc2301_kp_restart(ts->tsc);
++}
++
++static void tsc2301_ts_report(struct tsc2301_ts *ts, int x, int y, int p)
++{
++	struct input_dev *idev = ts->idev;
++
++	if (p) {
++		touchscreen_report_pos(idev, &ts->prop, x, y, false);
++		input_report_abs(idev, ABS_PRESSURE, p);
++		if (!ts->pen_down)
++			input_report_key(idev, BTN_TOUCH, 1);
++		ts->pen_down = true;
++	} else {
++		input_report_abs(idev, ABS_PRESSURE, 0);
++		if (ts->pen_down)
++			input_report_key(idev, BTN_TOUCH, 0);
++		ts->pen_down = false;
++	}
++	input_sync(idev);
++}
++
++/* Nokia's tsc2301_ts_rx(); called with ts->lock held */
++static void tsc2301_ts_sample(struct tsc2301_ts *ts, int x, int y,
++			      int z1, int z2)
++{
++	int pressure, limit, i;
++	bool inside;
++
++	if (x > MAX_12BIT || y > MAX_12BIT)
++		return;
++	if (z1 < 100 || z1 > 4000 || z2 < z1 || z2 > 4000)
++		return;
++
++	pressure = x * (z2 - z1) / z1;
++	pressure = pressure * ts->x_plate_ohm / 4096;
++	limit = ts->sample_sent ? ts->p_max : ts->touch_pressure;
++	if (pressure > limit)
++		return;
++
++	if (!ts->pen_active) {
++		ts->pen_active = true;
++		ts->sample_cnt = 0;
++		ts->avg_x = 0;
++		ts->avg_y = 0;
++		ts->p_n = 0;
++		memset(ts->p_buf, 0, sizeof(ts->p_buf));
++	}
++
++	ts->avg_x += x;
++	ts->avg_y += y;
++	ts->p_buf[ts->p_n++] = pressure;
++	if (ts->p_n >= TSC2301_TS_P_SAMPLES)
++		ts->p_n = 0;
++
++	if (++ts->sample_cnt < TSC2301_TS_SAMPLES)
++		return;
++
++	x = ts->avg_x / TSC2301_TS_SAMPLES;
++	y = ts->avg_y / TSC2301_TS_SAMPLES;
++	ts->sample_cnt = 0;
++	ts->avg_x = 0;
++	ts->avg_y = 0;
++
++	for (i = 0; i < TSC2301_TS_P_SAMPLES; i++)
++		if (ts->p_buf[i] && ts->p_buf[i] < pressure)
++			pressure = ts->p_buf[i];
++
++	inside = ts->sample_sent &&
++		 abs(x - ts->x) < TSC2301_TS_RECT &&
++		 abs(y - ts->y) < TSC2301_TS_RECT;
++	if (inside) {
++		x = ts->x;
++		y = ts->y;
++	}
++	if (!inside || pressure < ts->p) {
++		tsc2301_ts_report(ts, x, y, pressure);
++		ts->sample_sent = true;
++		ts->x = x;
++		ts->y = y;
++		ts->p = pressure;
++	}
++}
++
++static irqreturn_t tsc2301_ts_irq(int irq, void *data)
++{
++	struct tsc2301_ts *ts = data;
++	unsigned long flags;
++	u16 d[4];
++	int ret;
++
++	/* X, Y, Z1, Z2 in one read: the address increments */
++	ret = regmap_bulk_read(ts->tsc->regmap, TSC2301_REG_X, d, ARRAY_SIZE(d));
++	if (ret) {
++		dev_err_ratelimited(ts->idev->dev.parent, "read failed: %d\n", ret);
++		return IRQ_HANDLED;
++	}
++
++	spin_lock_irqsave(&ts->lock, flags);
++	tsc2301_ts_sample(ts, d[0], d[1], d[2], d[3]);
++	spin_unlock_irqrestore(&ts->lock, flags);
++
++	mod_timer(&ts->penup_timer,
++		  jiffies + msecs_to_jiffies(TSC2301_TS_PENUP_MS));
++	return IRQ_HANDLED;
++}
++
++static void tsc2301_ts_penup(struct timer_list *t)
++{
++	struct tsc2301_ts *ts = timer_container_of(ts, t, penup_timer);
++	unsigned long flags;
++
++	spin_lock_irqsave(&ts->lock, flags);
++	if (ts->sample_sent) {
++		tsc2301_ts_report(ts, 0, 0, 0);
++		ts->sample_sent = false;
++	}
++	ts->pen_active = false;
++	spin_unlock_irqrestore(&ts->lock, flags);
++}
++
++static int tsc2301_ts_open(struct input_dev *idev)
++{
++	struct tsc2301_ts *ts = input_get_drvdata(idev);
++	int ret;
++
++	ret = tsc2301_ts_start(ts);
++	if (ret)
++		return ret;
++	enable_irq(ts->irq);
++	return 0;
++}
++
++static void tsc2301_ts_close(struct input_dev *idev)
++{
++	struct tsc2301_ts *ts = input_get_drvdata(idev);
++
++	disable_irq(ts->irq);
++	tsc2301_ts_stop(ts);
++	timer_delete_sync(&ts->penup_timer);
++	tsc2301_ts_penup(&ts->penup_timer);
++}
++
++static void tsc2301_ts_shutdown_timer(void *timer)
++{
++	timer_shutdown_sync(timer);
++}
++
++static int tsc2301_ts_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct tsc2301_ts *ts;
++	struct input_dev *idev;
++	int ret;
++
++	/* Properties and interrupts are in the chip's node */
++	device_set_of_node_from_dev(dev, dev->parent);
++
++	ts = devm_kzalloc(dev, sizeof(*ts), GFP_KERNEL);
++	if (!ts)
++		return -ENOMEM;
++	ts->tsc = dev_get_drvdata(dev->parent);
++	spin_lock_init(&ts->lock);
++	timer_setup(&ts->penup_timer, tsc2301_ts_penup, 0);
++
++	ts->irq = fwnode_irq_get_byname(dev_fwnode(dev), "dav");
++	if (ts->irq < 0)
++		return dev_err_probe(dev, ts->irq, "no DAV interrupt\n");
++
++	ts->x_plate_ohm = 280;
++	device_property_read_u32(dev, "ti,x-plate-ohms", &ts->x_plate_ohm);
++
++	idev = devm_input_allocate_device(dev);
++	if (!idev)
++		return -ENOMEM;
++	ts->idev = idev;
++	idev->name = "TSC2301 touchscreen";
++	idev->phys = "tsc2301/input0";
++	idev->id.bustype = BUS_SPI;
++	idev->open = tsc2301_ts_open;
++	idev->close = tsc2301_ts_close;
++	input_set_drvdata(idev, ts);
++
++	input_set_capability(idev, EV_KEY, BTN_TOUCH);
++	input_set_abs_params(idev, ABS_X, 0, MAX_12BIT, 4, 0);
++	input_set_abs_params(idev, ABS_Y, 0, MAX_12BIT, 8, 0);
++	input_set_abs_params(idev, ABS_PRESSURE, 0, 2048, 2, 0);
++	touchscreen_parse_properties(idev, false, &ts->prop);
++
++	ts->p_max = input_abs_get_max(idev, ABS_PRESSURE);
++	ts->touch_pressure = min(TSC2301_TS_TOUCH_PRESSURE, ts->p_max);
++
++	ret = devm_request_threaded_irq(dev, ts->irq, NULL, tsc2301_ts_irq,
++					IRQF_ONESHOT | IRQF_NO_AUTOEN,
++					"tsc2301-ts", ts);
++	if (ret)
++		return ret;
++
++	ret = devm_add_action_or_reset(dev, tsc2301_ts_shutdown_timer,
++				       &ts->penup_timer);
++	if (ret)
++		return ret;
++
++	return input_register_device(idev);
++}
++
++static const struct platform_device_id tsc2301_ts_ids[] = {
++	{ "tsc2301-ts" },
++	{ }
++};
++MODULE_DEVICE_TABLE(platform, tsc2301_ts_ids);
++
++static struct platform_driver tsc2301_ts_driver = {
++	.driver = {
++		.name = "tsc2301-ts",
++	},
++	.id_table = tsc2301_ts_ids,
++	.probe = tsc2301_ts_probe,
++};
++module_platform_driver(tsc2301_ts_driver);
++
++MODULE_AUTHOR("Jarkko Oikarinen <jarkko.oikarinen@nokia.com>");
++MODULE_DESCRIPTION("TI TSC2301 touchscreen driver");
++MODULE_LICENSE("GPL");
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -2051,6 +2051,19 @@
+ 	  additional drivers must be enabled in order to use the
+ 	  functionality of the device.
+ 
++config MFD_TSC2301
++	tristate "TI TSC2301 touchscreen, keypad and audio controller"
++	depends on SPI_MASTER
++	select MFD_CORE
++	select REGMAP_SPI
++	help
++	  Core support for the TI TSC2301 (Nokia N800): register access and
++	  reset. The touchscreen and keypad have drivers of their own
++	  (TOUCHSCREEN_TSC2301, KEYBOARD_TSC2301).
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called tsc2301.
++
+ config MFD_TQMX86
+ 	tristate "TQ-Systems IO controller TQMX86"
+ 	select MFD_CORE
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -33,6 +33,7 @@
+ obj-$(CONFIG_STMPE_SPI)		+= stmpe-spi.o
+ obj-$(CONFIG_MFD_SUN6I_PRCM)	+= sun6i-prcm.o
+ obj-$(CONFIG_MFD_TC3589X)	+= tc3589x.o
++obj-$(CONFIG_MFD_TSC2301)	+= tsc2301.o
+ obj-$(CONFIG_MFD_TQMX86)	+= tqmx86.o
+ 
+ obj-$(CONFIG_MFD_LOCHNAGAR)	+= lochnagar-i2c.o
+--- a/drivers/mfd/tsc2301.c
++++ b/drivers/mfd/tsc2301.c
+@@ -0,0 +1,191 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * TI TSC2301 core: SPI register access, reset, and the touchscreen and
++ * keypad as child devices (the audio codec is not supported yet).
++ *
++ * After Nokia's 2.6.21 tsc2301-core.c,
++ * Copyright (C) 2005, 2006 Nokia Corporation (Juha Yrjölä).
++ */
++
++#include <linux/cleanup.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/tsc2301.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/regmap.h>
++#include <linux/spi/spi.h>
++
++/*
++ * The chip needs 16-bit SPI words, as Nokia's driver sent them: regmap's
++ * buffers hold CPU-endian words, and the read flag is bit 15 of the
++ * command word.
++ */
++#ifdef __BIG_ENDIAN
++#define TSC2301_READ_FLAG	0x80
++#else
++#define TSC2301_READ_FLAG	0x8000
++#endif
++
++static const struct regmap_config tsc2301_regmap_config = {
++	.reg_bits = 16,
++	.val_bits = 16,
++	.reg_stride = TSC2301_REG_STRIDE,
++	.max_register = TSC2301_REG_MAX,
++	.reg_format_endian = REGMAP_ENDIAN_NATIVE,
++	.val_format_endian = REGMAP_ENDIAN_NATIVE,
++	.read_flag_mask = TSC2301_READ_FLAG,
++	.cache_type = REGCACHE_NONE,
++};
++
++static const struct mfd_cell tsc2301_cells[] = {
++	{ .name = "tsc2301-ts" },
++	{ .name = "tsc2301-keypad" },
++};
++
++/* Keypad interrupt mode, CONFIG2 bits 15-14 (Nokia: tsc2301_write_kbc) */
++int tsc2301_write_kbc(struct tsc2301 *tsc, unsigned int mode)
++{
++	u16 val;
++	int ret;
++
++	guard(mutex)(&tsc->lock);
++	val = (tsc->config2 & ~TSC2301_CONFIG2_KBC_MASK) |
++	      TSC2301_CONFIG2_KBC(mode & 3);
++	ret = regmap_write(tsc->regmap, TSC2301_REG_CONFIG2, val);
++	if (!ret)
++		tsc->config2 = val;
++	return ret;
++}
++EXPORT_SYMBOL_GPL(tsc2301_write_kbc);
++
++static int __tsc2301_kp_start(struct tsc2301 *tsc)
++{
++	int ret;
++
++	ret = regmap_write(tsc->regmap, TSC2301_REG_KPMASK, tsc->kp_mask);
++	if (ret)
++		return ret;
++	return regmap_write(tsc->regmap, TSC2301_REG_KEY,
++			    TSC2301_KEY_DEBOUNCE_20MS);
++}
++
++/* Start (with the keys in @mask ignored) or stop keypad scanning */
++int tsc2301_kp_scan(struct tsc2301 *tsc, bool on, u16 mask)
++{
++	guard(mutex)(&tsc->lock);
++	tsc->kp_scanning = on;
++	tsc->kp_mask = mask;
++	if (on)
++		return __tsc2301_kp_start(tsc);
++	return regmap_write(tsc->regmap, TSC2301_REG_KEY, TSC2301_KEY_STOP);
++}
++EXPORT_SYMBOL_GPL(tsc2301_kp_scan);
++
++/*
++ * Nokia: the keypad scanner can get stuck busy, with no more interrupts,
++ * after this sequence: a key held, keypad disabled, all keys released,
++ * keypad enabled, touchscreen scanning disabled. So whenever the
++ * touchscreen scanning changes, restart a running keypad scan.
++ */
++void tsc2301_kp_restart(struct tsc2301 *tsc)
++{
++	guard(mutex)(&tsc->lock);
++	if (tsc->kp_scanning)
++		__tsc2301_kp_start(tsc);
++}
++EXPORT_SYMBOL_GPL(tsc2301_kp_restart);
++
++static int tsc2301_probe(struct spi_device *spi)
++{
++	struct device *dev = &spi->dev;
++	struct gpio_desc *reset;
++	struct tsc2301 *tsc;
++	unsigned int val;
++	int ret;
++
++	tsc = devm_kzalloc(dev, sizeof(*tsc), GFP_KERNEL);
++	if (!tsc)
++		return -ENOMEM;
++	tsc->dev = dev;
++	ret = devm_mutex_init(dev, &tsc->lock);
++	if (ret)
++		return ret;
++	spi_set_drvdata(spi, tsc);
++
++	spi->mode = SPI_MODE_0;
++	spi->bits_per_word = 16;
++	ret = spi_setup(spi);
++	if (ret)
++		return ret;
++
++	tsc->regmap = devm_regmap_init_spi(spi, &tsc2301_regmap_config);
++	if (IS_ERR(tsc->regmap))
++		return PTR_ERR(tsc->regmap);
++
++	/* Nokia drove the reset line high for 1 ms, then low */
++	reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(reset))
++		return dev_err_probe(dev, PTR_ERR(reset), "reset GPIO\n");
++	if (reset) {
++		usleep_range(1000, 2000);
++		gpiod_set_value_cansleep(reset, 0);
++	}
++
++	ret = regmap_write(tsc->regmap, TSC2301_REG_RESET, TSC2301_RESET_MAGIC);
++	if (ret)
++		return ret;
++	usleep_range(1000, 2000);
++
++	/* After reset the ADC is idle and the DAC powered down */
++	ret = regmap_read(tsc->regmap, TSC2301_REG_ADC, &val);
++	if (ret)
++		return ret;
++	if (!(val & TSC2301_ADC_STOP))
++		return dev_err_probe(dev, -ENODEV, "invalid ADC register %04x\n", val);
++	ret = regmap_read(tsc->regmap, TSC2301_REG_DAC, &val);
++	if (ret)
++		return ret;
++	if (!(val & TSC2301_DAC_PD))
++		return dev_err_probe(dev, -ENODEV, "invalid DAC register %04x\n", val);
++
++	ret = regmap_write(tsc->regmap, TSC2301_REG_KEY, TSC2301_KEY_STOP);
++	if (ret)
++		return ret;
++
++	/* Bit 15 is set after reset but doesn't read back */
++	ret = regmap_read(tsc->regmap, TSC2301_REG_CONFIG2, &val);
++	if (ret)
++		return ret;
++	tsc->config2 = val | BIT(15);
++
++	return devm_mfd_add_devices(dev, PLATFORM_DEVID_AUTO, tsc2301_cells,
++				    ARRAY_SIZE(tsc2301_cells), NULL, 0, NULL);
++}
++
++static const struct of_device_id tsc2301_of_match[] = {
++	{ .compatible = "ti,tsc2301" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, tsc2301_of_match);
++
++static const struct spi_device_id tsc2301_spi_ids[] = {
++	{ "tsc2301" },
++	{ }
++};
++MODULE_DEVICE_TABLE(spi, tsc2301_spi_ids);
++
++static struct spi_driver tsc2301_driver = {
++	.driver = {
++		.name = "tsc2301",
++		.of_match_table = tsc2301_of_match,
++	},
++	.id_table = tsc2301_spi_ids,
++	.probe = tsc2301_probe,
++};
++module_spi_driver(tsc2301_driver);
++
++MODULE_AUTHOR("Juha Yrjölä <juha.yrjola@nokia.com>");
++MODULE_DESCRIPTION("TI TSC2301 core driver");
++MODULE_LICENSE("GPL");
+--- a/include/linux/mfd/tsc2301.h
++++ b/include/linux/mfd/tsc2301.h
+@@ -0,0 +1,90 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * TI TSC2301: touchscreen, keypad and audio codec on SPI
++ *
++ * Register definitions after Nokia's 2.6.21 <linux/spi/tsc2301.h>,
++ * Copyright (C) 2005-2007 Nokia Corporation.
++ */
++#ifndef __LINUX_MFD_TSC2301_H
++#define __LINUX_MFD_TSC2301_H
++
++#include <linux/bits.h>
++#include <linux/mutex.h>
++#include <linux/types.h>
++
++struct device;
++struct regmap;
++
++/*
++ * The chip takes 16-bit SPI words. A command word holds the read flag
++ * (bit 15), the page (bits 12-11) and the address (bits 10-5); a write
++ * sends the data word next, a read clocks out data words, the address
++ * incrementing after each one.
++ */
++#define TSC2301_REG(page, addr)		(((page) << 11) | ((addr) << 5))
++#define TSC2301_REG_STRIDE		TSC2301_REG(0, 1)
++
++/* Page 0: conversion results */
++#define TSC2301_REG_X			TSC2301_REG(0, 0)
++#define TSC2301_REG_Y			TSC2301_REG(0, 1)
++#define TSC2301_REG_Z1			TSC2301_REG(0, 2)
++#define TSC2301_REG_Z2			TSC2301_REG(0, 3)
++#define TSC2301_REG_KPDATA		TSC2301_REG(0, 4)
++/* Page 1: control */
++#define TSC2301_REG_ADC			TSC2301_REG(1, 0)
++#define TSC2301_REG_KEY			TSC2301_REG(1, 1)
++#define TSC2301_REG_DAC			TSC2301_REG(1, 2)
++#define TSC2301_REG_REF			TSC2301_REG(1, 3)
++#define TSC2301_REG_RESET		TSC2301_REG(1, 4)
++#define TSC2301_REG_CONFIG		TSC2301_REG(1, 5)
++#define TSC2301_REG_CONFIG2		TSC2301_REG(1, 6)
++#define TSC2301_REG_KPMASK		TSC2301_REG(1, 16)
++/* Page 2: audio */
++#define TSC2301_REG_AUDCNTL		TSC2301_REG(2, 0)
++#define TSC2301_REG_ADCVOL		TSC2301_REG(2, 1)
++#define TSC2301_REG_DACVOL		TSC2301_REG(2, 2)
++#define TSC2301_REG_BPVOL		TSC2301_REG(2, 3)
++#define TSC2301_REG_KEYCTL		TSC2301_REG(2, 4)
++#define TSC2301_REG_PD_MISC		TSC2301_REG(2, 5)
++#define TSC2301_REG_GPIO		TSC2301_REG(2, 6)
++#define TSC2301_REG_ADCLKCFG		TSC2301_REG(2, 27)
++#define TSC2301_REG_MAX			TSC2301_REG(2, 31)
++
++/* ADC: touchscreen conversion control */
++#define TSC2301_ADC_CTRL_BY_TSC		BIT(15)	/* else by the host */
++#define TSC2301_ADC_STOP		BIT(14)	/* write: stop; read: idle */
++#define TSC2301_ADC_FUNC_XYZ		(2 << 10)
++#define TSC2301_ADC_RES_12BIT		(3 << 8)
++#define TSC2301_ADC_AVG(n)		((n) << 6) /* none, 4, 8, 16 samples */
++#define TSC2301_ADC_CLK_2MHZ		(2 << 4)
++#define TSC2301_ADC_CLK_1MHZ		(3 << 4)
++#define TSC2301_ADC_STAB(n)		((n) << 1) /* 0, 100us, 500us, 1, 5, 10, 50, 100ms */
++
++/* KEY: keypad scan control */
++#define TSC2301_KEY_STOP		BIT(14)
++#define TSC2301_KEY_DEBOUNCE_20MS	(2 << 11)
++
++/* DAC: reads 1 in bit 15 after reset */
++#define TSC2301_DAC_PD			BIT(15)
++
++/* CONFIG2: keypad interrupt mode (bit 15 doesn't read back) */
++#define TSC2301_CONFIG2_KBC_MASK	(3 << 14)
++#define TSC2301_CONFIG2_KBC(n)		((n) << 14)
++
++#define TSC2301_RESET_MAGIC		0xbb00
++
++struct tsc2301 {
++	struct device *dev;
++	struct regmap *regmap;
++
++	struct mutex lock;	/* CONFIG2 shadow, keypad scan state */
++	u16 config2;
++	bool kp_scanning;
++	u16 kp_mask;
++};
++
++int tsc2301_write_kbc(struct tsc2301 *tsc, unsigned int mode);
++int tsc2301_kp_scan(struct tsc2301 *tsc, bool on, u16 mask);
++void tsc2301_kp_restart(struct tsc2301 *tsc);
++
++#endif /* __LINUX_MFD_TSC2301_H */

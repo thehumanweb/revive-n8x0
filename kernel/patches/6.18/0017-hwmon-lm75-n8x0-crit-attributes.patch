@@ -1,0 +1,260 @@
+hwmon: lm75: Maemo critical-temperature attributes for the N8x0 TMP105
+
+Maemo's DSME (libtemperature, loaded by the initfs DSME) finds the hwmon
+device whose device/name is "tmp105", writes device/temp1_crit (80000)
+and device/temp1_crit_hyst (75000), then waits on
+device/temp1_crit_alarm with select() and powers the device off when it
+reads '1'. Those were attributes of Nokia's 2.6.21 tmp105 driver; lm75
+has temp1_max/temp1_max_hyst on the hwmon device, so the thermal
+shutdown never armed.
+
+With CONFIG_SENSORS_LM75_N8X0_CRIT, on the N800/N810 the TMP105's I2C
+device gets the three attributes: temp1_crit and temp1_crit_hyst are
+the limit registers (T_HIGH, T_LOW), and the alarm follows the TMP105
+comparator (set at temp1_crit, cleared below temp1_crit_hyst), polled
+every 2 s. DSME select()s the alarm for reading; 2.6.21's sysfs_poll()
+reported nothing until a change, kernfs reports attributes readable at
+all times and DSME spun (~240 wakeups/s in QEMU). So the alarm is a
+kernfs file whose poll, as then, reports only a change.
+
+--- a/drivers/hwmon/lm75.c
++++ b/drivers/hwmon/lm75.c
+@@ -16,6 +16,10 @@
+ #include <linux/err.h>
+ #include <linux/of.h>
+ #include <linux/regmap.h>
++#include <linux/devm-helpers.h>
++#include <linux/kernfs.h>
++#include <linux/poll.h>
++#include <linux/seq_file.h>
+ #include <linux/util_macros.h>
+ #include <linux/regulator/consumer.h>
+ #include "lm75.h"
+@@ -116,6 +120,11 @@
+ 	const struct lm75_params	*params;
+ 	u8				reg_buf[1];
+ 	u8				val_buf[3];
++#ifdef CONFIG_SENSORS_LM75_N8X0_CRIT
++	struct delayed_work		crit_work;
++	struct kernfs_node		*crit_alarm_kn;
++	bool				crit_alarm;
++#endif
+ };
+ 
+ /*-----------------------------------------------------------------------*/
+@@ -516,6 +525,186 @@
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_SENSORS_LM75_N8X0_CRIT
++/*
++ * Maemo on the Nokia N800/N810: DSME's thermal shutdown finds the hwmon
++ * device whose device/name is "tmp105", writes device/temp1_crit (80000)
++ * and device/temp1_crit_hyst (75000) and waits on device/temp1_crit_alarm
++ * to power off, as Nokia's 2.6.21 tmp105 driver offered them. They are
++ * the limit registers here; the alarm follows the TMP105 comparator (set
++ * at temp1_crit, cleared below temp1_crit_hyst), polled.
++ *
++ * DSME select()s the alarm file for reading and reopens it after each
++ * wakeup. 2.6.21's sysfs_poll() reported nothing until the file changed;
++ * kernfs reports every attribute readable at all times, and DSME spun
++ * (hundreds of wakeups a second). So the alarm is a kernfs file of its
++ * own that, as then, reports only a change (POLLERR | POLLPRI).
++ */
++#define LM75_CRIT_POLL_MS	2000
++
++static void lm75_crit_update(struct device *dev)
++{
++	struct lm75_data *data = dev_get_drvdata(dev);
++	long temp, crit, hyst;
++	bool alarm = data->crit_alarm;
++
++	if (lm75_read(dev, hwmon_temp, hwmon_temp_input, 0, &temp) ||
++	    lm75_read(dev, hwmon_temp, hwmon_temp_max, 0, &crit) ||
++	    lm75_read(dev, hwmon_temp, hwmon_temp_max_hyst, 0, &hyst))
++		return;
++
++	if (temp >= crit)
++		alarm = true;
++	else if (temp < hyst)
++		alarm = false;
++
++	if (alarm != data->crit_alarm) {
++		data->crit_alarm = alarm;
++		dev_info(dev, "temperature %ld mC, critical alarm %s\n", temp,
++			 alarm ? "on" : "off");
++		kernfs_notify(data->crit_alarm_kn);
++	}
++}
++
++static void lm75_crit_work(struct work_struct *work)
++{
++	struct lm75_data *data = container_of(work, struct lm75_data,
++					      crit_work.work);
++	struct device *dev = regmap_get_device(data->regmap);
++
++	lm75_crit_update(dev);
++	schedule_delayed_work(&data->crit_work,
++			      msecs_to_jiffies(LM75_CRIT_POLL_MS));
++}
++
++static ssize_t lm75_crit_show(struct device *dev, u32 attr, char *buf)
++{
++	long val;
++	int err;
++
++	err = lm75_read(dev, hwmon_temp, attr, 0, &val);
++	if (err)
++		return err;
++	return sysfs_emit(buf, "%ld\n", val);
++}
++
++static ssize_t lm75_crit_store(struct device *dev, u32 attr, const char *buf,
++			       size_t count)
++{
++	long val;
++	int err;
++
++	err = kstrtol(buf, 10, &val);
++	if (err)
++		return err;
++	err = lm75_write_temp(dev, attr, val);
++	if (err)
++		return err;
++	lm75_crit_update(dev);
++	return count;
++}
++
++static ssize_t temp1_crit_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	return lm75_crit_show(dev, hwmon_temp_max, buf);
++}
++
++static ssize_t temp1_crit_store(struct device *dev,
++				struct device_attribute *attr,
++				const char *buf, size_t count)
++{
++	return lm75_crit_store(dev, hwmon_temp_max, buf, count);
++}
++
++static ssize_t temp1_crit_hyst_show(struct device *dev,
++				    struct device_attribute *attr, char *buf)
++{
++	return lm75_crit_show(dev, hwmon_temp_max_hyst, buf);
++}
++
++static ssize_t temp1_crit_hyst_store(struct device *dev,
++				     struct device_attribute *attr,
++				     const char *buf, size_t count)
++{
++	return lm75_crit_store(dev, hwmon_temp_max_hyst, buf, count);
++}
++
++static DEVICE_ATTR_RW(temp1_crit);
++static DEVICE_ATTR_RW(temp1_crit_hyst);
++
++static struct attribute *lm75_crit_attrs[] = {
++	&dev_attr_temp1_crit.attr,
++	&dev_attr_temp1_crit_hyst.attr,
++	NULL
++};
++
++static int lm75_crit_alarm_show(struct seq_file *sf, void *v)
++{
++	struct kernfs_open_file *of = sf->private;
++	struct lm75_data *data = of->kn->priv;
++
++	seq_printf(sf, "%d\n", data->crit_alarm);
++	return 0;
++}
++
++static __poll_t lm75_crit_alarm_poll(struct kernfs_open_file *of,
++				     poll_table *wait)
++{
++	return kernfs_generic_poll(of, wait) & (EPOLLERR | EPOLLPRI);
++}
++
++static const struct kernfs_ops lm75_crit_alarm_ops = {
++	.seq_show	= lm75_crit_alarm_show,
++	.poll		= lm75_crit_alarm_poll,
++};
++
++static void lm75_crit_alarm_remove(void *kn)
++{
++	kernfs_remove(kn);
++}
++
++static const struct attribute_group lm75_crit_group = {
++	.attrs = lm75_crit_attrs,
++};
++
++static int lm75_crit_init(struct device *dev, struct lm75_data *data)
++{
++	int err;
++
++	if (data->kind != tmp105 || !of_machine_is_compatible("nokia,n8x0"))
++		return 0;
++
++	data->crit_alarm_kn = __kernfs_create_file(dev->kobj.sd,
++				"temp1_crit_alarm", S_IFREG | 0444,
++				GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, 0,
++				&lm75_crit_alarm_ops, data, NULL, NULL);
++	if (IS_ERR(data->crit_alarm_kn))
++		return PTR_ERR(data->crit_alarm_kn);
++	err = devm_add_action_or_reset(dev, lm75_crit_alarm_remove,
++				       data->crit_alarm_kn);
++	if (err)
++		return err;
++
++	lm75_crit_update(dev);
++	err = devm_device_add_group(dev, &lm75_crit_group);
++	if (err)
++		return err;
++	err = devm_delayed_work_autocancel(dev, &data->crit_work,
++					   lm75_crit_work);
++	if (err)
++		return err;
++	schedule_delayed_work(&data->crit_work,
++			      msecs_to_jiffies(LM75_CRIT_POLL_MS));
++	return 0;
++}
++#else
++static int lm75_crit_init(struct device *dev, struct lm75_data *data)
++{
++	return 0;
++}
++#endif
++
+ static umode_t lm75_is_visible(const void *data, enum hwmon_sensor_types type,
+ 			       u32 attr, int channel)
+ {
+@@ -775,6 +964,10 @@
+ 		}
+ 	}
+ 
++	err = lm75_crit_init(dev, data);
++	if (err)
++		return err;
++
+ 	dev_info(dev, "%s: sensor '%s'\n", dev_name(hwmon_dev), name);
+ 
+ 	return 0;
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -1516,6 +1516,15 @@
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called lm75.
+ 
++config SENSORS_LM75_N8X0_CRIT
++	bool "Maemo critical-temperature attributes for the N800/N810 TMP105"
++	depends on SENSORS_LM75=y
++	help
++	  On the Nokia N800 and N810, add temp1_crit, temp1_crit_hyst and
++	  temp1_crit_alarm to the TMP105's I2C device, as Nokia's tmp105
++	  driver had them: Maemo's DSME uses them to power off at a
++	  critical temperature.
++
+ config SENSORS_LM77
+ 	tristate "National Semiconductor LM77"
+ 	depends on I2C

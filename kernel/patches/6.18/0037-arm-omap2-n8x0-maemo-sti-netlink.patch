@@ -1,0 +1,121 @@
+ARM: OMAP2: n8x0-maemo: sink for BME's STI trace records
+
+BME sends a trace record over NETLINK_USERSOCK for each of its events,
+to the kernel's STI (OMAP serial trace port) interface of Nokia's
+kernel (sti-netlink.c). With no kernel socket for the protocol every
+send failed with ECONNREFUSED, and BME printed "sendmsg: Connection
+refused" to the console dozens of times a minute (strace on the device:
+nlmsg_type 0xc101, STI_WRITE with id 0xc1, channel 0x2b, 32 bytes).
+There is no STI: take the records and drop them, ack on request.
+
+--- a/arch/arm/mach-omap2/n8x0-maemo.c
++++ b/arch/arm/mach-omap2/n8x0-maemo.c
+@@ -16,6 +16,8 @@
+  *    (keyboard slide, lock, headphone jack, GPS) from NOLO's tags.
+  *  - /sys/devices/platform/musb_hdrc/mode: the USB role and cable state
+  *    ("b_idle", "b_peripheral", "a_host", ...), which DSME reads.
++ *  - A NETLINK_USERSOCK kernel socket taking the STI trace records BME
++ *    sends.
+  */
+ 
+ #include <linux/backlight.h>
+@@ -27,6 +29,7 @@
+ #include <linux/kernel.h>
+ #include <linux/kernfs.h>
+ #include <linux/kobject.h>
++#include <linux/netlink.h>
+ #include <linux/of.h>
+ #include <linux/poll.h>
+ #include <linux/platform_device.h>
+@@ -38,6 +41,9 @@
+ #include <linux/unaligned.h>
+ #include <linux/usb/musb.h>
+ #include <linux/workqueue.h>
++#include <net/net_namespace.h>
++#include <net/netlink.h>
++#include <net/sock.h>
+ 
+ #include "common.h"
+ 
+@@ -574,6 +580,53 @@
+ static inline void n8x0_maemo_musb_init(void) { }
+ #endif
+ 
++/*
++ * Nokia's STI (OMAP serial trace port) interface: userspace sent trace
++ * records over NETLINK_USERSOCK to the kernel (2.6.21's sti-netlink.c),
++ * which wrote them to the debug port. BME sends one for each of its
++ * events (nlmsg_type STI_WRITE | id << 8, channel in nlmsg_flags' upper
++ * byte); without a kernel socket every send failed with ECONNREFUSED and
++ * BME printed "sendmsg: Connection refused" to the console, many times
++ * a minute. There is no STI here: take the records and drop them; acked
++ * on request as then, a read gets nothing.
++ */
++#define STI_READ	0
++#define STI_WRITE	1
++
++static void n8x0_sti_input(struct sk_buff *skb)
++{
++	while (skb->len >= NLMSG_HDRLEN) {
++		struct nlmsghdr *nlh = nlmsg_hdr(skb);
++		u32 rlen;
++
++		if (nlh->nlmsg_len < NLMSG_HDRLEN || skb->len < nlh->nlmsg_len)
++			return;
++		switch (nlh->nlmsg_type & 0xff) {
++		case STI_WRITE:
++		case STI_READ:
++			if (nlh->nlmsg_flags & NLM_F_ACK)
++				netlink_ack(skb, nlh, 0, NULL);
++			break;
++		default:
++			netlink_ack(skb, nlh, -ENOTTY, NULL);
++		}
++		rlen = NLMSG_ALIGN(nlh->nlmsg_len);
++		if (rlen > skb->len)
++			rlen = skb->len;
++		skb_pull(skb, rlen);
++	}
++}
++
++static void __init n8x0_maemo_sti_init(void)
++{
++	struct netlink_kernel_cfg cfg = {
++		.input	= n8x0_sti_input,
++	};
++
++	if (!netlink_kernel_create(&init_net, NETLINK_USERSOCK, &cfg))
++		pr_warn("n8x0-maemo: no STI netlink socket\n");
++}
++
+ static int __init n8x0_maemo_init(void)
+ {
+ 	struct device_node *chosen;
+@@ -602,6 +655,7 @@
+ 	n8x0_maemo_omapfb_init();
+ 	n8x0_maemo_switches_init();
+ 	n8x0_maemo_musb_init();
++	n8x0_maemo_sti_init();
+ 
+ 	return sysfs_create_file(power_kobj, &sleep_while_idle_attr.attr);
+ }
+--- a/arch/arm/mach-omap2/Kconfig
++++ b/arch/arm/mach-omap2/Kconfig
+@@ -266,6 +266,7 @@
+ 	depends on BACKLIGHT_CLASS_DEVICE=y
+ 	depends on GPIOLIB && INPUT=y
+ 	depends on USB_MUSB_HDRC=y || USB_MUSB_HDRC=n
++	depends on NET
+ 	help
+ 	  Interfaces Maemo's initfs (linuxrc, DSME, BME, kicker) expects
+ 	  from Nokia's 2.6.21 kernel: /proc/bootreason and
+@@ -275,7 +276,8 @@
+ 	  omapfb's backlight_level and backlight_max for the Tahvo
+ 	  backlight, the GPIO switches from NOLO's tags as
+ 	  /sys/devices/platform/gpio-switch/<name>/state, and musb's mode
+-	  as /sys/devices/platform/musb_hdrc/mode.
++	  as /sys/devices/platform/musb_hdrc/mode, and a NETLINK_USERSOCK
++	  socket for the STI trace records BME sends.
+ 
+ config MACH_NOKIA_N8X0
+ 	bool "Nokia N800/N810"
