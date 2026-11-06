@@ -2,7 +2,12 @@
 #ifndef MBX_DRV_H
 #define MBX_DRV_H
 
+#include <linux/atomic.h>
 #include <linux/clk.h>
+#include <linux/dma-fence.h>
+#include <linux/dma-resv.h>
+#include <linux/kref.h>
+#include <linux/workqueue.h>
 #include <linux/io.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
@@ -46,6 +51,7 @@ struct mbx_mapping {
 };
 
 struct mbx_vm {
+	struct kref ref;		/* the file's, and each queued job's */
 	struct mbx_device *m;
 	struct drm_mm mm;
 	struct mutex lock;		/* mm, maps, the page tables' entries */
@@ -77,6 +83,15 @@ struct mbx_device {
 	spinlock_t irq_lock;
 	wait_queue_head_t wq;
 	u32 pending;		/* interrupt bits seen, not yet consumed */
+
+	/* queued jobs: one at a time, in order; each has a fence (its number) */
+	struct workqueue_struct *job_wq;
+	struct mutex submit_lock;	/* numbering and queueing in the same order */
+	spinlock_t fence_lock;
+	u64 fence_ctx;
+	atomic64_t next_seqno, completed;
+	wait_queue_head_t fence_wq;
+	u8 status[64];		/* by fence number: 1 if the job failed (the last 64) */
 };
 
 #define to_mbx(d) container_of(d, struct mbx_device, drm)
@@ -93,7 +108,8 @@ static inline void mbx_write(struct mbx_device *m, u32 reg, u32 v)
 
 /* mbx_mmu.c */
 struct mbx_vm *mbx_vm_create(struct mbx_device *m);
-void mbx_vm_destroy(struct mbx_vm *vm);
+struct mbx_vm *mbx_vm_get(struct mbx_vm *vm);
+void mbx_vm_put(struct mbx_vm *vm);
 struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj);
 int mbx_vm_unmap(struct mbx_vm *vm, struct drm_gem_object *obj);
 void mbx_vm_activate(struct mbx_vm *vm);	/* with job_lock held */
@@ -108,6 +124,10 @@ int mbx_ioctl_bo_unmap(struct drm_device *dev, void *data, struct drm_file *file
 
 /* mbx_job.c */
 int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file);
+int mbx_ioctl_wait_fence(struct drm_device *dev, void *data, struct drm_file *file);
+int mbx_job_init(struct mbx_device *m);
+void mbx_job_fini(struct mbx_device *m);
+void mbx_flush_jobs(struct mbx_device *m);	/* before something a queued job may use goes away */
 void mbx_job_irq(struct mbx_device *m, u32 status);
 
 #endif

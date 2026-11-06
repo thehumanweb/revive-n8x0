@@ -71,6 +71,7 @@ struct mbx_context {
 
 	struct mbx_vgp_program *programs;	/* linked pairs */
 	struct mbx_job job;
+	uint64_t last_fence;			/* the last job this context submitted */
 	struct mbx_target_bos tbos;
 	float next_clear_depth;
 };

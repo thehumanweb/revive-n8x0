@@ -62,6 +62,7 @@ int mbx_ioctl_bo_unmap(struct drm_device *dev, void *data, struct drm_file *file
 	obj = drm_gem_object_lookup(file, a->handle);
 	if (!obj)
 		return -ENOENT;
+	mbx_flush_jobs(to_mbx(dev));	/* a queued job may be using the mapping */
 	ret = mbx_vm_unmap(f->vm, obj);
 	drm_gem_object_put(obj);
 	return ret;

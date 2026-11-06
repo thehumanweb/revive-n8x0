@@ -113,6 +113,7 @@ void mbx_job_flush(struct mbx_context *ctx)
 	struct mbx_job *job = &ctx->job;
 	struct mbx_target_bos *t = &ctx->tbos;
 	struct drm_mbx_submit s;
+	struct drm_mbx_submit_bo bo;
 	struct mbx_resource *color = job->color;
 	uint32_t zclear;
 	float z = job->clear_depth;
@@ -145,9 +146,19 @@ void mbx_job_flush(struct mbx_context *ctx)
 	memcpy(&zclear, &z, 4);
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
 
+	/* the render target is the one buffer the job writes that others may use (the display) */
+	bo.handle = color->bo->handle;
+	bo.flags = MBX_SUBMIT_BO_WRITE;
+	s.bos = (uintptr_t)&bo;
+	s.n_bos = 1;
+
 	ret = drmIoctl(ctx->screen->fd, DRM_IOCTL_MBX_SUBMIT, &s);
-	if (ret)
+	if (ret) {
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
+	} else {
+		color->last_fence = s.fence;
+		ctx->last_fence = s.fence;
+	}
 	mbx_job_reset(ctx);
 }
 
@@ -163,4 +174,10 @@ void mbx_flush_for_resource(struct mbx_context *ctx, struct mbx_resource *rsc)
 {
 	if (ctx->job.active && ctx->job.color == rsc)
 		mbx_job_flush(ctx);
+}
+
+void mbx_resource_wait(struct mbx_screen *screen, struct mbx_resource *rsc)
+{
+	if (rsc->last_fence)
+		mbx_fence_wait(screen, rsc->last_fence, 10ull * 1000000000ull);
 }

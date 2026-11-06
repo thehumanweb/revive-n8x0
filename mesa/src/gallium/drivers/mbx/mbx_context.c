@@ -39,9 +39,19 @@ static void mbx_context_destroy(struct pipe_context *pctx)
 
 static void mbx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned flags)
 {
-	mbx_job_flush(mbx_context(pctx));
-	if (fence)
-		*fence = NULL;	/* done: a submit returns when its render is */
+	struct mbx_context *ctx = mbx_context(pctx);
+
+	mbx_job_flush(ctx);
+	if (fence) {
+		/* NULL means done; otherwise a fence for the last job */
+		struct pipe_fence_handle *f = NULL;
+
+		if (ctx->last_fence > ctx->screen->fence_done && (f = calloc(1, sizeof(*f)))) {
+			pipe_reference_init(&f->reference, 1);
+			f->seqno = ctx->last_fence;
+		}
+		pctx->screen->fence_reference(pctx->screen, fence, f);
+	}
 }
 
 static void mbx_invalidate_resource(struct pipe_context *pctx, struct pipe_resource *prsc) { }
@@ -83,6 +93,7 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 				scissor->maxy < ctx->fb.height))
 			mesa_logw("mbx: a scissored clear clears the whole target for now");
 		mbx_job_flush(ctx);	/* the CPU fill comes after what was drawn */
+		mbx_resource_wait(ctx->screen, rsc);
 		map = mbx_bo_map(rsc->bo);
 		mbx_dbg("clear: %ux%u, stride %u, bo size %llu, map %p", ctx->fb.width, ctx->fb.height, rsc->stride,
 			(unsigned long long)rsc->bo->size, (void *)map);

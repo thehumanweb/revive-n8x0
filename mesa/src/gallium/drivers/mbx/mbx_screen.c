@@ -4,6 +4,7 @@
  * side fixed-function (texture units, fog, blending), so fragment shaders
  * are matched onto it or fall back to the CPU. See JOURNEY.md.
  */
+#include <errno.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -11,6 +12,7 @@
 #include "drm-uapi/mbx_drm.h"
 #include "compiler/nir/nir.h"
 #include "util/format/u_format.h"
+#include "util/log.h"
 #include "util/os_misc.h"
 #include "util/ralloc.h"
 #include "util/u_screen.h"
@@ -18,6 +20,39 @@
 #include "mbx_context.h"
 #include "mbx_program.h"
 #include "mbx_screen.h"
+
+bool mbx_fence_wait(struct mbx_screen *screen, uint64_t seqno, uint64_t timeout_ns)
+{
+	struct drm_mbx_wait_fence w = { .fence = seqno, .timeout_ns = timeout_ns };
+
+	if (seqno <= screen->fence_done)
+		return true;
+	if (ioctl(screen->fd, DRM_IOCTL_MBX_WAIT_FENCE, &w)) {
+		if (errno == ETIMEDOUT)
+			return false;
+		if (errno != EIO)
+			return false;
+		mesa_loge("mbx: job %llu failed", (unsigned long long)seqno);
+	}
+	screen->fence_done = MAX2(screen->fence_done, seqno);
+	return true;
+}
+
+static void mbx_fence_reference(struct pipe_screen *pscreen, struct pipe_fence_handle **ptr,
+				struct pipe_fence_handle *fence)
+{
+	struct pipe_fence_handle *old = *ptr;
+
+	if (pipe_reference(old ? &old->reference : NULL, fence ? &fence->reference : NULL))
+		free(old);
+	*ptr = fence;
+}
+
+static bool mbx_fence_finish(struct pipe_screen *pscreen, struct pipe_context *ctx,
+			     struct pipe_fence_handle *fence, uint64_t timeout)
+{
+	return mbx_fence_wait(mbx_screen(pscreen), fence->seqno, MIN2(timeout, 60ull * 1000000000ull));
+}
 
 static const char *mbx_screen_get_name(struct pipe_screen *pscreen)
 {
@@ -210,6 +245,8 @@ struct pipe_screen *mbx_screen_create(int fd, const struct pipe_screen_config *c
 	pscreen->get_device_vendor = mbx_screen_get_vendor;
 	pscreen->context_create = mbx_context_create;
 	pscreen->is_format_supported = mbx_screen_is_format_supported;
+	pscreen->fence_reference = mbx_fence_reference;
+	pscreen->fence_finish = mbx_fence_finish;
 	pscreen->query_dmabuf_modifiers = mbx_screen_query_dmabuf_modifiers;
 	pscreen->is_dmabuf_modifier_supported = mbx_screen_is_dmabuf_modifier_supported;
 	pscreen->get_dmabuf_modifier_planes = mbx_screen_get_dmabuf_modifier_planes;

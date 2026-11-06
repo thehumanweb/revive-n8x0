@@ -130,7 +130,7 @@ static void mbx_postclose(struct drm_device *drm, struct drm_file *file)
 {
 	struct mbx_file *f = file->driver_priv;
 
-	mbx_vm_destroy(f->vm);
+	mbx_vm_put(f->vm);
 	kfree(f);
 }
 
@@ -140,6 +140,7 @@ static const struct drm_ioctl_desc mbx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(MBX_BO_INFO, mbx_ioctl_bo_info, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MBX_BO_UNMAP, mbx_ioctl_bo_unmap, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MBX_SUBMIT, mbx_ioctl_submit, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(MBX_WAIT_FENCE, mbx_ioctl_wait_fence, DRM_RENDER_ALLOW),
 };
 
 DEFINE_DRM_GEM_FOPS(mbx_fops);
@@ -171,6 +172,9 @@ static int mbx_probe(struct platform_device *pdev)
 	mutex_init(&m->job_lock);
 	spin_lock_init(&m->irq_lock);
 	init_waitqueue_head(&m->wq);
+	ret = mbx_job_init(m);
+	if (ret)
+		return ret;
 	platform_set_drvdata(pdev, m);
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
@@ -225,6 +229,7 @@ static void mbx_remove(struct platform_device *pdev)
 	struct mbx_device *m = platform_get_drvdata(pdev);
 
 	drm_dev_unplug(&m->drm);
+	mbx_job_fini(m);	/* the queued jobs finish first */
 	mbx_pb_destroy(m);
 	mbx_write(m, MBX_REG_INT_ENABLE, 0);
 	mbx_power_off(m);

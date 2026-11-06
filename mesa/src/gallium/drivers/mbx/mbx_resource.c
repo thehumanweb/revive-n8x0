@@ -215,6 +215,7 @@ static void *mbx_transfer_map(struct pipe_context *pctx, struct pipe_resource *p
 		return NULL;
 	/* what is recorded against this resource has to be rendered first */
 	mbx_flush_for_resource(mbx_context(pctx), rsc);
+	mbx_resource_wait(mbx_screen(pctx->screen), rsc);
 	base = mbx_bo_map(rsc->bo);
 	if (!base) {
 		FREE(trans);

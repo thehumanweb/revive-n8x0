@@ -7,6 +7,8 @@
 
 #include "mbx_bo.h"
 
+struct mbx_screen;
+
 struct mbx_context;
 
 struct mbx_resource {
@@ -15,6 +17,7 @@ struct mbx_resource {
 	uint32_t stride;	/* bytes a row; 0 for buffers */
 	uint32_t size;		/* bytes the layout takes */
 	bool on_chip;		/* a depth buffer: the MBX keeps depth on chip, there is no memory */
+	uint64_t last_fence;	/* the last job that wrote it: the CPU waits for it before touching the memory */
 	struct renderonly_scanout *scanout;	/* the KMS device's buffer this is, when it is scanned out */
 };
 
@@ -28,5 +31,7 @@ void mbx_resource_context_init(struct pipe_context *pctx);
 
 /* context.c: render what is recorded for rsc, before the CPU or another user reads it */
 void mbx_flush_for_resource(struct mbx_context *ctx, struct mbx_resource *rsc);
+/* and wait for the job that wrote it, before the CPU reads or writes its memory */
+void mbx_resource_wait(struct mbx_screen *screen, struct mbx_resource *rsc);
 
 #endif

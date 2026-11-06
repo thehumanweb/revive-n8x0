@@ -39,6 +39,7 @@ struct mbx_vm *mbx_vm_create(struct mbx_device *m)
 
 	if (!vm)
 		return ERR_PTR(-ENOMEM);
+	kref_init(&vm->ref);
 	vm->m = m;
 	mutex_init(&vm->lock);
 	INIT_LIST_HEAD(&vm->maps);
@@ -76,8 +77,9 @@ static void unmap_locked(struct mbx_vm *vm, struct mbx_mapping *map)
 	kfree(map);
 }
 
-void mbx_vm_destroy(struct mbx_vm *vm)
+static void mbx_vm_release(struct kref *ref)
 {
+	struct mbx_vm *vm = container_of(ref, struct mbx_vm, ref);
 	struct mbx_device *m = vm->m;
 	struct mbx_mapping *map, *tmp;
 	int i;
@@ -96,6 +98,17 @@ void mbx_vm_destroy(struct mbx_vm *vm)
 	for (i = 0; i < MBX_MMU_TABLES; i++)
 		dma_free_coherent(m->dev, MBX_PAGE, vm->pt[i], vm->pt_dma[i]);
 	kfree(vm);
+}
+
+struct mbx_vm *mbx_vm_get(struct mbx_vm *vm)
+{
+	kref_get(&vm->ref);
+	return vm;
+}
+
+void mbx_vm_put(struct mbx_vm *vm)
+{
+	kref_put(&vm->ref, mbx_vm_release);
 }
 
 static struct mbx_mapping *find_locked(struct mbx_vm *vm, struct drm_gem_object *obj)

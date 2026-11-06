@@ -101,6 +101,7 @@ static struct {
 	uint8_t *mem;		/* the shim's memfd: physical memory */
 	struct shim_bo dummy;
 	struct shim_bo pb;	/* the free list's table, then the parameter buffer's pages */
+	uint64_t seqno;		/* the last fence handed out: jobs run to completion inside the ioctl */
 	bool pb_built;
 	struct sim_fd *fds;
 	mtx_t lock;
@@ -303,7 +304,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	uint32_t i, st;
 	int ret = 0;
 
-	if (a->flags || a->stream_words > (256u << 10))
+	if (a->flags || a->stream_words > (256u << 10) || a->n_bos > 64)
 		return -EINVAL;
 	/* chunks whole and of a known type, as the kernel checks them */
 	for (i = 0; i < a->stream_words;) {
@@ -381,8 +382,17 @@ reset:
 	rw(R_SOFT_RESET, 0);
 	sim.pb_built = false;
 out:
+	a->fence = ++sim.seqno;
 	mtx_unlock(&sim.lock);
 	return ret;
+}
+
+/* the sim runs a job inside SUBMIT, so every fence is done */
+static int ioctl_wait_fence(int fd, unsigned long request, void *arg)
+{
+	struct drm_mbx_wait_fence *w = arg;
+
+	return w->fence > sim.seqno ? -EINVAL : 0;
 }
 
 static ioctl_fn_t driver_ioctls[] = {
@@ -391,6 +401,7 @@ static ioctl_fn_t driver_ioctls[] = {
 	[DRM_MBX_BO_INFO] = ioctl_bo_info,
 	[DRM_MBX_BO_UNMAP] = ioctl_bo_unmap,
 	[DRM_MBX_SUBMIT] = ioctl_submit,
+	[DRM_MBX_WAIT_FENCE] = ioctl_wait_fence,
 };
 
 void drm_shim_driver_init(void)

@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "pipe/p_screen.h"
+#include "util/u_inlines.h"
 #include "renderonly/renderonly.h"
 
 #include <stdio.h>
@@ -13,8 +14,15 @@
 /* MBX_DEBUG=1 in the environment traces the driver's decisions on stderr */
 #define mbx_dbg(...) do { if (getenv("MBX_DEBUG")) { fprintf(stderr, "mbx: "); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
 
+/* A job's fence: jobs complete in order, so a number says it all */
+struct pipe_fence_handle {
+	struct pipe_reference reference;
+	uint64_t seqno;
+};
+
 struct mbx_screen {
 	struct pipe_screen base;
+	uint64_t fence_done;	/* the highest fence known to be done */
 	int fd;
 	struct renderonly *ro;
 	uint32_t core_id, revision;
@@ -24,6 +32,9 @@ static inline struct mbx_screen *mbx_screen(struct pipe_screen *p)
 {
 	return (struct mbx_screen *)p;
 }
+
+/* Wait for a job's fence (ns; false on a timeout); a job that failed still counts as done */
+bool mbx_fence_wait(struct mbx_screen *screen, uint64_t seqno, uint64_t timeout_ns);
 
 struct pipe_screen *mbx_screen_create(int fd, const struct pipe_screen_config *config,
 				      struct renderonly *ro);
