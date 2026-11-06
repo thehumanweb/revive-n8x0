@@ -19,23 +19,26 @@
 #define RAM_BASE	0x80000000u
 #define RAM_SIZE	(8u << 20)
 #define PT_PHYS		0x1000u			/* eight page tables */
-#define PB_PHYS		0x200000u		/* the table, then the pages */
+#define PB_PHYS		0x200000u		/* the pages, device 0 (3 MB) */
+#define TBL_PHYS	0x500000u		/* the free list's table, device 0x800000 */
+#define SMALL_DEV	0x800000u		/* the small buffers: device 0x810000.. on RAM_BASE + (the address - SMALL_DEV) */
+#define OFF(va)		((va) - SMALL_DEV)
 
 /* the kernel driver's layout (mbx/drm/mbx_drv.h) */
 #define PAGE		4096u
 #define VM_SIZE		(32u << 20)
 #define PB_PAGES	768u
-#define PB_FIRST_PAGE	0x100u
+#define PB_FIRST_PAGE	0u
 #define PB_LAST_PAGE	(PB_FIRST_PAGE + PB_PAGES - 1)
 #define PB_TABLE_SIZE	0x4000u
 #define PB_VA		(PB_FIRST_PAGE << 12)
-#define PB_TABLE_VA	(PB_VA - PB_TABLE_SIZE)
+#define PB_TABLE_VA	0x800000u
 
 /* device addresses of the small buffers (mapped one to one on RAM_BASE) */
-#define SURF		0x10000u
-#define REGIONS		0x20000u
-#define TAILS		0x30000u
-#define CTX		0x50000u		/* the TA and EVM contexts: 32 KB, 16 KB aligned */
+#define SURF		0x810000u
+#define REGIONS		0x820000u
+#define TAILS		0x830000u
+#define CTX		0x850000u		/* the TA and EVM contexts: 32 KB, 16 KB aligned */
 
 static uint8_t *ram;
 static struct mbxemu *E;
@@ -95,11 +98,13 @@ static void setup_mmu(void)
 {
 	uint32_t i;
 
-	for (i = 0x10; i < 0x58; i++)			/* the small buffers: device 0x10000.. on RAM_BASE + the same */
-		map_page(i, RAM_BASE + i * PAGE);
-	/* the free list's table and the parameter buffer's pages: one object, contiguous in both */
-	for (i = 0; i < PB_TABLE_SIZE / PAGE + PB_PAGES; i++)
-		map_page((PB_TABLE_VA >> 12) + i, RAM_BASE + PB_PHYS + i * PAGE);
+	for (i = 0; i < 0x48; i++)			/* the small buffers: device 0x810000.. on RAM_BASE + 0x10000.. */
+		map_page((SMALL_DEV >> 12) + 0x10 + i, RAM_BASE + 0x10000 + i * PAGE);
+	/* the parameter buffer's pages at device 0, the free list's table at 0x800000 */
+	for (i = 0; i < PB_PAGES; i++)
+		map_page(i, RAM_BASE + PB_PHYS + i * PAGE);
+	for (i = 0; i < PB_TABLE_SIZE / PAGE; i++)
+		map_page((PB_TABLE_VA >> 12) + i, RAM_BASE + TBL_PHYS + i * PAGE);
 	for (i = 0; i < 8; i++)
 		wr(R_MMU_TABLE(i), RAM_BASE + PT_PHYS + i * PAGE);
 	wr(R_MMU_CTRL, 1);
@@ -169,7 +174,7 @@ static uint32_t kick_render(void)
 
 static int drawn(void)
 {
-	const uint32_t *p = (const uint32_t *)(ram + SURF);
+	const uint32_t *p = (const uint32_t *)(ram + OFF(SURF));
 	int i, n = 0;
 
 	for (i = 0; i < TRI_W * TRI_H; i++)
@@ -179,7 +184,7 @@ static int drawn(void)
 
 static void clear_surface(void)
 {
-	uint32_t *p = (uint32_t *)(ram + SURF);
+	uint32_t *p = (uint32_t *)(ram + OFF(SURF));
 
 	for (int i = 0; i < TRI_W * TRI_H; i++)
 		p[i] = TRI_CLEAR;
@@ -188,7 +193,7 @@ static void clear_surface(void)
 /* The region array the TA wrote: tiles with a list pointer, tiles flagged empty (bit 25) */
 static void regions(int *listed, int *empty)
 {
-	const uint32_t *r = (const uint32_t *)(ram + REGIONS);
+	const uint32_t *r = (const uint32_t *)(ram + OFF(REGIONS));
 
 	*listed = *empty = 0;
 	for (int k = 0; k < 16; k++) {
@@ -201,7 +206,7 @@ static void regions(int *listed, int *empty)
 
 static int pb_words_used(void)
 {
-	const uint32_t *p = (const uint32_t *)(ram + PB_PHYS + PB_TABLE_SIZE);
+	const uint32_t *p = (const uint32_t *)(ram + PB_PHYS);
 	int n = 0;
 
 	for (uint32_t i = 0; i < PB_PAGES * PAGE / 4; i++)

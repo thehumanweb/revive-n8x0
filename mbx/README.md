@@ -551,3 +551,15 @@ circuit.
       independent of what the target held, and each pixel is ones with about 2 of 24 bits cleared
       (`docs/n810-tile-flush.txt`). That is the look of the tile buffers (two, used by turns) being flushed
       with nothing drawn into them. The model gives white in such a case (strict mode).
+35. **The parameter buffer is at device address 0** (found on the N810 with our driver). With its base at
+    `0x1c00000` and at `0x100000` every tile that was processed came out as garbage (assumption 34); with the
+    buffer at device address 0, its pages in the first arena (0-8 MB, here 768 pages), the free list's table and
+    the TA and EVM contexts at `0x800000` and the clients' buffers after them, the render draws: the same
+    shape as the model (1054 of the model's 1144 pixels, the same bounding box, no pixel the model does not
+    draw) and, in the rest of the target, the clear colour kept. A list item's pointer is a word offset from
+    `0x83c` (`0x40800500` for an object at base + `0x1400`), and the region entries' list addresses are
+    absolute, so the two agree only at base 0; which of them the ISP applies the base to is not known. The model
+    now counts a base other than 0 as a violation (`V_PB_BASE`, garbage in strict mode). What the chip draws is
+    not the model's colour yet: 973 of the 1144 triangle pixels equal the expected colour ANDed with `0x20` (the
+    colour the target was filled with), channel by channel, which reads as a bitwise logic operation against the
+    old pixel; the others are partly exact, partly ANDed. Which register or state word selects it is not known.

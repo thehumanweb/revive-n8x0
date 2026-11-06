@@ -70,20 +70,20 @@ bool drm_shim_driver_prefers_first_render_node = true;
 #define R_FL_BUILD	0x838
 #define I_EVM_DALLOC	0x40
 
-#define VM_START	0x400000u	/* clients' buffers above 4 MB; the parameter buffer, table, contexts below */
+#define VM_START	0x810000u	/* clients' buffers in the second arena, after the table and contexts at 0x800000 */
 #define VM_SIZE		(32u << 20)
 #define PAGE		4096u
 
 /* The parameter buffer, as the kernel driver lays it out (mbx/drm/mbx_drv.h): the free list's
  * table then 1024 pages at the top of the address space, the same pages in every space */
 #define PB_PAGES	768u			/* the buffer, its table and the contexts low in the space, as the stock stack has them */
-#define PB_FIRST_PAGE	0x100u
+#define PB_FIRST_PAGE	0u			/* the parameter buffer at device address 0, as the stock stack has it */
 #define PB_LAST_PAGE	(PB_FIRST_PAGE + PB_PAGES - 1)
 #define PB_TABLE_SIZE	0x4000u
 #define PB_VA		(PB_FIRST_PAGE << 12)
-#define PB_TABLE_VA	(PB_VA - PB_TABLE_SIZE)
+#define PB_TABLE_VA	0x800000u
 #define CTX_SIZE	0x8000u			/* the TA and EVM contexts, padded: 16 KB each */
-#define CTX_VA		(PB_TABLE_VA - CTX_SIZE)
+#define CTX_VA		(PB_TABLE_VA + PB_TABLE_SIZE)
 
 struct sim_map {
 	struct sim_map *next;
@@ -103,7 +103,8 @@ static struct {
 	struct mbxemu *emu;
 	uint8_t *mem;		/* the shim's memfd: physical memory */
 	struct shim_bo dummy;
-	struct shim_bo pb;	/* the free list's table, then the parameter buffer's pages */
+	struct shim_bo pb;	/* the parameter buffer's pages */
+	struct shim_bo tbl;	/* the free list's table */
 	struct shim_bo ctx;	/* the TA and EVM contexts */
 	uint64_t seqno;		/* the last fence handed out: jobs run to completion inside the ioctl */
 	bool pb_built;
@@ -144,7 +145,8 @@ static void sim_init(void)
 		abort();
 	}
 	drm_shim_bo_init(&sim.dummy, PAGE);
-	drm_shim_bo_init(&sim.pb, PB_TABLE_SIZE + (size_t)PB_PAGES * PAGE);
+	drm_shim_bo_init(&sim.pb, (size_t)PB_PAGES * PAGE);
+	drm_shim_bo_init(&sim.tbl, PB_TABLE_SIZE);
 	drm_shim_bo_init(&sim.ctx, CTX_SIZE);
 	sim.emu = mbxemu_new(&host);
 	if (getenv("MBX_SIM_TRACE"))
@@ -173,10 +175,15 @@ static struct sim_fd *sim_fd_get(int fd)
 			pt[j] = (uint32_t)sim.dummy.mem_addr;
 	}
 	/* the parameter buffer at its fixed addresses */
-	for (j = 0; j < (int)(PB_TABLE_SIZE / PAGE + PB_PAGES); j++) {
-		uint32_t pg = (PB_TABLE_VA >> 12) + j;
+	for (j = 0; j < (int)PB_PAGES; j++) {
+		uint32_t pg = (PB_VA >> 12) + j;
 
 		((uint32_t *)(sim.mem + f->pt[pg >> 10]->mem_addr))[pg & 1023] = (uint32_t)(sim.pb.mem_addr + (uint64_t)j * PAGE);
+	}
+	for (j = 0; j < (int)(PB_TABLE_SIZE / PAGE); j++) {
+		uint32_t pg = (PB_TABLE_VA >> 12) + j;
+
+		((uint32_t *)(sim.mem + f->pt[pg >> 10]->mem_addr))[pg & 1023] = (uint32_t)(sim.tbl.mem_addr + (uint64_t)j * PAGE);
 	}
 	/* the contexts, just below the free list's table */
 	for (j = 0; j < (int)(CTX_SIZE / PAGE); j++) {
@@ -469,7 +476,17 @@ static int ioctl_pb_dump(int fd, unsigned long request, void *arg)
 
 	if (d->offset > total || d->size > total - d->offset)
 		return -EINVAL;
-	memcpy((void *)(uintptr_t)d->ptr, sim.mem + sim.pb.mem_addr + d->offset, d->size);
+	{
+		/* the window is the table (16 KB) and then the pages */
+		uint32_t k;
+
+		for (k = 0; k < d->size; k++) {
+			uint32_t pos = d->offset + k;
+
+			((uint8_t *)(uintptr_t)d->ptr)[k] = pos < PB_TABLE_SIZE ? sim.mem[sim.tbl.mem_addr + pos] :
+							    sim.mem[sim.pb.mem_addr + pos - PB_TABLE_SIZE];
+		}
+	}
 	return 0;
 }
 

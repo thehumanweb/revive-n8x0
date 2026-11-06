@@ -18,23 +18,26 @@
 #define RAM_BASE	0x80000000u
 #define RAM_SIZE	(8u << 20)
 #define PT_PHYS		0x1000u			/* eight page tables */
-#define PB_PHYS		0x200000u		/* the table, then the pages */
+#define PB_PHYS		0x200000u		/* the pages, device 0 (3 MB) */
+#define TBL_PHYS	0x500000u		/* the free list's table, device 0x800000 */
+#define SMALL_DEV	0x800000u		/* the small buffers: device 0x810000.. on RAM_BASE + (the address - SMALL_DEV) */
+#define OFF(va)		((va) - SMALL_DEV)
 
 /* the kernel driver's layout (mbx/drm/mbx_drv.h) */
 #define PAGE		4096u
 #define VM_SIZE		(32u << 20)
 #define PB_PAGES	768u
-#define PB_FIRST_PAGE	0x100u
+#define PB_FIRST_PAGE	0u
 #define PB_LAST_PAGE	(PB_FIRST_PAGE + PB_PAGES - 1)
 #define PB_TABLE_SIZE	0x4000u
 #define PB_VA		(PB_FIRST_PAGE << 12)
-#define PB_TABLE_VA	(PB_VA - PB_TABLE_SIZE)
+#define PB_TABLE_VA	0x800000u
 
 /* device addresses of the small buffers (mapped one to one on RAM_BASE) */
-#define SURF		0x10000u
-#define REGIONS		0x20000u
-#define TAILS		0x30000u
-#define CTX		0x50000u		/* the TA and EVM contexts: 32 KB, 16 KB aligned */
+#define SURF		0x810000u
+#define REGIONS		0x820000u
+#define TAILS		0x830000u
+#define CTX		0x850000u		/* the TA and EVM contexts: 32 KB, 16 KB aligned */
 
 static uint8_t *ram;
 static struct mbxemu *E;
@@ -100,11 +103,13 @@ static void setup_mmu(void)
 {
 	uint32_t i;
 
-	for (i = 0x10; i < 0x58; i++)			/* the small buffers: device 0x10000.. on RAM_BASE + the same */
-		map_page(i, RAM_BASE + i * PAGE);
-	/* the free list's table and the parameter buffer's pages: one object, contiguous in both */
-	for (i = 0; i < PB_TABLE_SIZE / PAGE + PB_PAGES; i++)
-		map_page((PB_TABLE_VA >> 12) + i, RAM_BASE + PB_PHYS + i * PAGE);
+	for (i = 0; i < 0x48; i++)			/* the small buffers: device 0x810000.. on RAM_BASE + 0x10000.. */
+		map_page((SMALL_DEV >> 12) + 0x10 + i, RAM_BASE + 0x10000 + i * PAGE);
+	/* the parameter buffer's pages at device 0, the free list's table at 0x800000 */
+	for (i = 0; i < PB_PAGES; i++)
+		map_page(i, RAM_BASE + PB_PHYS + i * PAGE);
+	for (i = 0; i < PB_TABLE_SIZE / PAGE; i++)
+		map_page((PB_TABLE_VA >> 12) + i, RAM_BASE + TBL_PHYS + i * PAGE);
 	for (i = 0; i < 8; i++)
 		wr(R_MMU_TABLE(i), RAM_BASE + PT_PHYS + i * PAGE);
 	wr(R_MMU_CTRL, 1);
@@ -112,7 +117,7 @@ static void setup_mmu(void)
 
 static int drawn(void)
 {
-	const uint32_t *p = (const uint32_t *)(ram + SURF);
+	const uint32_t *p = (const uint32_t *)(ram + OFF(SURF));
 	int i, n = 0;
 
 	for (i = 0; i < TRI_W * TRI_H; i++)
@@ -122,7 +127,7 @@ static int drawn(void)
 
 static void clear_surface(void)
 {
-	uint32_t *p = (uint32_t *)(ram + SURF);
+	uint32_t *p = (uint32_t *)(ram + OFF(SURF));
 
 	for (int i = 0; i < TRI_W * TRI_H; i++)
 		p[i] = TRI_CLEAR;
@@ -152,14 +157,19 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 
 		wr(R_MMU_CTRL, 0);
 		wr(R_MMU_CTRL, 1);
-		for (pg = 0x10; pg < 0x58; pg++) {
-			wr(R_MMU_TLB_PAGE, pg);
-			wr(R_MMU_TLB_PHYS, (RAM_BASE >> 12) + pg);
+		for (pg = 0; pg < 0x48; pg++) {
+			wr(R_MMU_TLB_PAGE, (SMALL_DEV >> 12) + 0x10 + pg);
+			wr(R_MMU_TLB_PHYS, (RAM_BASE + 0x10000) / PAGE + pg);
 			wr(R_MMU_CTRL, 0x101);
 		}
-		for (pg = 0; pg < PB_TABLE_SIZE / PAGE + PB_PAGES; pg++) {
-			wr(R_MMU_TLB_PAGE, (PB_TABLE_VA >> 12) + pg);
+		for (pg = 0; pg < PB_PAGES; pg++) {
+			wr(R_MMU_TLB_PAGE, pg);
 			wr(R_MMU_TLB_PHYS, (RAM_BASE + PB_PHYS) / PAGE + pg);
+			wr(R_MMU_CTRL, 0x101);
+		}
+		for (pg = 0; pg < PB_TABLE_SIZE / PAGE; pg++) {
+			wr(R_MMU_TLB_PAGE, (PB_TABLE_VA >> 12) + pg);
+			wr(R_MMU_TLB_PHYS, (RAM_BASE + TBL_PHYS) / PAGE + pg);
 			wr(R_MMU_CTRL, 0x101);
 		}
 	}
@@ -170,7 +180,7 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	if (skip & V_FL_REGS)
 		wr(0x6d8, 0);
 	if (skip & V_PB_BASE)
-		wr(R_PB_BASE, 0);
+		wr(R_PB_BASE, 0x1000);			/* a base that is not 0 */
 	wr(R_FL_BUILD, 1);
 	clear_surface();
 	wr(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE | I_TA_OFLOW | I_EVM_DALLOC);
@@ -183,7 +193,7 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 		tails += 0x1000;
 	wr(R_TA_TAILS, tails);
 	if (!(skip & V_CTX)) {
-		uint32_t ctx = variant == X_CTX_UNALIGNED ? CTX + 0x1000 : variant == X_ALIGN4K ? CTX + 0x100 : variant == X_CTX_UNMAPPED ? 0x70000 : CTX;
+		uint32_t ctx = variant == X_CTX_UNALIGNED ? CTX + 0x1000 : variant == X_ALIGN4K ? CTX + 0x100 : variant == X_CTX_UNMAPPED ? 0x500000 : CTX;
 
 		mbx_contract_contexts(&IO, ctx);
 	}
@@ -241,6 +251,8 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 		wr(0x860, 0x00030002);
 	if (!(skip & V_PB_BASE))
 		wr(R_PB_BASE, PB_VA);
+	else
+		wr(R_PB_BASE, 0x1000);
 	if (!(skip & V_REGION_B30))
 		mbx_contract_prerender(&IO, REGIONS, TRI_W / 16, TRI_H / 16);
 	wr(R_HW_CONTEXT, 0);
@@ -261,7 +273,7 @@ int main(void)
 	static const struct { uint32_t bit; const char *what; } cases[] = {
 		{ V_FL_OVERLAP, "the free list starting on the background object's page" },
 		{ V_FL_REGS, "0x6d8 not set" },
-		{ V_PB_BASE, "0x83c not set" },
+		{ V_PB_BASE, "0x83c not 0" },
 		{ V_TAILS_ALIGN, "tail pointers not 64 KB aligned" },
 		{ V_CTX, "no contexts" },
 		{ V_REGION_INIT, "the region array not initialised" },

@@ -85,7 +85,7 @@ static uint32_t rd(uint32_t reg) { return mbxemu_reg_read(E, reg); }
 #define REGIONS		0x20000u
 #define TAILS		0x30000u		/* 64 KB aligned */
 #define CTX		0x50000u		/* the TA and EVM contexts: 32 KB, 16 KB aligned */
-#define PB		0x60000u		/* the parameter buffer: its first words are the background object */
+#define PB		0x0u			/* the parameter buffer, at device address 0: its first words are the background object */
 #define PT_OFF		0x180000u
 
 static void c_wr32(void *o, uint32_t va, uint32_t v) { (void)o; memcpy(ram + va, &v, 4); }
@@ -121,6 +121,7 @@ int main(int argc, char **argv)
 	/* the MMU: pages 0x10..0x7f one to one on RAM (the buffers below), the rest of the space nothing */
 	for (i = 0x10; i < 0x80; i++)
 		((uint32_t *)(ram + PT_OFF))[i] = RAM_BASE + (uint32_t)i * 4096;
+	((uint32_t *)(ram + PT_OFF))[0] = RAM_BASE;	/* device page 0 (the parameter buffer's first, the background object's) */
 	for (i = 0; i < 8; i++)
 		wr(R_MMU_TABLE(i), RAM_BASE + PT_OFF + (i ? 0x1000 : 0));
 	wr(R_MMU_CTRL, 1);
@@ -131,7 +132,7 @@ int main(int argc, char **argv)
 
 	/* the contract: the free list's registers (not built: this frame needs no parameter pages), the
 	 * contexts, the background object (the target itself), the region array, the tails */
-	mbx_contract_freelist(&IO, PB + 0x10000, PB, (PB >> 12) + 8);
+	mbx_contract_freelist(&IO, 0x70000, PB, (PB >> 12) + 8);
 	mbx_contract_ta_setup(&IO);
 	mbx_contract_contexts(&IO, CTX);
 	mbx_contract_background(&IO, PB, SURF, W, W / 16, H / 16, 0);

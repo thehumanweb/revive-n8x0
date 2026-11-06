@@ -242,7 +242,7 @@ struct pbw {
  */
 #define V_FL_OVERLAP	(1u << 0)	/* the free list's first page is not above the buffer's base page */
 #define V_FL_REGS	(1u << 1)	/* 0x6d8 is not 0x09000000 or 0xce0 is not 1 */
-#define V_PB_BASE	(1u << 2)	/* 0x83c, the parameter buffer's base, is not set */
+#define V_PB_BASE	(1u << 2)	/* 0x83c, the parameter buffer's base, is not 0 */
 #define V_TAILS_ALIGN	(1u << 3)	/* 0x840 is not 64 KB aligned */
 #define V_CTX		(1u << 4)	/* 0x820 or 0x864 (the TA and EVM contexts) is not set */
 #define V_REGION_INIT	(1u << 5)	/* the region array was not initialised (0x22000000 | origin) */

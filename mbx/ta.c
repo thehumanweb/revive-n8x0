@@ -178,9 +178,12 @@ static void check_contract(struct mbxemu *e, const struct scene *s)
 	const uint32_t *R = e->regs;
 	uint32_t base = R[R_PB_BASE / 4], first = R[R_FL_FIRST / 4];
 
-	if (!base)
-		emu_violation(e, V_PB_BASE, "0x83c (the parameter buffer's base) is not set");
-	else if (first && first <= base >> 12)
+	/* the parameter buffer at device address 0 (found on the N810: with a base of 0x1c00000 and of 0x100000
+	 * every tile came out as garbage, at 0 the triangle was drawn); the list pointers are offsets from 0x83c,
+	 * the region entries' addresses absolute, and the two agree only at 0 */
+	if (base != 0)
+		emu_violation(e, V_PB_BASE, "0x83c (the parameter buffer's base) is not 0: the ISP draws nothing useful");
+	if (R[R_FL_LAST / 4] && first <= base >> 12)
 		emu_violation(e, V_FL_OVERLAP, "the free list starts at or below the buffer's base page "
 			      "(its first page is the background object's)");
 	if (R[0x6d8 / 4] != 0x09000000 || R[0xce0 / 4] != 1)
