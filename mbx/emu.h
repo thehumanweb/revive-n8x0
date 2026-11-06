@@ -78,6 +78,10 @@
 #define TAC_END_IS_END	0x80	/* clear: the end word stops the TA mid-scene */
 #define TAC_ZLOAD	0x40000
 
+/* A sections word needs bit 17 for the TA to take it (README assumption 30) */
+#define SEC_BIT17	0x20000
+#define TA_FIFO_WORDS	59
+
 #define DEV_SPACE	(32u << 20)	/* the MMU's device address space */
 #define TILE		16
 
@@ -143,6 +147,7 @@ enum ta_mode {
 	TA_PRIM_SECTIONS,	/* the sections word */
 	TA_VERTS,		/* vertices, until a control word */
 	TA_ERROR,		/* lost: everything until the next TA start */
+	TA_HUNG,		/* the TA takes nothing (a sections word without bit 17): its words pile up in the FIFO */
 };
 
 struct vgp {
@@ -239,6 +244,7 @@ struct mbxemu {
 	struct scene ctx[2];		/* the two hardware contexts */
 	struct scene *stored;		/* scenes stored to TA context memory */
 	enum ta_mode mode;
+	unsigned int fifo_fill;		/* words waiting in the TA's input FIFO: only a hung TA has any */
 	struct rstate cur;		/* the state blocks in force */
 	uint32_t hdr_mask;
 	int hdr_bit, hdr_left, hdr_word;

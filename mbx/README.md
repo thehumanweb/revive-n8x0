@@ -80,7 +80,7 @@ to stderr (2: every TA and 2D word too).
 - **Stream-out's Y** beyond assumption 23's rule.
 - **Terminate word 2** ("end block") alone leaves the scene without
   TA_COMPLETE.
-- **The input FIFO**: 59 words shared by the TA and 2D ports,
+- **The input FIFO**: 59 words shared by the TA and 2D ports (a TA hung by a sections word without bit 17 fills it: assumption 30),
   `INT_STATUS` bits 16-23 its fill, the port stalling the bus while it is
   full (so unpaced DMA works). The model takes every word at once.
 - **Texture and plane arithmetic**: the set-up arithmetic of assumptions 15,
@@ -386,3 +386,15 @@ circuit.
     The widths (21 bits for the area and the reciprocal, 24 for the numerator),
     the flat rule and the +-0.5 pixel reference (bits 16-17 of 0x61c, not
     modelled) are fitted.
+30. **The sections word's bit 17** (observed on an N810, by a probe the user ran and
+    reported; not seen by the model's author): the word after a primitive
+    (`0xf0020000 | sections`, or `0xb00b0800` for screen space) needs bit 17
+    (`0x20000`) set. With it clear the TA takes nothing: `INT_STATUS` read `003b0001`
+    (bits 16-23, the input FIFO's fill, 59: full; and bit 0, which this model does not
+    set and whose meaning is not known), no `TA_COMPLETE` came, and the render after
+    it was not done after a second. The model hangs the TA at such a word: it takes no
+    more words (each one waits in the FIFO, the fill rising to 59), raises nothing,
+    leaves the scene as it was, and a render kick does nothing (no `RENDER_COMPLETE`);
+    a TA start (`0x800`) or a soft reset gets it going again. What bit 17 selects is
+    not known, and bits 16, 18 and 19 are still not looked at.
+

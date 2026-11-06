@@ -5,8 +5,9 @@
  *
  * Everything runs at the access that starts it: a context reset raises
  * TA_CONTEXT before the write returns, an end word TA_COMPLETE, a render
- * kick RENDER_COMPLETE and EVM_DALLOC together. The input FIFO is always
- * empty (INT_STATUS bits 16-23 read 0), so a client's credit is never
+ * kick RENDER_COMPLETE and EVM_DALLOC together. The input FIFO is empty
+ * (INT_STATUS bits 16-23 read 0) unless the TA is hung (README assumption
+ * 30), so a client's credit is never
  * short.
  */
 #include <stdarg.h>
@@ -319,7 +320,8 @@ uint32_t mbxemu_reg_read(struct mbxemu *e, uint32_t reg)
 	reg &= 0x3ffc;
 	switch (reg) {
 	case R_INT_STATUS:
-		v = e->status;		/* bits 16-23, the FIFO's words: always empty */
+		/* bits 16-23: the FIFO's words, empty unless the TA is hung (ta.c) */
+		v = e->status | (e->fifo_fill & 0xff) << 16;
 		break;
 	case R_INT_ENABLE:
 		v = e->enable;

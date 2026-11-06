@@ -1499,6 +1499,11 @@ void render_kick(struct mbxemu *e)
 	uint32_t k, entry = 0, regions = R[R_REGIONS / 4], pb = R[R_PB_BASE / 4];
 	int p;
 
+	if (e->mode == TA_HUNG) {
+		/* the render waits for a TA that takes nothing: no completion (README assumption 30) */
+		emu_log(e, "render: the TA is hung (a sections word without bit 17); the render does not complete");
+		return;
+	}
 	so_render(e);	/* a render flips stream-out's side (ta.c) */
 	memset(&rc, 0, sizeof(rc));
 	rc.ctl = R[R_RENDER_CTL / 4];

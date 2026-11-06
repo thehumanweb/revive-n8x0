@@ -69,7 +69,10 @@ static inline void tri_enc(uint32_t w[2], int op, int dst, int mask, const struc
  * degrees about z), the triangle and the end word. Returns the words
  * written to out (at most 128).
  */
-static inline uint32_t tri_stream(uint32_t *out, float deg)
+/* The word after the primitive: the section to run (bit 2) and bit 17, which the chip needs */
+#define TRI_SECTIONS	(0xf0020000u | 0x4)
+
+static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t sections)
 {
 	struct tri_sw s = { .base = out, .p = out };
 	static const float v[3][3] = { { 0, 0.8f, 0.5f }, { -0.8f, -0.6f, 0.5f }, { 0.8f, -0.6f, 0.5f } };
@@ -107,7 +110,7 @@ static inline uint32_t tri_stream(uint32_t *out, float deg)
 		tri_taf(&s, m[i]);
 
 	tri_ta(&s, 0x70000000);			/* a triangle list, no culling */
-	tri_ta(&s, 0xf0020000 | 0x4);		/* run section bit 2; bit 17 is needed on the chip (observed), the model ignores it */
+	tri_ta(&s, sections);			/* run section bit 2; bit 17 is needed on the chip (README 30) */
 	for (i = 0; i < 3; i++) {
 		tri_taf(&s, v[i][0]); tri_taf(&s, v[i][1]); tri_taf(&s, v[i][2]);
 		tri_ta(&s, rgba[i]);
@@ -115,6 +118,11 @@ static inline uint32_t tri_stream(uint32_t *out, float deg)
 	tri_put(&s, CH_CTL, 1);			/* the object ends */
 	tri_put(&s, CH_TA, 0xf0000000);		/* the scene ends */
 	return (uint32_t)(s.p - s.base);
+}
+
+static inline uint32_t tri_stream(uint32_t *out, float deg)
+{
+	return tri_stream_sections(out, deg, TRI_SECTIONS);
 }
 
 #endif

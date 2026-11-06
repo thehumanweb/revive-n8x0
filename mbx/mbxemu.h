@@ -69,6 +69,7 @@ struct mbxemu_stats {
 	unsigned int renders, tiles;	/* render kicks, tiles rendered */
 	unsigned int blits;
 	unsigned int stream_errors;	/* TA words it couldn't parse */
+	unsigned int ta_hangs;		/* sections words without bit 17: the TA took nothing */
 };
 void mbxemu_stats(const struct mbxemu *e, struct mbxemu_stats *s);
 

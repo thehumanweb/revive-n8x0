@@ -43,8 +43,29 @@ static void stream_error(struct mbxemu *e, uint32_t v, const char *why)
 	emu_raise(e, I_TA_STREAM);
 }
 
+/*
+ * A sections word without bit 17: the TA takes nothing (README assumption 30). It
+ * stops consuming; what the client writes next waits in the input FIFO, which
+ * INT_STATUS bits 16-23 count up to 59; no TA_COMPLETE comes, and a render kick
+ * does nothing. A TA start or a soft reset ends it.
+ */
+static void ta_hang(struct mbxemu *e, uint32_t v)
+{
+	emu_log(e, "TA: the sections word %08x has bit 17 clear: the TA takes nothing until it starts again", v);
+	e->mode = TA_HUNG;
+	e->fifo_fill = 1;
+	e->stats.ta_hangs++;
+}
+
+static void ta_fifo_wait(struct mbxemu *e)
+{
+	if (e->fifo_fill < TA_FIFO_WORDS)
+		e->fifo_fill++;
+}
+
 void ta_reset(struct mbxemu *e)
 {
+	e->fifo_fill = 0;
 	e->mode = TA_CMD;
 	e->asm_n = 0;
 	e->vin_n = 0;
@@ -169,6 +190,7 @@ void ta_start(struct mbxemu *e)
 	s->width = e->regs[R_TA_WIDTH / 4] >> 16;
 	s->height = e->regs[R_TA_HEIGHT / 4] >> 16;
 	e->mode = TA_CMD;
+	e->fifo_fill = 0;
 	e->asm_n = 0;
 	e->vin_n = 0;
 	e->no_scene_warned = 0;
@@ -925,6 +947,10 @@ void ta_word(struct mbxemu *e, uint32_t lane, uint32_t v)
 			stream_error(e, v, "no sections word after the primitive word");
 			return;
 		}
+		if (!(v & SEC_BIT17)) {
+			ta_hang(e, v);
+			return;
+		}
 		e->sections = v;
 		e->vsize = vertex_words(e->cur.layout);
 		if (e->vsize <= 0 || e->vsize > (int)(sizeof(e->vin) / sizeof(e->vin[0]))) {
@@ -945,6 +971,9 @@ void ta_word(struct mbxemu *e, uint32_t lane, uint32_t v)
 		return;
 	case TA_ERROR:
 		return;
+	case TA_HUNG:
+		ta_fifo_wait(e);
+		return;
 	}
 }
 
@@ -957,6 +986,10 @@ void ta_ctl(struct mbxemu *e, uint32_t v)
 {
 	if (e->trace > 1)
 		emu_log(e, "TA ctl: %u", v);
+	if (e->mode == TA_HUNG) {
+		ta_fifo_wait(e);
+		return;
+	}
 	if (e->mode != TA_VERTS) {
 		if (v == 1 && e->mode != TA_CMD && e->mode != TA_ERROR)
 			emu_log(e, "TA: an object ends in the middle of a block (mode %d)", e->mode);

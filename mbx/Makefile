@@ -17,7 +17,7 @@ libmbxemu.a: $(CORE)
 $(CORE): emu.h mbxemu.h
 
 clean:
-	rm -f *.o *.a mbxtri mbxtri-drm tests/t_vgp
+	rm -f *.o *.a mbxtri mbxtri-drm tests/t_vgp tests/t_ta
 
 # mbxtri-drm: the same triangle through the render node (cross-built for the guest: make CC=arm-... mbxtri-drm CFLAGS="-I<kernel uapi>")
 mbxtri-drm: tools/mbxtri_drm.c tools/tri_frame.h drm/mbx_drm.h
@@ -27,7 +27,11 @@ mbxtri-drm: tools/mbxtri_drm.c tools/tri_frame.h drm/mbx_drm.h
 tests/t_vgp: tests/t_vgp.c lib/mbx_vgp.h libmbxemu.a
 	$(CC) $(CFLAGS) -I. -o $@ tests/t_vgp.c libmbxemu.a -lm
 
-test: tests/t_vgp
+tests/t_ta: tests/t_ta.c tools/tri_frame.h libmbxemu.a
+	$(CC) $(CFLAGS) -I. -o $@ tests/t_ta.c libmbxemu.a -lm
+
+test: tests/t_vgp tests/t_ta
 	tests/t_vgp
+	tests/t_ta
 
 .PHONY: all clean test

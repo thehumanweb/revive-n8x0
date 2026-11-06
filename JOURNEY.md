@@ -109,6 +109,9 @@ Checked, on the emulator:
 - The same program on the host drm-shim gives the same picture again.
 - `t_vgp`: 128,034 randomised checks of the encoder against the model's own
   `vgp_exec` (not covered: LIT, EXPP, LOGP).
+- `t_ta`: the model reproduces the hang above (15 checks): a sections word without bit 17
+  stops the TA, the FIFO fills to 59, no `TA_COMPLETE` and no render completion, and a TA
+  start or a soft reset recovers; with the bit set a frame completes and draws.
 - Mesa 26.1.8 builds with the mbx driver; libgallium carries it.
 - `mesa/scripts/test-sim.sh`: the GLES2 triangle on the host sim (real EGL, GLSL
   compiler, NIR, the mbx compiler and context, the DRM winsys, the shim and the
@@ -131,7 +134,9 @@ Sources: the user's probe on the device (reported in the session).
 
 Not checked, or only the model's word for it:
 
-- **Anything on a real N810.** The emulator is the only reference.
+- **Anything on a real N810 beyond the one observation above.** The emulator is the only
+  reference. Bit 0 of `INT_STATUS`, set on the device when the TA hung, is not set by the
+  model and its meaning is not known.
 - The parameter buffer and free list: the model's writer is off without a
   free list; the real chip needs one. `0x85c`'s other bits (the model reads only
   the tile grid and bit 7); the ISP/TSP state bits the chip needs beyond Gouraud
@@ -226,7 +231,7 @@ comes from `mbx/*.c` and its README.
      scale/offset/1e-5); a VGP section `0x80000000 | bit`, a flags/range word, a
      code header `0x90000000 | first << 16 | last` and two words an instruction,
      constants `0xa0000000 | first << 16 | last` and four floats each; the
-     primitive word (`0x70000000`: triangle list), the sections word (`0xf0020000 | mask`; the chip needs bit 17, the model does not look at it: section 4), vertices as
+     primitive word (`0x70000000`: triangle list), the sections word (`0xf0020000 | mask`; the chip needs bit 17, observed on a real N810, README assumption 30), vertices as
      the layout names them, TA control port 1 (object ends), `0xf0000000` (scene
      ends).
   3. Render: `0x608` regions, `0x610` = `0x30000` (depth on chip), `0x61c`, `0x650`
@@ -453,3 +458,17 @@ comes from `mbx/*.c` and its README.
   - dmesg also shows the panel's existing `RFBI: FRAMEDONE not received for 250ms` / "no tearing effect signal" notes when the display is first used; the QEMU panel model, not this work.
 - Sources: Buildroot 2026.08.1 `package/mesa3d/{Config.in,mesa3d.mk}` (the option symbols, `MESA3D_GALLIUM_DRIVERS-y`, the vc4-neon line), `package/libdrm`; the build logs `build/rootfs-mesa.out` and `rootfs/build/build-rootfs.log`; the guest output `build/m4.out`; `mesa/tests/gbm_tri.c` follows the usual EGL-on-GBM and KMS flow with libdrm (`drmModeSetCrtc`, `drmModePageFlip`).
 - **A mistake found and fixed here:** the repo's root `.gitignore` had `src/` (for the downloaded source tarballs), which also hid `mesa/src/`, so the Mesa driver's own sources (the screen, context, compiler, resources, winsys and the drm-shim: 21 files) were never committed. The commits up to `6e8e5dd` (pushed) and `0019729` therefore have the patches, scripts, tests and journal but not those sources, although their messages described them. `.gitignore` now has `!/mesa/src/` after `src/` and the files are in this commit.
+
+### 2026-11-06: the model learns the sections word's bit 17
+
+- The user's probe on a real N810 showed the TA takes nothing without bit 17 in the word
+  after a primitive (section 4). The model now does the same: `mbx/ta.c` hangs the TA at
+  such a word (`TA_HUNG`: later words wait in the input FIFO, `INT_STATUS` bits 16-23 count
+  them up to 59, no `TA_COMPLETE`), `mbx/render.c` completes no render while it is hung, and
+  a TA start or a soft reset ends it. `mbx/README.md` assumption 30 records it as observed;
+  `mbx/tests/t_ta.c` (in `make -C mbx test`) checks a normal frame, a frame without bit 17,
+  the FIFO's fill and its cap, and both ways out. The drivers already send the bit
+  (`mbx/tools/tri_frame.h`, `mbx_program.c`), so the host triangle and the sim comparison
+  are unchanged (identical at four angles).
+- Sources: the user's probe on the device (reported in the session); the model's own code
+  (`mbx/ta.c`, `mbx/core.c`, `mbx/render.c`, `mbx/emu.h`); `mbx/README.md` assumption 30.
