@@ -31,8 +31,31 @@ static const char *fs_src =
 	"varying vec4 v_color;\n"
 	"void main() { gl_FragColor = v_color; }\n";
 
-static GLuint prog;
+static GLuint prog, prog_tex, prog_mod;
 static int failures;
+
+static const char *tvs_src =
+	"attribute vec2 a_pos;\n"
+	"attribute vec2 a_uv;\n"
+	"attribute vec4 a_color;\n"
+	"varying vec2 v_uv;\n"
+	"varying vec4 v_color;\n"
+	"void main() {\n"
+	"	gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+	"	v_uv = a_uv;\n"
+	"	v_color = a_color;\n"
+	"}\n";
+static const char *tfs_replace =
+	"precision mediump float;\n"
+	"uniform sampler2D u_tex;\n"
+	"varying vec2 v_uv;\n"
+	"void main() { gl_FragColor = texture2D(u_tex, v_uv); }\n";
+static const char *tfs_modulate =
+	"precision mediump float;\n"
+	"uniform sampler2D u_tex;\n"
+	"varying vec2 v_uv;\n"
+	"varying vec4 v_color;\n"
+	"void main() { gl_FragColor = texture2D(u_tex, v_uv) * v_color; }\n";
 
 static GLuint compile(GLenum type, const char *src)
 {
@@ -180,7 +203,258 @@ static int t_line_loop(char *why)
 	return 1;
 }
 
+static GLuint link_tex(const char *fs)
+{
+	GLuint p = glCreateProgram();
+	GLint ok = 0;
+
+	glAttachShader(p, compile(GL_VERTEX_SHADER, tvs_src));
+	glAttachShader(p, compile(GL_FRAGMENT_SHADER, fs));
+	glBindAttribLocation(p, 0, "a_pos");
+	glBindAttribLocation(p, 1, "a_uv");
+	glBindAttribLocation(p, 2, "a_color");
+	glLinkProgram(p);
+	glGetProgramiv(p, GL_LINK_STATUS, &ok);
+	if (!ok) {
+		char log[1024];
+
+		glGetProgramInfoLog(p, sizeof(log), NULL, log);
+		fprintf(stderr, "link: %s\n", log);
+	}
+	return p;
+}
+
+/* A full-screen quad, uv from (u0, v0) at the bottom left to (u1, v1) at the top right */
+static void quad(float u0, float v0, float u1, float v1, float r, float g, float b)
+{
+	const float v[] = {
+		-1, -1, u0, v0, r, g, b, 1,
+		1, -1, u1, v0, r, g, b, 1,
+		1, 1, u1, v1, r, g, b, 1,
+		-1, -1, u0, v0, r, g, b, 1,
+		1, 1, u1, v1, r, g, b, 1,
+		-1, 1, u0, v1, r, g, b, 1,
+	};
+
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v + 2);
+	glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v + 4);
+	glDrawArrays(GL_TRIANGLES, 0, 6);
+	glDisableVertexAttribArray(2);
+}
+
+static GLuint make_tex(int w, int h, GLenum fmt, GLenum type, const void *data, GLint filter, GLint wrap)
+{
+	GLuint t;
+
+	glGenTextures(1, &t);
+	glBindTexture(GL_TEXTURE_2D, t);
+	glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, type, data);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
+	return t;
+}
+
+/* a w x h RGBA texture in four quadrants: bottom left (row 0) red, bottom right green, top left blue, top right yellow */
+static void quadrants(unsigned char *px, int w, int h)
+{
+	static const unsigned char col[4][4] = { { 255, 0, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 }, { 255, 255, 0, 255 } };
+
+	for (int y = 0; y < h; y++)
+		for (int x = 0; x < w; x++)
+			memcpy(px + 4 * (y * w + x), col[(y >= h / 2) * 2 + (x >= w / 2)], 4);
+}
+
+static int quad_probes(char *why)
+{
+	CHECK(16, 16, 255, 0, 0);
+	CHECK(48, 16, 0, 255, 0);
+	CHECK(16, 48, 0, 0, 255);
+	CHECK(48, 48, 255, 255, 0);
+	return 1;
+}
+
+static int t_tex_replace(char *why)
+{
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok;
+
+	quadrants(px, 8, 8);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = quad_probes(why);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_modulate(char *why)
+{
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok = 1;
+
+	quadrants(px, 8, 8);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_mod);
+	glUniform1i(glGetUniformLocation(prog_mod, "u_tex"), 0);
+	quad(0, 0, 1, 1, 0.5f, 0.5f, 0.5f);
+	if (!is(16, 16, 128, 0, 0, why, 200) || !is(48, 16, 0, 128, 0, why, 200) || !is(16, 48, 0, 0, 128, why, 200) ||
+	    !is(48, 48, 128, 128, 0, why, 200))
+		ok = 0;
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_npot(char *why)
+{
+	/* 6 x 6: the cells are 3 texels, so the quadrants meet at the middle as in a power of two */
+	unsigned char px[6 * 6 * 4];
+	GLuint t;
+	int ok;
+
+	quadrants(px, 6, 6);
+	begin();
+	t = make_tex(6, 6, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = quad_probes(why) && is(2, 2, 255, 0, 0, why, 200) && is(61, 61, 255, 255, 0, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_bilinear(char *why)
+{
+	/* black left half, white right half; at the seam (x = 32) a bilinear sample is mixed, a nearest one is not */
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok = 1;
+	struct px a, b;
+
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++) {
+			unsigned char c = x >= 4 ? 255 : 0;
+
+			px[4 * (y * 8 + x)] = px[4 * (y * 8 + x) + 1] = px[4 * (y * 8 + x) + 2] = c;
+			px[4 * (y * 8 + x) + 3] = 255;
+		}
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_LINEAR, GL_CLAMP_TO_EDGE);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	a = probe(31, 32);
+	b = probe(32, 32);
+	if (!(a.c[0] > 20 && a.c[0] < 235) && !(b.c[0] > 20 && b.c[0] < 235)) {
+		snprintf(why, 200, "bilinear: (31,32) is %d and (32,32) is %d: no mixed value at the seam", a.c[0], b.c[0]);
+		ok = 0;
+	}
+	glDeleteTextures(1, &t);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	a = probe(31, 32);
+	b = probe(32, 32);
+	if (ok && (!(a.c[0] < 8) || !(b.c[0] > 247))) {
+		snprintf(why, 200, "nearest: (31,32) is %d and (32,32) is %d: not a sharp seam", a.c[0], b.c[0]);
+		ok = 0;
+	}
+	glDeleteTextures(1, &t);
+	glUseProgram(prog);
+	return ok;
+}
+
+static int t_tex_repeat(char *why)
+{
+	/* only texel column 0 is red; u runs 0 to 4 across the screen: red every 16 pixels */
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok;
+
+	memset(px, 0, sizeof(px));
+	for (int y = 0; y < 8; y++) {
+		px[4 * (y * 8)] = 255;
+		for (int x = 0; x < 8; x++)
+			px[4 * (y * 8 + x) + 3] = 255;
+	}
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_REPEAT);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	quad(0, 0, 4, 1, 1, 1, 1);
+	ok = is(1, 32, 255, 0, 0, why, 200) && is(17, 32, 255, 0, 0, why, 200) && is(33, 32, 255, 0, 0, why, 200) &&
+	     is(9, 32, 0, 0, 0, why, 200) && is(25, 32, 0, 0, 0, why, 200);
+	if (!ok && getenv("FEAT_ROW")) {
+		for (int x = 0; x < 64; x++)
+			fprintf(stderr, "%c", probe(x, 32).c[0] > 128 ? '#' : '.');
+		fprintf(stderr, "\n");
+	}
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_565(char *why)
+{
+	unsigned short px[8 * 8];
+	GLuint t;
+	int ok;
+
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++)
+			px[y * 8 + x] = (y >= 4 ? (x >= 4 ? 0xffe0 : 0x001f) : (x >= 4 ? 0x07e0 : 0xf800));	/* RGB565 */
+	begin();
+	t = make_tex(8, 8, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = quad_probes(why);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_4444(char *why)
+{
+	unsigned short px[8 * 8];
+	GLuint t;
+	int ok;
+
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++)
+			px[y * 8 + x] = (y >= 4 ? (x >= 4 ? 0xff0f : 0x00ff) : (x >= 4 ? 0x0f0f : 0xf00f));	/* RGBA4444 */
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = quad_probes(why);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "tex_replace", t_tex_replace },
+	{ "tex_modulate", t_tex_modulate },
+	{ "tex_npot", t_tex_npot },
+	{ "tex_bilinear", t_tex_bilinear },
+	{ "tex_repeat", t_tex_repeat },
+	{ "tex_565", t_tex_565 },
+	{ "tex_4444", t_tex_4444 },
 	{ "point", t_point },
 	{ "line", t_line },
 	{ "line_strip", t_line_strip },
@@ -232,6 +506,8 @@ int main(int argc, char **argv)
 	glBindAttribLocation(prog, 0, "a_pos");
 	glBindAttribLocation(prog, 1, "a_color");
 	glLinkProgram(prog);
+	prog_tex = link_tex(tfs_replace);
+	prog_mod = link_tex(tfs_modulate);
 	glUseProgram(prog);
 	glViewport(0, 0, W, H);
 

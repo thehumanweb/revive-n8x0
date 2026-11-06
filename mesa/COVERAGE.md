@@ -30,7 +30,7 @@ the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 | Colour mask | state bit 8 (none), no per-channel mask | all-or-nothing only |
 | Alpha test (not GLES2, but the chip has it) | state bit 14, alpha word | used for `discard` of constant alpha only (planned) |
 | Scissor | region clip control and the render clip rectangles | not done: a scissored clear clears everything |
-| Textures: 2D, NPOT, RGB565/ARGB1555/4444/8888/PVRTC, linear or twiddled, mipmaps (twiddled), nearest/bilinear/trilinear | two texture units per pass, texture words A/B/C | not done (sampler views are stubs) |
+| Textures: 2D, NPOT, RGB565/ARGB1555/4444/8888/PVRTC, linear or twiddled, mipmaps (twiddled), nearest/bilinear/trilinear | two texture units per pass, texture words A/B/C | done on the sim: one unit, linear power-of-two storage (the chip reads linear textures with a stride, as the background object does), NPOT by coordinate scaling in the VGP and edge repeat in the padding, nearest/bilinear, clamp/repeat, formats ARGB8888/565/4444/1555/LA88, `replace` and `modulate` fragment shaders (`gles2_feat` tex_* tests). Not done: mipmaps (twiddled), two units, other combiners, PVRTC. **Not yet run on the chip**: the state word's texture bits 16-18 are a guess (the model takes 1-4 as one unit; the stock background object uses 2) |
 | Wrap modes | texture word flags (clamp, wrap; mirror?) | not done |
 | Cube maps, 3D, vertex textures | none in hardware | would need a fallback |
 | Fragment shaders | fixed combiners (modulate, add, decal, ...) per texture unit, offset colour, fog | only shaders that reduce to the fixed pipe; the rest has no fallback yet |

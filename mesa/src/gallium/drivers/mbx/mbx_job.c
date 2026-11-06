@@ -61,6 +61,21 @@ void mbx_job_reset(struct mbx_context *ctx)
 	job->depth_cleared = false;
 	job->clear_depth = ctx->next_clear_depth;
 	pipe_resource_reference((struct pipe_resource **)&job->color, NULL);
+	for (unsigned i = 0; i < MBX_MAX_TEX; i++)
+		pipe_resource_reference((struct pipe_resource **)&job->tex[i], NULL);
+}
+
+/* A texture the recorded draws read: the job holds it and names it when it is submitted */
+void mbx_job_use_texture(struct mbx_context *ctx, struct mbx_resource *rsc)
+{
+	for (unsigned i = 0; i < MBX_MAX_TEX; i++)
+		if (ctx->job.tex[i] == rsc)
+			return;
+	for (unsigned i = 0; i < MBX_MAX_TEX; i++)
+		if (!ctx->job.tex[i]) {
+			pipe_resource_reference((struct pipe_resource **)&ctx->job.tex[i], &rsc->base);
+			return;
+		}
 }
 
 /* The TA's grid and the per-size buffers it needs */
@@ -144,7 +159,8 @@ void mbx_job_flush(struct mbx_context *ctx)
 	struct mbx_job *job = &ctx->job;
 	struct mbx_target_bos *t = &ctx->tbos;
 	struct drm_mbx_submit s;
-	struct drm_mbx_submit_bo bo;
+	struct drm_mbx_submit_bo bo[1 + MBX_MAX_TEX];
+	unsigned nbo = 0;
 	struct mbx_resource *color = job->color;
 	uint32_t zclear;
 	float z = job->clear_depth;
@@ -177,16 +193,25 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
 
 	/* the render target is the one buffer the job writes that others may use (the display) */
-	bo.handle = color->bo->handle;
-	bo.flags = MBX_SUBMIT_BO_WRITE;
-	s.bos = (uintptr_t)&bo;
-	s.n_bos = 1;
+	bo[nbo].handle = color->bo->handle;
+	bo[nbo++].flags = MBX_SUBMIT_BO_WRITE;
+	/* the textures it reads: the job waits for whoever writes them */
+	for (unsigned i = 0; i < MBX_MAX_TEX; i++)
+		if (job->tex[i] && job->tex[i]->bo != color->bo) {
+			bo[nbo].handle = job->tex[i]->bo->handle;
+			bo[nbo++].flags = 0;
+		}
+	s.bos = (uintptr_t)bo;
+	s.n_bos = nbo;
 
 	ret = drmIoctl(ctx->screen->fd, DRM_IOCTL_MBX_SUBMIT, &s);
 	if (ret) {
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
+		for (unsigned i = 0; i < MBX_MAX_TEX; i++)
+			if (job->tex[i])
+				job->tex[i]->last_fence = s.fence;	/* the CPU must not rewrite a texture a job still reads */
 		ctx->last_fence = s.fence;
 		t->which ^= 1;		/* the next scene uses the other region array */
 	}
@@ -203,8 +228,17 @@ void mbx_job_fini(struct mbx_context *ctx)
 
 void mbx_flush_for_resource(struct mbx_context *ctx, struct mbx_resource *rsc)
 {
-	if (ctx->job.active && ctx->job.color == rsc)
+	if (!ctx->job.active)
+		return;
+	if (ctx->job.color == rsc) {
 		mbx_job_flush(ctx);
+		return;
+	}
+	for (unsigned i = 0; i < MBX_MAX_TEX; i++)
+		if (ctx->job.tex[i] == rsc) {
+			mbx_job_flush(ctx);
+			return;
+		}
 }
 
 void mbx_resource_wait(struct mbx_screen *screen, struct mbx_resource *rsc)

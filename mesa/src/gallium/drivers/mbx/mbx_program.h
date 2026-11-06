@@ -25,6 +25,13 @@ struct mbx_fs_info {
 	bool lane_const[4];	/* r, g, b, a: a constant instead of the varying's */
 	float colour[4];	/* those constants */
 	bool flat;		/* flat shading (declared so, or nothing varies) */
+	/* texturing: gl_FragColor = texture2D(sampler 0, uv), or that times the colour varying (modulate) */
+	bool tex;
+	bool modulate;
+	/* where each lane comes from in the vertex shader's outputs (the linker packs varyings, so a colour and a
+	 * coordinate can share a slot): slot and component */
+	unsigned uv_loc[2], uv_comp[2];
+	unsigned col_loc[4], col_comp[4];	/* modulate: the colour varying's lanes */
 };
 
 /*
@@ -43,6 +50,9 @@ struct mbx_vgp_program {
 	bool gouraud;			/* the varying colour is interpolated */
 	uint32_t st_extra;		/* ISP/TSP state bits the shader wants */
 	uint32_t sections;		/* the sections word this program's draws send */
+	bool tex;			/* unit 0 is sampled */
+	uint32_t tex_c;			/* its combiner (texture word C) */
+	int tex_scale_slot;		/* the uniform slot holding the texture's (width / padded width, height / padded height) */
 	/* gl_PointSize: the TA takes one size for the object, so only a constant or a uniform works */
 	enum { MBX_PSIZE_STATE, MBX_PSIZE_IMM, MBX_PSIZE_UNIFORM } psize_kind;
 	float psize;			/* MBX_PSIZE_IMM */

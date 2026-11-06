@@ -13,6 +13,8 @@
 
 struct nir_shader;
 
+#define MBX_MAX_TEX 2	/* texture units: the TSP has two */
+
 /* A shader as the state tracker hands it over; its VGP program is made at the first draw */
 struct mbx_shader {
 	mesa_shader_stage stage;
@@ -37,6 +39,7 @@ struct mbx_job {
 	struct mbx_resource *color;	/* the render target (a reference is held) */
 	float clear_depth;
 	bool depth_cleared;
+	struct mbx_resource *tex[MBX_MAX_TEX];	/* the textures the recorded draws read (references held) */
 
 	/* what the VGP holds for this job, so a draw sends only what changed */
 	const struct mbx_vgp_program *loaded_prog;
@@ -60,6 +63,8 @@ struct mbx_context {
 	struct pipe_scissor_state scissor;
 	struct pipe_blend_color blend_color;
 	struct pipe_constant_buffer cb[2];		/* vertex, fragment */
+	struct pipe_sampler_state *samplers[MBX_MAX_TEX];	/* the fragment stage's */
+	struct pipe_sampler_view *views[MBX_MAX_TEX];
 	uint32_t const_serial;				/* bumped when uniforms change */
 	struct pipe_vertex_buffer vb[PIPE_MAX_ATTRIBS];
 	unsigned num_vb;
@@ -95,6 +100,7 @@ void mbx_emit(struct mbx_context *ctx, unsigned type, uint32_t v);
 void mbx_emit_f(struct mbx_context *ctx, unsigned type, float f);
 bool mbx_job_begin(struct mbx_context *ctx);
 void mbx_job_fini(struct mbx_context *ctx);
+void mbx_job_use_texture(struct mbx_context *ctx, struct mbx_resource *rsc);
 
 #define MBX_CH_TA	0
 #define MBX_CH_CTL	1

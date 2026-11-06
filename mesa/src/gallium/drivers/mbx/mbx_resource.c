@@ -88,6 +88,31 @@ static struct pipe_resource *mbx_resource_create(struct pipe_screen *pscreen,
 	} else if (util_format_is_depth_or_stencil(templ->format)) {
 		rsc->on_chip = true;
 		size = 4096;
+	} else if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
+		   (templ->bind & PIPE_BIND_SAMPLER_VIEW) &&
+		   !(templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
+		   mbx_chip_tex_format(templ->format) >= 0 && templ->last_level < MBX_MAX_LEVELS) {
+		unsigned bpp = util_format_get_blocksize(templ->format), l;
+		uint64_t off = 0;
+
+		rsc->tex = true;
+		for (l = 0; l <= templ->last_level; l++) {
+			/* the sampled size is the next power of two of at least 8; the row a render target needs is a
+			 * multiple of 16 texels (the background object's stride field) */
+			unsigned w = MAX2(8, util_next_power_of_two(u_minify(templ->width0, l)));
+			unsigned h = MAX2(8, util_next_power_of_two(u_minify(templ->height0, l)));
+			unsigned pitch = MAX2(templ->bind & PIPE_BIND_RENDER_TARGET ? 16 : 8, w);
+
+			if (l == 0) {
+				rsc->tex_lw = util_logbase2(w);
+				rsc->tex_lh = util_logbase2(h);
+			}
+			rsc->level_off[l] = (uint32_t)off;
+			rsc->level_stride[l] = pitch * bpp;
+			off = align64(off + (uint64_t)pitch * bpp * h, 128);
+		}
+		rsc->stride = rsc->level_stride[0];
+		size = off;
 	} else {
 		unsigned bpp = util_format_get_blocksize(templ->format);
 
@@ -231,6 +256,13 @@ static void *mbx_transfer_map(struct pipe_context *pctx, struct pipe_resource *p
 		*ptransfer = &trans->base;
 		return base + box->x;
 	}
+	if (rsc->tex) {
+		trans->base.stride = rsc->level_stride[level];
+		trans->base.layer_stride = rsc->size;
+		*ptransfer = &trans->base;
+		return base + rsc->level_off[level] + (uint64_t)box->y * rsc->level_stride[level] +
+		       (uint64_t)box->x * util_format_get_blocksize(prsc->format);
+	}
 	trans->base.stride = rsc->stride;
 	trans->base.layer_stride = rsc->size;
 	*ptransfer = &trans->base;
@@ -238,8 +270,35 @@ static void *mbx_transfer_map(struct pipe_context *pctx, struct pipe_resource *p
 	       (uint64_t)(box->x / util_format_get_blockwidth(prsc->format)) * util_format_get_blocksize(prsc->format);
 }
 
+/* The texture's padding repeats its edge texels, so clamping to the padded size is clamping to the edge (NPOT) */
+static void tex_fill_padding(struct mbx_resource *rsc, struct pipe_transfer *t)
+{
+	unsigned bpp = util_format_get_blocksize(rsc->base.format), l = t->level;
+	unsigned w = u_minify(rsc->base.width0, l), h = u_minify(rsc->base.height0, l);
+	unsigned pw = l == 0 ? 1u << rsc->tex_lw : MAX2(8, util_next_power_of_two(w)), ph, x, y;
+	uint8_t *base = mbx_bo_map(rsc->bo);
+
+	ph = l == 0 ? 1u << rsc->tex_lh : MAX2(8, util_next_power_of_two(h));
+	if (!base || !w || !h)
+		return;
+	base += rsc->level_off[l];
+	if (t->box.x + t->box.width == (int)w && pw > w)
+		for (y = t->box.y; y < (unsigned)(t->box.y + t->box.height) && y < h; y++)
+			for (x = w; x < pw; x++)
+				memcpy(base + (uint64_t)y * rsc->level_stride[l] + (uint64_t)x * bpp,
+				       base + (uint64_t)y * rsc->level_stride[l] + (uint64_t)(w - 1) * bpp, bpp);
+	if (t->box.y + t->box.height == (int)h && ph > h)
+		for (y = h; y < ph; y++)
+			memcpy(base + (uint64_t)y * rsc->level_stride[l], base + (uint64_t)(h - 1) * rsc->level_stride[l],
+			       (uint64_t)pw * bpp);
+}
+
 static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
 {
+	struct mbx_resource *rsc = mbx_resource(ptrans->resource);
+
+	if (rsc->tex && (ptrans->usage & PIPE_MAP_WRITE))
+		tex_fill_padding(rsc, ptrans);
 	pipe_resource_reference(&ptrans->resource, NULL);
 	FREE(ptrans);
 }

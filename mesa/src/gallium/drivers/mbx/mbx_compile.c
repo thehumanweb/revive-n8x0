@@ -401,7 +401,11 @@ static bool pass_one(struct cc *c)
 	for (lane = 0; lane < 4; lane++) {
 		struct vsrc v;
 
-		if (fs->lane_const[lane])
+		if (fs->tex && fs->modulate)
+			v = c->outs[fs->col_loc[lane]][fs->col_comp[lane]];
+		else if (fs->tex)
+			v = imm(1.0f);	/* replace: the primary colour is not used */
+		else if (fs->lane_const[lane])
 			v = imm(fs->colour[lane]);
 		else
 			v = c->outs[fs->varying][lane];
@@ -410,6 +414,22 @@ static bool pass_one(struct cc *c)
 		if (v.kind == V_VREG)
 			c->vuse[v.idx]++;
 		write_dest(c, v, D_OUT, 1, bgra[lane]);
+	}
+	if (fs->tex) {
+		/* the texture coordinate into o3.xy, times (width / padded width, height / padded height): the
+		 * chip reads a power-of-two texture and the padding repeats the edge texels */
+		int slot = c->max_uniform + 1;
+
+		for (lane = 0; lane < 2; lane++) {
+			struct vsrc t = c->outs[fs->uv_loc[lane]][fs->uv_comp[lane]], scale = { .kind = V_CONST, .idx = slot, .lane = lane };
+
+			if (t.kind == V_NONE)
+				return fail(c, "the vertex shader does not write the texture coordinate the fragment shader reads");
+			t = op2(c, MBX_VGP_MUL, t, scale);
+			c->vuse[t.idx]++;
+			write_dest(c, t, D_OUT, 3, lane);
+		}
+		c->prog->tex_scale_slot = slot;
 	}
 	return true;
 }
@@ -656,10 +676,13 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 {
 	nir_function_impl *impl = nir_shader_get_entrypoint(fs);
 	nir_intrinsic_instr *store = NULL;
-	bool have_var = false;
+	nir_tex_instr *tex = NULL;
+	bool have_var = false, lane_tex[4] = { false }, lane_mod[4] = { false };
 
 	memset(info, 0, sizeof(*info));
 	info->kind = MBX_FS_UNSUPPORTED;
+	if (getenv("MBX_NIR"))
+		nir_print_shader(fs, stderr);	/* debug: the fragment shader as the matcher sees it */
 	if (exec_list_length(&impl->body) != 1)
 		return;
 	nir_foreach_instr(instr, nir_start_block(impl)) {
@@ -671,8 +694,21 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 			nir_alu_instr *alu = nir_instr_as_alu(instr);
 
 			if (alu->op != nir_op_mov && alu->op != nir_op_vec2 && alu->op != nir_op_vec3 &&
-			    alu->op != nir_op_vec4)
+			    alu->op != nir_op_vec4 && alu->op != nir_op_fmul)
 				return;
+			break;
+		}
+		case nir_instr_type_tex: {
+			nir_tex_instr *t = nir_instr_as_tex(instr);
+
+			/* one plain 2D sample of unit 0: the coordinate is checked below */
+			if (tex || t->op != nir_texop_tex || t->sampler_dim != GLSL_SAMPLER_DIM_2D || t->is_array ||
+			    t->is_shadow || t->texture_index != 0 || nir_tex_instr_src_index(t, nir_tex_src_coord) < 0)
+				return;
+			for (unsigned i = 0; i < t->num_srcs; i++)
+				if (t->src[i].src_type != nir_tex_src_coord)
+					return;	/* a bias, a projector, an offset: not yet */
+			tex = t;
 			break;
 		}
 		case nir_instr_type_intrinsic: {
@@ -698,9 +734,50 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 	if (!store || nir_src_num_components(store->src[0]) != 4)
 		return;
 
+	if (tex) {
+		nir_scalar u = nir_scalar_resolved(tex->src[nir_tex_instr_src_index(tex, nir_tex_src_coord)].src.ssa, 0);
+		nir_scalar v = nir_scalar_resolved(tex->src[nir_tex_instr_src_index(tex, nir_tex_src_coord)].src.ssa, 1);
+
+		if (!nir_scalar_is_intrinsic(u) || nir_scalar_intrinsic_op(u) != nir_intrinsic_load_input ||
+		    !nir_scalar_is_intrinsic(v) || nir_scalar_intrinsic_op(v) != nir_intrinsic_load_input)
+			return;
+		nir_intrinsic_instr *iu = nir_def_as_intrinsic(u.def), *iv = nir_def_as_intrinsic(v.def);
+
+		info->uv_loc[0] = nir_intrinsic_io_semantics(iu).location;
+		info->uv_comp[0] = nir_intrinsic_component(iu) + u.comp;
+		info->uv_loc[1] = nir_intrinsic_io_semantics(iv).location;
+		info->uv_comp[1] = nir_intrinsic_component(iv) + v.comp;
+		info->tex = true;
+	}
 	for (unsigned i = 0; i < 4; i++) {
 		nir_scalar s = nir_scalar_resolved(store->src[0].ssa, i);
 
+		if (tex && nir_def_instr(s.def) == &tex->instr && s.comp == i) {
+			lane_tex[i] = true;
+			continue;
+		}
+		if (tex && nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_fmul) {
+			nir_scalar a = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 0));
+			nir_scalar b = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s, 1));
+
+			if (nir_def_instr(b.def) == &tex->instr) {
+				nir_scalar t = a;
+
+				a = b;
+				b = t;
+			}
+			if (nir_def_instr(a.def) == &tex->instr && a.comp == i && nir_scalar_is_intrinsic(b) &&
+			    nir_scalar_intrinsic_op(b) == nir_intrinsic_load_input) {
+				nir_intrinsic_instr *in = nir_def_as_intrinsic(b.def);
+				unsigned loc = nir_intrinsic_io_semantics(in).location;
+
+				info->col_loc[i] = loc;
+				info->col_comp[i] = nir_intrinsic_component(in) + b.comp;
+				lane_mod[i] = true;
+				continue;
+			}
+			return;
+		}
 		if (nir_scalar_is_const(s)) {
 			info->lane_const[i] = true;
 			info->colour[i] = nir_scalar_as_float(s);
@@ -716,6 +793,18 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		} else {
 			return;
 		}
+	}
+	if (tex) {
+		/* every lane the texel, or every lane the texel times the colour varying: the combiner is one word */
+		if (lane_tex[0] && lane_tex[1] && lane_tex[2] && lane_tex[3])
+			info->modulate = false;
+		else if (lane_mod[0] && lane_mod[1] && lane_mod[2] && lane_mod[3])
+			info->modulate = true;
+		else
+			return;
+		info->kind = MBX_FS_MATCHED;
+		info->flat = !info->modulate;
+		return;
 	}
 	info->kind = MBX_FS_MATCHED;
 	if (have_var) {

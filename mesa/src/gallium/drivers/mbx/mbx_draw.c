@@ -148,13 +148,53 @@ static uint32_t vertex_layout(struct mbx_context *ctx, const struct mbx_vgp_prog
 	return layout;
 }
 
+/* Texture words A and B of unit 0 from the bound view and sampler: a linear power-of-two texture with a stride */
+static bool tex_words(struct mbx_context *ctx, uint32_t *a, uint32_t *b)
+{
+	struct pipe_sampler_view *view = ctx->views[0];
+	const struct pipe_sampler_state *smp = ctx->samplers[0];
+	struct mbx_resource *tr;
+	unsigned stride_px, fmt;
+	bool clamp_s, clamp_t, bilinear;
+
+	if (!view || !smp || !view->texture || !mbx_resource(view->texture)->tex)
+		return false;
+	tr = mbx_resource(view->texture);
+	fmt = mbx_chip_tex_format(tr->base.format);
+	stride_px = tr->level_stride[0] / util_format_get_blocksize(tr->base.format);
+	/* NPOT textures are read with the coordinates scaled (the VGP does it), so only clamping them is right */
+	clamp_s = smp->wrap_s != PIPE_TEX_WRAP_REPEAT && smp->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT;
+	clamp_t = smp->wrap_t != PIPE_TEX_WRAP_REPEAT && smp->wrap_t != PIPE_TEX_WRAP_MIRROR_REPEAT;
+	bilinear = smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
+	*a = (clamp_s ? 1u << 31 : 0) | (clamp_t ? 1u << 29 : 0) | (uint32_t)(tr->tex_lw - 3) << 24 |
+	     (uint32_t)(tr->tex_lh - 3) << 20 | fmt << 14 | ((stride_px / 8) & 1);
+	/* 0x0e000000 as the background object has it; the stride in 16 texels at bit 18, the address / 128 */
+	*b = 0x0e000000 | (bilinear ? 1u << 31 : 0) | (uint32_t)((stride_px / 8) >> 1) << 18 | tr->bo->va >> 7;
+	return true;
+}
+
 static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *prog, uint32_t layout)
 {
 	const struct pipe_viewport_state *vp = &ctx->viewport;
+	uint32_t ta = 0, tb = 0;
 
-	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | 0x20 | 0x80 | 0x100);
+	if (prog->tex && !tex_words(ctx, &ta, &tb))
+		ta = tb = 0;
+	if (prog->tex) {
+		const uint32_t *tp = ctx->views[0] && ctx->views[0]->texture ?
+				     mbx_bo_map(mbx_resource(ctx->views[0]->texture)->bo) : NULL;
+
+		mbx_dbg("texture words A %08x B %08x C %08x, texel words %08x %08x %08x %08x; state %08x",
+			ta, tb, prog->tex_c, tp ? tp[0] : 0, tp ? tp[1] : 0, tp ? tp[4] : 0, tp ? tp[5] : 0, hw_state_word(ctx, prog));
+	}
+	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | (prog->tex ? 0x4 : 0) | 0x20 | 0x80 | 0x100);
 	mbx_emit(ctx, MBX_CH_TA, hw_state_word(ctx, prog));
 	mbx_emit(ctx, MBX_CH_TA, 0xe0000000);		/* alpha function ALWAYS (0 is NEVER, which rejects every pixel with bit 25 set) */
+	if (prog->tex) {
+		mbx_emit(ctx, MBX_CH_TA, ta);
+		mbx_emit(ctx, MBX_CH_TA, tb);
+		mbx_emit(ctx, MBX_CH_TA, prog->tex_c);
+	}
 	mbx_emit(ctx, MBX_CH_TA, layout);
 	mbx_emit_f(ctx, MBX_CH_TA, vp->scale[0]);	/* x scale, x offset, y offset, y scale */
 	mbx_emit_f(ctx, MBX_CH_TA, vp->translate[0]);
@@ -200,10 +240,23 @@ static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *
 		mbx_emit(ctx, MBX_CH_TA, 0xa0000000 | (prog->nconst - 1));
 		for (i = 0; i < prog->nconst; i++) {
 			for (unsigned c = 0; c < 4; c++) {
-				if (i < nu)
+				if (prog->tex && (int)i == prog->tex_scale_slot) {
+					float s = 1.0f;
+
+					if (ctx->views[0] && c < 2) {
+						struct mbx_resource *tr = mbx_resource(ctx->views[0]->texture);
+
+						s = c == 0 ? (float)tr->base.width0 / (float)(1u << tr->tex_lw) :
+							     (float)tr->base.height0 / (float)(1u << tr->tex_lh);
+					} else if (c >= 2) {
+						s = 0.0f;
+					}
+					mbx_emit_f(ctx, MBX_CH_TA, s);
+				} else if (i < nu) {
 					mbx_emit_f(ctx, MBX_CH_TA, uniforms ? uniforms[i * 4 + c] : 0.0f);
-				else
+				} else {
 					mbx_emit_f(ctx, MBX_CH_TA, prog->consts[i][c]);
+				}
 			}
 		}
 	}
@@ -346,6 +399,8 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		unsigned i;
 
 		mbx_dbg("draw %u: header", d);
+		if (prog->tex && ctx->views[0] && ctx->views[0]->texture)
+			mbx_job_use_texture(ctx, mbx_resource(ctx->views[0]->texture));
 		emit_header(ctx, prog, layout);
 		mbx_dbg("draw %u: program", d);
 		emit_program(ctx, prog);
