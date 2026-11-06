@@ -6,6 +6,13 @@ first in QEMU and then on a real N810. Newest entries at the bottom. Facts
 marked *unverified* have not been checked on the emulator or the device.
 For the setup snapshot see `NOTES.md`.
 
+**Sources.** Each entry ends with where its facts came from, so they can be
+checked: repo paths (relative to the repo root), Mesa and kernel paths (in the
+trees under `build/`, versions named), and URLs. "User" means a decision or
+instruction the user gave in the session. A fact with no source line is mine and
+unverified. Anything the emulator model says about the chip is the model's,
+not the chip's (`mbx/README.md` marks which items were observed on a device).
+
 ## Decisions
 
 - **Kernel driver:** a new DRM render node (`mbx/drm/`, GPL-2.0), written
@@ -71,6 +78,19 @@ For the setup snapshot see `NOTES.md`.
   (0xf10) is not zero in the model; NOTES.md had only noted the product-ID
   registers at 0xfe0-0xffc reading 0.
 - Next: M2, the no-Mesa triangle (`mbxtri`), host first through libmbxemu.
+- Sources: `NOTES.md` (layout, what is built, boot recipe, open items);
+  `mbx/README.md` and `mbx/{emu.h,mbxemu.h,vgp.c,ta.c}` (the model, TA stream
+  and VGP, the FIFO that stalls the bus); `mbx/kmod/gpl/driver/mbxaccess.c`
+  (the old driver's ioctls, and the GFX power-up and reset sequence in
+  `MBXAccess_GfxClocks`, about lines 820-900); kernel tree
+  `kernel/build/linux-6.18.58`: `arch/arm/boot/dts/ti/omap/omap2.dtsi` (the `ocp`
+  bus), `omap2420.dtsi`, `omap24xx-clocks.dtsi` (labels `gfx_ick`, `gfx_2d_fck`,
+  `gfx_3d_fck`), `omap2420-clocks.dtsi` (`gfx_clkdm`), `drivers/gpu/drm/{Kconfig,Makefile}`,
+  `include/drm/{drm_gem_shmem_helper.h,drm_drv.h}`, `drivers/gpu/drm/drm_gem_shmem_helper.c`
+  (`drm_gem_shmem_get_pages_sgt`), and the generated `build/obj-6.18.58/.config`;
+  `kernel/scripts/{build-6.18.sh,prepare-6.18.sh}` (the 2 MB partition check, the
+  patch flow). Decisions (new driver from scratch, no legacy userland, omapdrm,
+  CPU fallback, DMA possible, fetch Mesa): the user, in the session.
 
 ### 2026-11-06: M2 step 1, `mbx/tools/mbxtri.c`
 
@@ -110,6 +130,17 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
 - Next: the kernel side (GEM objects, the MBX address space and page tables,
   an interrupt-driven submit with a fence) so the same stream can go through
   `/dev/dri/renderD129` in the guest.
+- Sources: all from this repo's model. Register names and meanings:
+  `mbx/emu.h` (`R_*`, `I_*`, `TAC_*`); `mbx/core.c` (`mbxemu_reg_write`: what each
+  write does, the MMU, contexts, free list); `mbx/ta.c` (the stream parser:
+  `command()`, `hdr_words`, `hdr_block()`, the section/code/constant words in
+  `ta_word()`, `vertex_words()`, `vertex()`, `project()` for the viewport and
+  depth formulas, `ta_start()`, `ta_end_scene()`, `write_regions()`, `tile_grid()`);
+  `mbx/vgp.c` (instruction layout in its header comment, the interpreter);
+  `mbx/render.c` (`render_kick()` for the registers a render reads, `depth_pass()`
+  and the state word bits near the top); `mbx/pb.c` (the parameter-buffer writer
+  is off without a free list). The "o1 is BGRA" fact is in `mbx/ta.c`
+  (`project()`) and `mbx/README.md` assumption 12.
 
 ### 2026-11-06: M2 step 2, the kernel path (`mbxtri-drm`)
 
@@ -152,6 +183,18 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
 - Not yet: asynchronous submit and fences, the parameter buffer and free list
   (the model does without; the real chip needs it), partial render on
   overflow, DMA feeding, runtime PM, and the real N810.
+- Sources: page-table format, address-space size, TLB behaviour:
+  `mbx/core.c` (`translate()`, `R_MMU_*` writes) and `mbx/README.md` assumption 8;
+  interrupt bits and the soft reset (`0x080`, bits 0, 4, 8): `mbx/core.c`
+  (`soft_reset`, `emu_raise`); the power-up sequence: `mbx/kmod/gpl/driver/mbxaccess.c`
+  (`MBXAccess_GfxClocks`); kernel APIs, read in `kernel/build/linux-6.18.58`:
+  `include/drm/drm_gem_shmem_helper.h`, `drivers/gpu/drm/drm_gem_shmem_helper.c`
+  (`drm_gem_shmem_get_pages_sgt`, `drm_gem_shmem_prime_import_sg_table`,
+  `map_wc`), `include/drm/drm_drv.h` (`open`, `postclose`,
+  `gem_prime_import_sg_table`), `include/drm/drm_mm.h`; the byte-identity check
+  compares the guest's PPM with `mbx/mbxtri`'s. QEMU used for the guest check
+  is built from `qemu/` in this repo (`qemu/prepare-tree.sh --mbx`,
+  `qemu/docker/Dockerfile.9.1`).
 
 ### 2026-11-06: the VGP encoder (`mbx/lib/mbx_vgp.h`)
 
@@ -171,6 +214,15 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
 - Next: the draw-state encoders (header blocks and the ISP/TSP state word,
   texture words, blend and depth state) as a library of the same kind, then
   Mesa.
+- Sources: instruction layout, opcode list and numbering, the one-constant and
+  one-input register rules, constant windows, relative constants and AMV:
+  `mbx/vgp.c` (header comment, `enum`, `nsrc[]`, `read_sources()`, `vgp_exec()`,
+  `vgp_run()`) and `mbx/README.md` assumption 13; output register roles:
+  `mbx/ta.c` `vertex()` (o1 colour BGRA, o2 offset colour and fog in w, o3 and
+  o4 texture coordinates, o5/o6 user clip planes enabled by sections-word bits
+  20-27, o7.x and o7.y front and rear clip, always on) and `project()`; limits
+  (192 constants, 256 instructions, 14 temporaries, 8 inputs): `mbx/emu.h`
+  (`struct vgp`, `struct vgp_regs`). Not covered by the test: LIT, EXPP, LOGP.
 
 ### 2026-11-06: Mesa 26.1.8 builds with an mbx driver (`mesa/`)
 
@@ -198,6 +250,22 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
 - Next: a drm-shim backend (Mesa's `src/drm-shim`) that implements our ioctls on
   top of `libmbxemu` in-process, so the same DRM winsys code runs on the host;
   then a real `pipe_context`.
+- Sources: the Mesa version, URL and sha256: Buildroot 2026.08.1's
+  `rootfs/build/buildroot-2026.08.1/package/mesa3d/{mesa3d.mk,mesa3d.hash}`
+  (the hash file cites the announcement
+  https://lists.freedesktop.org/archives/mesa-announce/2026-August/000865.html;
+  tarball from https://archive.mesa3d.org/mesa-26.1.8.tar.xz). The hook points were found by
+  searching the 26.1.8 tree for how `vc4` is wired in: `meson.options`,
+  `meson.build`, `src/gallium/meson.build`,
+  `src/gallium/auxiliary/pipe-loader/{pipe_loader_drm.c,meson.build}`,
+  `src/gallium/auxiliary/target-helpers/{drm_helper.h,drm_helper_public.h}`,
+  `src/gallium/targets/{dri,dril}/*`, `src/gallium/winsys/vc4/drm/*`,
+  `src/gallium/winsys/kmsro/drm/kmsro_drm_winsys.c`. The 26.1 screen and caps
+  API: `src/gallium/drivers/vc4/vc4_screen.c` (`vc4_init_screen_caps`,
+  `vc4_init_shader_caps`, `vc4_screen_create`); `include/drm-uapi/` listing;
+  meson 26.1 option names: `meson.options`. Docker image: `mesa/docker/Dockerfile`
+  (Ubuntu 24.04, pip meson, meson 1.12.1 reported by the image); the meson
+  version requirement is `meson_version : '>= 1.4.0'` in Mesa's `meson.build`.
 
 ### 2026-11-06: the host sim (drm-shim)
 
@@ -213,3 +281,46 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
   the same picture as the host emulator directly (byte-identical PPM).
 - Next: a real `pipe_context` for mbx: buffers over the ioctls, state objects,
   `draw_vbo` emitting the TA stream, then NIR to VGP.
+- Sources: Mesa 26.1.8 `src/drm-shim/{README.md,drm_shim.h,device.c}` (the shim
+  API, the 4 GB memfd and its heap, driver ioctl indexing at `device.c` line
+  ~307, `drm_shim_driver_prefers_first_render_node` in `drm_shim.c` ~120) and
+  `src/broadcom/drm-shim/{vc4_noop.c,meson.build}` as the pattern;
+  `src/meson.build` (the order of `subdir('drm-shim')` before gallium); the
+  ioctl semantics are this repo's own `mbx/drm/mbx_job.c` and `mbx_mmu.c`, and the
+  emulator is `mbx/*.c`.
+
+### 2026-11-06: the mbx pipe_context (resources, state, jobs, draw)
+
+- The driver now has a context that records and submits frames: `mbx_bo.c`
+  (ioctl wrappers), `mbx_resource.c` (buffers, linear 2D targets padded to
+  whole 16-pixel tiles, depth buffers with no memory because depth is on chip),
+  `mbx_state.c` (state objects as copies), `mbx_job.c` (the TA stream as
+  chunks, one `SUBMIT` per flush, regions, tails and background buffers kept
+  per target size), `mbx_draw.c` (the vertices read on the CPU into the stream
+  after an object header, the VGP program and constants only when they changed
+  in the job; triangle lists, strips and fans), `mbx_context.c` (flush, a
+  CPU-filled colour clear, depth clear as the next render's on-chip clear
+  value). It builds with the rest of Mesa on the host.
+- Not there yet: the vertex compiler and fragment matcher, so `draw_vbo` logs
+  "no program" and skips; textures; blending and alpha test words; scissor
+  (planned as user clip planes in the vertex program); scanout through kmsro.
+- Cull bits follow README assumption 4 (bit 19 culls negative area in surface
+  pixels, bit 18 positive) combined with the sign of the viewport's y scale;
+  not tested against a picture yet.
+- 26.1 API changes met: `clear` takes `color_clear_mask` and
+  `stencil_clear_mask`; `set_constant_buffer` and `set_sampler_views` have no
+  ownership flag (the driver takes its own reference); `util_set_vertex_buffers_count`
+  takes four arguments; the shader stage type is `mesa_shader_stage`.
+- Sources: callback set and structure: Mesa 26.1.8
+  `src/gallium/drivers/vc4/{vc4_context.c (vc4_context_create),vc4_state.c (vc4_state_init),vc4_draw.c,vc4_program.c,vc4_resource.c}`;
+  current signatures: `src/gallium/include/pipe/p_context.h` (clear,
+  set_constant_buffer, set_sampler_views, set_vertex_buffers, the sampler view
+  release comment), `src/gallium/auxiliary/util/u_helpers.{h,c}`,
+  `src/util/u_pack_color.h`, `src/gallium/auxiliary/util/u_debug_cb.h`; the
+  compile errors that showed them are in `build/mesa-host.log`. TA stream,
+  header blocks, state word bits, region array size, `0x6dc` and render
+  registers: `mbx/ta.c`, `mbx/render.c` (`render_kick`, `depth_pass`), `mbx/emu.h`,
+  `mbx/README.md` (assumptions 4, 5, 6, 7); the CPU-fill clear relies on the
+  model reading the target's own pixels when no background object is set
+  (`mbx/render.c` near line 1425 and README assumption 6), which is the model's
+  behaviour, not seen on a device.
