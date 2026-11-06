@@ -1,0 +1,120 @@
+/* SPDX-License-Identifier: MIT */
+/*
+ * The triangle frame shared by mbxtri (the emulator on the host) and
+ * mbxtri-drm (the render node): the TA stream as chunks (a header word, type
+ * << 28 | count, then the words; type 0 TA port, 1 TA control port, as
+ * mbx/drm/mbx_drm.h) and the register values of the frame.
+ */
+#ifndef TRI_FRAME_H
+#define TRI_FRAME_H
+
+#include <math.h>
+#include <stdint.h>
+#include <string.h>
+
+#define TRI_W		64
+#define TRI_H		64
+#define TRI_CLEAR	0xff202020u
+
+#define CH_TA		0
+#define CH_CTL		1
+
+struct tri_sw {
+	uint32_t *base, *p, *hdr;
+	unsigned int type;
+};
+
+static inline void tri_put(struct tri_sw *s, unsigned int type, uint32_t v)
+{
+	if (!s->hdr || s->type != type) {
+		s->hdr = s->p++;
+		*s->hdr = (uint32_t)type << 28;
+		s->type = type;
+	}
+	*s->p++ = v;
+	(*s->hdr)++;
+}
+
+static inline void tri_ta(struct tri_sw *s, uint32_t v) { tri_put(s, CH_TA, v); }
+static inline void tri_taf(struct tri_sw *s, float f) { uint32_t u; memcpy(&u, &f, 4); tri_ta(s, u); }
+
+/* VGP instruction encoding (mbx/vgp.c's header comment) */
+enum { VOP_MOV = 1, VOP_DP4 = 8 };
+enum { VF_IN = 0, VF_CONST = 1, VF_TEMP = 2 };
+#define VOUT(n)		(n)
+#define VSWZ(x, y, z, w) ((x) | (y) << 2 | (z) << 4 | (w) << 6)
+#define VXYZW		VSWZ(0, 1, 2, 3)
+
+struct tri_src { int file, idx, swz; };
+
+static inline void tri_enc(uint32_t w[2], int op, int dst, int mask, const struct tri_src *s, int n)
+{
+	uint32_t hi = op, lo = (uint32_t)dst << 26 | (uint32_t)mask << 22;
+	int k;
+
+	for (k = 0; k < 3; k++) {
+		int swz = k < n ? s[k].swz : VXYZW;
+
+		hi |= (uint32_t)swz << (8 + 8 * k);
+		if (k < n)
+			lo |= (uint32_t)s[k].file << (16 + 2 * k) | (uint32_t)(s[k].idx & 15) << (4 * k);
+	}
+	w[0] = hi;
+	w[1] = lo;
+}
+
+/*
+ * One frame's stream: object header, a VGP program (section bit 2: o0 = MVP
+ * * v0, o1 = v1.zyxw, since o1 is BGRA), its constants (a rotation of deg
+ * degrees about z), the triangle and the end word. Returns the words
+ * written to out (at most 128).
+ */
+static inline uint32_t tri_stream(uint32_t *out, float deg)
+{
+	struct tri_sw s = { .base = out, .p = out };
+	static const float v[3][3] = { { 0, 0.8f, 0.5f }, { -0.8f, -0.6f, 0.5f }, { 0.8f, -0.6f, 0.5f } };
+	static const uint32_t rgba[3] = { 0xff0000ff, 0xff00ff00, 0xffff0000 };	/* R G B A in memory order */
+	struct tri_src p0[2] = { { VF_IN, 0, VXYZW }, { VF_CONST, 0, VXYZW } };
+	struct tri_src col[1] = { { VF_IN, 1, VSWZ(2, 1, 0, 3) } };
+	uint32_t code[5][2];
+	float c = cosf(deg * (float)M_PI / 180), sn = sinf(deg * (float)M_PI / 180);
+	float m[16] = { c, -sn, 0, 0, sn, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+	int i;
+
+	/* the object header: state, alpha test, layout, viewport, depth */
+	tri_ta(&s, 0x10000000 | 0x1 | 0x2 | 0x20 | 0x80 | 0x100);
+	tri_ta(&s, 1u << 22 | 1u << 9);		/* Gouraud, depth test LESS */
+	tri_ta(&s, 0);				/* alpha test (off) */
+	tri_ta(&s, 0x53);			/* v0: three floats, v1: four bytes packed */
+	tri_taf(&s, TRI_W / 2.0f); tri_taf(&s, TRI_W / 2.0f);
+	tri_taf(&s, TRI_H / 2.0f); tri_taf(&s, -TRI_H / 2.0f);	/* x scale, x off, y off, y scale */
+	tri_taf(&s, 0.5f); tri_taf(&s, 0.5f); tri_taf(&s, 1e-5f);	/* depth: z * 0.5 + 0.5 */
+
+	for (i = 0; i < 4; i++) {
+		p0[1].idx = i;
+		tri_enc(code[i], VOP_DP4, VOUT(0), 1 << i, p0, 2);
+	}
+	tri_enc(code[4], VOP_MOV, VOUT(1), 0xf, col, 1);
+	tri_ta(&s, 0x80000000 | 0x4);		/* a section: bit 2 */
+	tri_ta(&s, 0u << 16 | 4u << 8 | 0);	/* flags 0 (once, window 0), instructions 0..4 */
+	tri_ta(&s, 0x90000000 | 0u << 16 | 4);
+	for (i = 0; i < 5; i++) {
+		tri_ta(&s, code[i][0]);
+		tri_ta(&s, code[i][1]);
+	}
+	tri_ta(&s, 0xa0000000 | 0u << 16 | 3);	/* c0-c3: the matrix rows, as DP4 takes them */
+	for (i = 0; i < 16; i++)
+		tri_taf(&s, m[i]);
+
+	tri_ta(&s, 0x70000000);			/* a triangle list, no culling */
+	tri_ta(&s, 0xf0020000 | 0x4);		/* run section bit 2 */
+	for (i = 0; i < 3; i++) {
+		tri_taf(&s, v[i][0]); tri_taf(&s, v[i][1]); tri_taf(&s, v[i][2]);
+		tri_ta(&s, rgba[i]);
+	}
+	tri_put(&s, CH_CTL, 1);			/* the object ends */
+	tri_put(&s, CH_TA, 0xf0000000);		/* the scene ends */
+	return (uint32_t)(s.p - s.base);
+}
+
+#endif
