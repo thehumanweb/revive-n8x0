@@ -41,6 +41,12 @@
 #define MBX_PB_TABLE_SIZE	(((MBX_VM_SIZE >> 12)) * 2)	/* an entry for every page number */
 #define MBX_PB_VA		(MBX_PB_FIRST_PAGE << 12)
 #define MBX_PB_TABLE_VA		(MBX_PB_VA - MBX_PB_TABLE_SIZE)
+/*
+ * The TA and EVM contexts, zeroed and padded (the chip writes past their nominal sizes: a page,
+ * 520 bytes): 16 KB each, in one object mapped in every space just below the free list's table.
+ */
+#define MBX_CTX_SIZE		0x8000u
+#define MBX_CTX_VA		(MBX_PB_TABLE_VA - MBX_CTX_SIZE)
 
 struct mbx_device;
 
@@ -74,7 +80,9 @@ struct mbx_device {
 	u32 core_id, revision;
 
 	struct drm_gem_object *pb;	/* the free list's table, then the parameter buffer's pages */
+	struct drm_gem_object *ctx;	/* the TA and EVM contexts */
 	bool pb_built;		/* the free list is built (not after a reset) */
+	bool ctx_loaded;	/* the contexts are zeroed and loaded (not after a reset) */
 	void *dummy;		/* what unmapped pages point at */
 	dma_addr_t dummy_dma;
 
@@ -110,13 +118,22 @@ static inline void mbx_write(struct mbx_device *m, u32 reg, u32 v)
 struct mbx_vm *mbx_vm_create(struct mbx_device *m);
 struct mbx_vm *mbx_vm_get(struct mbx_vm *vm);
 void mbx_vm_put(struct mbx_vm *vm);
-struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj);
+struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj, u32 align);
+/* bytes from device address va to the end of the buffer mapped there: 0 if none */
+u32 mbx_vm_room(struct mbx_vm *vm, u32 va);
+/* the CPU's access to len bytes at va in a buffer of the space, in runs of whole words */
+int mbx_vm_cpu(struct mbx_vm *vm, u32 va, u32 len, void (*fn)(void *priv, u32 off, u32 *w, u32 n), void *priv);
 int mbx_vm_unmap(struct mbx_vm *vm, struct drm_gem_object *obj);
 void mbx_vm_activate(struct mbx_vm *vm);	/* with job_lock held */
 int mbx_pb_create(struct mbx_device *m);
 void mbx_pb_destroy(struct mbx_device *m);
+void mbx_ctx_load(struct mbx_device *m);	/* with the job's space active */
 int mbx_pb_build(struct mbx_device *m, unsigned long ms);	/* with the job's space active */
 void mbx_pb_set_background(struct mbx_device *m, const struct drm_mbx_submit *a);
+u32 mbx_region_bytes(const struct drm_mbx_submit *a);
+u32 mbx_tiles_value(const struct drm_mbx_submit *a, int mode);	/* 0x860, by trial mode */
+int mbx_job_prepare_buffers(struct mbx_vm *vm, const struct drm_mbx_submit *a);	/* the region array and the tails */
+int mbx_job_region_bit30(struct mbx_vm *vm, const struct drm_mbx_submit *a);
 int mbx_ioctl_pb_dump(struct drm_device *dev, void *data, struct drm_file *file);
 
 /* mbx_gem.c */

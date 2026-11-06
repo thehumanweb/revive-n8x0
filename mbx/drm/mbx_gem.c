@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Buffers: shmem GEM objects, write-combined for the CPU, mapped into the MBX's address space */
+#include <linux/sizes.h>
+
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_shmem_helper.h>
 #include <drm/drm_vma_manager.h>
@@ -33,10 +35,12 @@ int mbx_ioctl_bo_info(struct drm_device *dev, void *data, struct drm_file *file)
 	struct mbx_mapping *map;
 	int ret;
 
+	if (a->flags & ~MBX_BO_INFO_ALIGN_64K)
+		return -EINVAL;
 	obj = drm_gem_object_lookup(file, a->handle);
 	if (!obj)
 		return -ENOENT;
-	map = mbx_vm_map(f->vm, obj);
+	map = mbx_vm_map(f->vm, obj, a->flags & MBX_BO_INFO_ALIGN_64K ? SZ_64K : 0);
 	if (IS_ERR(map)) {
 		ret = PTR_ERR(map);
 		goto out;

@@ -159,7 +159,8 @@ static void write_regions(struct mbxemu *e, struct scene *s, int close)
 				if (x == tx - 1 && y == ty - 1)
 					w0 |= 0x84000000;	/* at a close too */
 				dev_write32(e, s->regions + 8 * k, w0);
-				if (!close || listed)
+				/* an empty tile's word 1 keeps what it held (found during device testing) */
+				if (listed)
 					dev_write32(e, s->regions + 8 * k + 4, head == ~0u ? 0 : head);
 			}
 	free(cover);
@@ -167,11 +168,6 @@ static void write_regions(struct mbxemu *e, struct scene *s, int close)
 
 /* --- scenes --- */
 
-/*
- * 0x800: the TA starts on the current context's scene, a new one unless
- * the context holds one still open (a resume after a partial render or an
- * overflow, or a scene loaded back). Its setup registers are taken now.
- */
 /*
  * The contract at TA start (README assumption 31), as found during device testing of what a client
  * does before a scene (found during device testing; the effects are only known
@@ -194,11 +190,39 @@ static void check_contract(struct mbxemu *e, const struct scene *s)
 			      "the address rounded down");
 	if (!R[R_TA_CTX_BASE / 4] || !R[R_EVM_CTX_BASE / 4])
 		emu_violation(e, V_CTX, "the TA or EVM context (0x820, 0x864) is not set");
+	else if ((R[R_TA_CTX_BASE / 4] | R[R_EVM_CTX_BASE / 4]) & 0x3fff)
+		emu_violation(e, V_CTX, "the TA or EVM context (0x820, 0x864) is not 16 KB aligned");
 	if (s->regions && (dev_read32(e, s->regions) & 0x22000000) != 0x22000000)
 		emu_violation(e, V_REGION_INIT, "the region array was not initialised "
 			      "(0x22000000 | the macro tile's origin)");
 }
 
+/*
+ * What the TA does with a tail pointer that is not 64 KB aligned: it uses the address rounded down,
+ * and zeroes the tail area there (found during device testing: at a 16 KB aligned allocation it
+ * zeroed the colour buffer's last rows, about 7 KB at 400 x 240). The area's size is not known:
+ * 7 bytes for each entry of the grid's bit-interleaved index range fits that one figure.
+ */
+static void tails_clobber(struct mbxemu *e, const struct scene *s)
+{
+	uint32_t tx = (s->config >> 20 & 0x3ff) + 1, ty = (s->config >> 10 & 0x3ff) + 1, bits = 0, n;
+	static const uint8_t zeros[4096];
+
+	while ((1u << bits) < (tx > ty ? tx : ty))
+		bits++;
+	for (n = 7u << (2 * bits); n; ) {
+		uint32_t k = n < sizeof(zeros) ? n : (uint32_t)sizeof(zeros);
+
+		dev_write(e, (s->tails & ~0xffffu) + (7u << (2 * bits)) - n, zeros, k);
+		n -= k;
+	}
+}
+
+/*
+ * 0x800: the TA starts on the current context's scene, a new one unless
+ * the context holds one still open (a resume after a partial render or an
+ * overflow, or a scene loaded back). Its setup registers are taken now.
+ */
 void ta_start(struct mbxemu *e)
 {
 	struct scene *s = &e->ctx[e->regs[R_TA_CONTEXT_ID / 4] & 1];
@@ -213,9 +237,12 @@ void ta_start(struct mbxemu *e)
 		e->stats.scenes++;
 	s->regions = e->regs[R_TA_REGIONS / 4];
 	s->tails = e->regs[R_TA_TAILS / 4];
+	s->closed = 0;
 	if (fresh)
 		e->viol = 0;
 	check_contract(e, s);
+	if (s->tails & 0xffff)
+		tails_clobber(e, s);
 	s->config = e->regs[R_TA_CONFIG / 4];
 	s->width = e->regs[R_TA_WIDTH / 4] >> 16;
 	s->height = e->regs[R_TA_HEIGHT / 4] >> 16;
@@ -245,11 +272,19 @@ void ta_end_scene(struct mbxemu *e, int close)
 
 	if (s) {
 		if (close) {
+			s->closed = 1;
 			write_regions(e, s, 1);
 			emu_trace(e, "TA close: %d triangles so far", s->nprims);
 		} else if (e->regs[R_TA_CONFIG / 4] & TAC_END_IS_END) {
 			write_regions(e, s, 0);
 			s->complete = 1;
+			/* the EVM context is written past its 520 bytes (found during device testing; how far
+			 * is not known: 1 KB assumed); a client pads it */
+			if (e->regs[R_EVM_CTX_BASE / 4]) {
+				static const uint8_t zeros[1024];
+
+				dev_write(e, e->regs[R_EVM_CTX_BASE / 4] + 520, zeros, sizeof(zeros));
+			}
 			emu_trace(e, "TA end: %d triangles", s->nprims);
 		} else {
 			emu_trace(e, "TA stopped mid-scene");

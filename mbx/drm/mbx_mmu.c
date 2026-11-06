@@ -6,6 +6,7 @@
  * buffer point at a scratch page so a stray access never reaches physical 0.
  */
 #include <linux/dma-mapping.h>
+#include <linux/highmem.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 
@@ -13,13 +14,13 @@
 
 #include "mbx_drv.h"
 
-/* The parameter buffer's object (the free list's table, then its pages) at its fixed addresses */
-static int mbx_pb_map(struct mbx_vm *vm, struct mbx_device *m)
+/* An object's pages at fixed device addresses, from va for npages (the parameter buffer, the contexts) */
+static int mbx_fixed_map(struct mbx_vm *vm, struct drm_gem_object *obj, u32 va, u32 npages)
 {
-	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(m->pb);
+	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(obj);
 	struct sg_table *sgt = drm_gem_shmem_get_pages_sgt(shmem);
 	struct sg_dma_page_iter it;
-	u32 pg = MBX_PB_TABLE_VA >> 12, end = (MBX_PB_VA >> 12) + MBX_PB_PAGES;
+	u32 pg = va >> 12, end = pg + npages;
 
 	if (IS_ERR(sgt))
 		return PTR_ERR(sgt);
@@ -30,6 +31,13 @@ static int mbx_pb_map(struct mbx_vm *vm, struct mbx_device *m)
 		pg++;
 	}
 	return 0;
+}
+
+static int mbx_pb_map(struct mbx_vm *vm, struct mbx_device *m)
+{
+	int ret = mbx_fixed_map(vm, m->pb, MBX_PB_TABLE_VA, MBX_PB_TABLE_SIZE / MBX_PAGE + MBX_PB_PAGES);
+
+	return ret ? ret : mbx_fixed_map(vm, m->ctx, MBX_CTX_VA, MBX_CTX_SIZE / MBX_PAGE);
 }
 
 struct mbx_vm *mbx_vm_create(struct mbx_device *m)
@@ -43,8 +51,8 @@ struct mbx_vm *mbx_vm_create(struct mbx_device *m)
 	vm->m = m;
 	mutex_init(&vm->lock);
 	INIT_LIST_HEAD(&vm->maps);
-	/* buffers go below the free list's table; the parameter buffer owns the top */
-	drm_mm_init(&vm->mm, MBX_VM_START, MBX_PB_TABLE_VA - MBX_VM_START);
+	/* buffers go below the contexts; the parameter buffer owns the top */
+	drm_mm_init(&vm->mm, MBX_VM_START, MBX_CTX_VA - MBX_VM_START);
 	for (i = 0; i < MBX_MMU_TABLES; i++) {
 		vm->pt[i] = dma_alloc_coherent(m->dev, MBX_PAGE, &vm->pt_dma[i], GFP_KERNEL);
 		if (!vm->pt[i])
@@ -122,7 +130,7 @@ static struct mbx_mapping *find_locked(struct mbx_vm *vm, struct drm_gem_object 
 }
 
 /* Map a buffer (once): its pages' DMA addresses into the page tables */
-struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj)
+struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj, u32 align)
 {
 	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(obj);
 	struct mbx_mapping *map;
@@ -145,7 +153,7 @@ struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj)
 		map = ERR_PTR(-ENOMEM);
 		goto out;
 	}
-	ret = drm_mm_insert_node(&vm->mm, &map->node, ALIGN(obj->size, MBX_PAGE));
+	ret = drm_mm_insert_node_generic(&vm->mm, &map->node, ALIGN(obj->size, MBX_PAGE), align, 0, 0);
 	if (ret) {
 		kfree(map);
 		map = ERR_PTR(ret);
@@ -192,4 +200,67 @@ void mbx_vm_activate(struct mbx_vm *vm)
 		mbx_write(m, MBX_REG_MMU_TABLE(i), lower_32_bits(vm->pt_dma[i]));
 	mbx_write(m, MBX_REG_MMU_CTRL, 1);
 	m->active_vm = vm;
+}
+
+/* The buffer mapped where va is, with the mapping's lock held */
+static struct mbx_mapping *containing_locked(struct mbx_vm *vm, u32 va)
+{
+	struct mbx_mapping *map;
+
+	list_for_each_entry(map, &vm->maps, link)
+		if (va >= map->node.start && va < map->node.start + map->node.size)
+			return map;
+	return NULL;
+}
+
+u32 mbx_vm_room(struct mbx_vm *vm, u32 va)
+{
+	struct mbx_mapping *map;
+	u32 room = 0;
+
+	mutex_lock(&vm->lock);
+	map = containing_locked(vm, va);
+	if (map)
+		room = map->node.start + map->node.size - va;
+	mutex_unlock(&vm->lock);
+	return room;
+}
+
+int mbx_vm_cpu(struct mbx_vm *vm, u32 va, u32 len, void (*fn)(void *priv, u32 off, u32 *w, u32 n), void *priv)
+{
+	struct mbx_device *m = vm->m;
+	struct mbx_mapping *map;
+	struct drm_gem_shmem_object *shmem;
+	struct sg_table *sgt;
+	u32 done = 0;
+	int ret = 0;
+
+	if ((va | len) & 3)
+		return -EINVAL;
+	mutex_lock(&vm->lock);
+	map = containing_locked(vm, va);
+	if (!map || len > map->node.start + map->node.size - va) {
+		ret = -EINVAL;
+		goto out;
+	}
+	shmem = to_drm_gem_shmem_obj(map->obj);
+	sgt = drm_gem_shmem_get_pages_sgt(shmem);
+	if (IS_ERR(sgt)) {
+		ret = PTR_ERR(sgt);
+		goto out;
+	}
+	dma_sync_sgtable_for_cpu(m->dev, sgt, DMA_BIDIRECTIONAL);
+	while (done < len) {
+		u32 pos = va - map->node.start + done, in_page = pos & (PAGE_SIZE - 1);
+		u32 n = min_t(u32, len - done, PAGE_SIZE - in_page);
+		void *p = kmap_local_page(shmem->pages[pos >> PAGE_SHIFT]);
+
+		fn(priv, done, p + in_page, n / 4);
+		kunmap_local(p);
+		done += n;
+	}
+	dma_sync_sgtable_for_device(m->dev, sgt, DMA_BIDIRECTIONAL);
+out:
+	mutex_unlock(&vm->lock);
+	return ret;
 }

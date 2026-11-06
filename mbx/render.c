@@ -1497,6 +1497,35 @@ static void tile(struct mbxemu *e, struct rctx *rc, uint32_t entry)
 }
 
 /*
+ * A tile's list in memory (pb.c's format: 16-word blocks of entries, the 16th linking on with
+ * 0xe0000000 | the next block, 0xf0000000 ending it): whole, or damaged by whatever wrote over
+ * it (a tail area, a context's overrun, a client). The chip's ISP reads these; this model draws from
+ * its own scene, so it only checks them.
+ */
+static int list_whole(struct mbxemu *e, uint32_t head)
+{
+	uint32_t at = head, blocks = 0, i, w;
+
+	for (;;) {
+		if (++blocks > 4096)
+			return 0;
+		for (i = 0; i < 16; i++) {
+			w = dev_read32(e, at + 4 * i);
+			if (w == 0xf0000000u)
+				return 1;
+			if (i == 15 && (w & 0xe0000000u) == 0xe0000000u) {
+				at = w & 0x1fffffffu;
+				break;
+			}
+			if (!w)
+				return 0;	/* an empty entry before the end word */
+		}
+		if (i == 16)
+			return 0;		/* no end word and no link */
+	}
+}
+
+/*
  * The kick. The scene is the one in the hardware context 0x6ec names;
  * none (no TA since) draws only the background. A complete scene is
  * consumed by its render; a closed one (a partial render) loses what it
@@ -1570,6 +1599,19 @@ void render_kick(struct mbxemu *e)
 	rc.s = &e->ctx[R[R_HW_CONTEXT / 4] & 1];
 	if (!rc.s->used)
 		rc.s = NULL;
+	if (rc.s && !rc.s->complete && !rc.s->closed)
+		emu_violation(e, V_RENDER_EARLY, "a render kicked while the scene is still being streamed "
+			      "(no end word and no close)");
+	if (rc.s && !rc.s->complete && e->fl_stale) {
+		/* the free list a partial render left is damaged; the next partial render hangs the core
+		 * unless the list is rebuilt (found during device testing) */
+		emu_violation(e, V_FL_STALE, "a partial render after a partial render without rebuilding the "
+			      "free list: the core hangs");
+		if (e->strict) {
+			pcache_end(e);
+			return;
+		}
+	}
 	if (rc.s && rc.s->nprims) {
 		rc.su = calloc(rc.s->nprims, sizeof(*rc.su));
 		if (!rc.su)
@@ -1593,6 +1635,17 @@ void render_kick(struct mbxemu *e)
 		if (entry & 0x80000000)
 			break;
 	}
+	for (k = 0; k < MAX_REGIONS; k++) {
+		uint32_t w0 = dev_read32(e, regions + 8 * k), w1 = dev_read32(e, regions + 8 * k + 4);
+
+		if (!(w0 & 0x02000000) && w1 && !list_whole(e, w1)) {
+			emu_violation(e, V_LIST, "a tile's list in memory is damaged (an empty entry before its "
+				      "end word, or no end word)");
+			break;
+		}
+		if (w0 & 0x80000000)
+			break;
+	}
 	rc.viol = e->viol;
 	for (k = 0; k < MAX_REGIONS; k++) {
 		entry = dev_read32(e, regions + 8 * k);
@@ -1610,10 +1663,12 @@ void render_kick(struct mbxemu *e)
 	if (!rc.s || rc.s->complete)
 		e->viol = 0;		/* the scene is consumed: its violations with it */
 	if (rc.s) {
-		if (rc.s->complete)
+		if (rc.s->complete) {
 			scene_free(rc.s);
-		else
+		} else {
 			scene_clear_prims(rc.s);
+			e->fl_stale = 1;	/* a partial render leaves the free list damaged */
+		}
 		if (rc.s == ta_scene(e) || !rc.s->used)
 			e->scene_state = -1;
 	}

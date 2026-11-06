@@ -71,8 +71,15 @@ static uint32_t dev_phys(uint32_t va)
 
 	return (pt[(va >> 12) & 1023] - RAM_BASE) + (va & (PAGE - 1));
 }
-static void c_wr32(void *o, uint32_t va, uint32_t v) { memcpy(ram + dev_phys(va), &v, 4); }
-static uint32_t c_rd32(void *o, uint32_t va) { uint32_t v; memcpy(&v, ram + dev_phys(va), 4); return v; }
+/* the test's own writes through an unmapped page go nowhere (the model's would be a stray write) */
+static int dev_mapped(uint32_t va)
+{
+	const uint32_t *pt = (const uint32_t *)(ram + PT_PHYS + ((va >> 12) >> 10) * PAGE);
+
+	return pt[(va >> 12) & 1023] != 0;
+}
+static void c_wr32(void *o, uint32_t va, uint32_t v) { if (dev_mapped(va)) memcpy(ram + dev_phys(va), &v, 4); }
+static uint32_t c_rd32(void *o, uint32_t va) { uint32_t v = 0; if (dev_mapped(va)) memcpy(&v, ram + dev_phys(va), 4); return v; }
 static void c_reg(void *o, uint32_t reg, uint32_t v);
 static const struct mbx_io IO = { .wr32 = c_wr32, .rd32 = c_rd32, .reg = c_reg };
 
@@ -80,7 +87,6 @@ static void irq(void *o, int level) { }
 static void log_line(void *o, const char *line) { if (getenv("T_PB_VERBOSE")) fprintf(stderr, "emu: %s\n", line); }
 
 static void wr(uint32_t reg, uint32_t v) { mbxemu_reg_write(E, reg, v); }
-static uint32_t rd(uint32_t reg) { return mbxemu_reg_read(E, reg); }
 static void c_reg(void *o, uint32_t reg, uint32_t v) { wr(reg, v); }
 
 static void map_page(uint32_t dev_page, uint32_t phys)
@@ -104,65 +110,6 @@ static void setup_mmu(void)
 	wr(R_MMU_CTRL, 1);
 }
 
-/* Build the free list over pages first..last: true if EVM_DALLOC came */
-static int build_list(uint32_t first, uint32_t last)
-{
-	wr(R_INT_CLEAR, 0x7fff);
-	mbx_contract_freelist(&IO, PB_TABLE_VA, PB_VA, last);
-	wr(R_FL_FIRST, first);
-	wr(R_FL_BUILD, 1);
-	return !!(rd(R_INT_STATUS) & I_EVM_DALLOC);
-}
-
-static uint32_t send_frame(void)
-{
-	uint32_t stream[128], n, i;
-
-	wr(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE | I_TA_OFLOW | I_EVM_DALLOC);
-	wr(R_INT_CLEAR, 0x7fff);
-	wr(R_TA_CONFIG, 0x80 | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10);
-	wr(R_TA_WIDTH, (uint32_t)TRI_W << 16);
-	wr(R_TA_HEIGHT, (uint32_t)TRI_H << 16);
-	wr(R_TA_REGIONS, REGIONS);
-	wr(R_TA_TAILS, TAILS);
-	mbx_contract_contexts(&IO, CTX);	/* before the first TA: the TA and EVM contexts */
-	mbx_contract_background(&IO, PB_VA, SURF, TRI_W, TRI_W / 16, TRI_H / 16, 0);
-	mbx_contract_regions(&IO, REGIONS, TRI_W / 16, TRI_H / 16);
-	mbx_contract_tails(&IO, TAILS, 4096);
-	wr(R_TA_CONTEXT_ID, 0);
-	wr(R_TA_START, 1);
-	n = tri_stream(stream, 0);
-	for (i = 0; i < n;) {
-		uint32_t type = stream[i] >> 28, count = stream[i] & 0xffff, k;
-
-		for (k = 0; k < count; k++) {
-			if (type == CH_CTL)
-				mbxemu_ta_ctl_write(E, stream[i + 1 + k]);
-			else
-				mbxemu_ta_write(E, 0, stream[i + 1 + k]);
-		}
-		i += 1 + count;
-	}
-	return rd(R_INT_STATUS);
-}
-
-static uint32_t kick_render(void)
-{
-	wr(R_REGIONS, REGIONS);
-	wr(R_RENDER_CTL, 0x30000);
-	wr(R_SAMPLING, 0x00020007);
-	wr(R_FORMAT, 0xe);
-	wr(R_WIDTH, (uint32_t)(TRI_W - 1) << 16);
-	wr(R_HEIGHT, (uint32_t)(TRI_H - 1) << 16);
-	wr(R_ADDR, SURF);
-	wr(R_STRIDE, TRI_W);
-	wr(R_PB_BASE, PB_VA);
-	mbx_contract_prerender(&IO, REGIONS, TRI_W / 16, TRI_H / 16);
-	wr(R_HW_CONTEXT, 0);
-	wr(R_KICK, 1);
-	return rd(R_INT_STATUS);
-}
-
 static int drawn(void)
 {
 	const uint32_t *p = (const uint32_t *)(ram + SURF);
@@ -181,33 +128,10 @@ static void clear_surface(void)
 		p[i] = TRI_CLEAR;
 }
 
-/* The region array the TA wrote: tiles with a list pointer, tiles flagged empty (bit 25) */
-static void regions(int *listed, int *empty)
-{
-	const uint32_t *r = (const uint32_t *)(ram + REGIONS);
-
-	*listed = *empty = 0;
-	for (int k = 0; k < 16; k++) {
-		if (r[2 * k + 1])
-			(*listed)++;
-		if (r[2 * k] & 0x02000000)
-			(*empty)++;
-	}
-}
-
-static int pb_words_used(void)
-{
-	const uint32_t *p = (const uint32_t *)(ram + PB_PHYS + PB_TABLE_SIZE);
-	int n = 0;
-
-	for (uint32_t i = 0; i < PB_PAGES * PAGE / 4; i++)
-		n += p[i] != 0;
-	return n;
-}
-
-
-/* One frame, leaving out the steps in skip (V_* bits); returns the pixels that are not the clear colour */
 static struct mbxemu_host HOST;
+/* test-only variants of a frame, on top of the skipped steps */
+enum { X_NONE, X_CTX_UNALIGNED, X_NO_END, X_BREAK_LIST, X_CTX_UNMAPPED, X_STALE, X_MARKERS };
+static int variant;
 
 static int frame(uint32_t skip, int strict, uint32_t *mask)
 {
@@ -237,8 +161,17 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	if (skip & V_TAILS_ALIGN)
 		tails += 0x1000;
 	wr(R_TA_TAILS, tails);
-	if (!(skip & V_CTX))
-		mbx_contract_contexts(&IO, CTX);
+	if (!(skip & V_CTX)) {
+		uint32_t ctx = variant == X_CTX_UNALIGNED ? CTX + 0x1000 : variant == X_CTX_UNMAPPED ? 0x70000 : CTX;
+
+		mbx_contract_contexts(&IO, ctx);
+	}
+	if (variant == X_MARKERS) {
+		c_wr32(NULL, CTX + 0x4400, 0xdeadbeef);		/* inside the EVM context's overrun */
+		c_wr32(NULL, CTX + 0x4000 + 520 + 1024 + 8, 0xfeedf00d);	/* past it */
+	}
+	if (skip & V_TAILS_ALIGN)
+		c_wr32(NULL, TAILS + 0x10, 0xabcdef01);		/* where an unaligned tail pointer rounds down to */
 	if (!(skip & V_BG))
 		mbx_contract_background(&IO, PB_VA, SURF, TRI_W, TRI_W / 16, TRI_H / 16, 0);
 	/* the pages the test leaves untouched are zero, so a skipped step leaves zeros */
@@ -253,12 +186,21 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 		uint32_t type = stream[i] >> 28, count = stream[i] & 0xffff, k;
 
 		for (k = 0; k < count; k++) {
+			if ((variant == X_NO_END || variant == X_STALE) && i + 1 + k == n - 1)
+				break;				/* the end word withheld */
 			if (type == CH_CTL)
 				mbxemu_ta_ctl_write(E, stream[i + 1 + k]);
 			else
 				mbxemu_ta_write(E, 0, stream[i + 1 + k]);
 		}
 		i += 1 + count;
+	}
+	if (variant == X_STALE)
+		wr(0x808, 1);					/* a close: a partial render's */
+	if (variant == X_BREAK_LIST) {
+		uint32_t head = c_rd32(NULL, REGIONS + 4);	/* the first tile's list */
+
+		c_wr32(NULL, head, 0);				/* an empty entry at its start */
 	}
 	wr(R_REGIONS, REGIONS);
 	wr(R_RENDER_CTL, 0x30000);
@@ -274,6 +216,12 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 		mbx_contract_prerender(&IO, REGIONS, TRI_W / 16, TRI_H / 16);
 	wr(R_HW_CONTEXT, 0);
 	wr(R_KICK, 1);
+	if (variant == X_STALE) {		/* the partial render again, the list not rebuilt */
+		wr(R_TA_START, 1);
+		wr(0x808, 1);
+		mbx_contract_prerender(&IO, REGIONS, TRI_W / 16, TRI_H / 16);
+		wr(R_KICK, 1);
+	}
 	mbxemu_stats(E, &st);
 	*mask = st.violation_mask;
 	return drawn();
@@ -308,6 +256,28 @@ int main(void)
 		CHECK(mask & cases[k].bit && n == 1144, "%s: forgiving mode counts it and draws the triangle (%d pixels)",
 		      cases[k].what, n);
 	}
+	/* the rest of the contract: what each costs and what the chip does about it */
+	variant = X_CTX_UNALIGNED; n = frame(0, 1, &mask);
+	CHECK(mask & V_CTX && n != 1144, "contexts not 16 KB aligned: counted, garbage (mask %#x, %d)", mask, n);
+	variant = X_NO_END; frame(0, 1, &mask);
+	CHECK(mask & V_RENDER_EARLY, "a render before the scene's end word: counted (mask %#x)", mask);
+	variant = X_BREAK_LIST; n = frame(0, 1, &mask);
+	CHECK(mask & V_LIST && n != 1144, "a damaged list: counted, garbage (mask %#x, %d)", mask, n);
+	variant = X_CTX_UNMAPPED; frame(0, 1, &mask);
+	CHECK(mask & V_STRAY, "a context behind unmapped pages: the stray write is counted (mask %#x)", mask);
+	variant = X_STALE; frame(0, 1, &mask);
+	CHECK(mask & V_FL_STALE, "two partial renders without a free list rebuild: counted (mask %#x)", mask);
+	variant = X_NONE;
+	n = frame(V_FL_STALE, 1, &mask);	/* nothing skipped that matters here: the free list is rebuilt */
+	CHECK(!(mask & V_FL_STALE), "a full frame after the stale case starts clean (mask %#x)", mask);
+	/* the effects in memory: an unaligned tail pointer zeroes at the rounded-down address; the EVM
+	 * context is written past its 520 bytes */
+	frame(V_TAILS_ALIGN, 1, &mask);
+	CHECK(c_rd32(NULL, TAILS + 0x10) == 0, "an unaligned tail pointer zeroed the tail area at the rounded-down address");
+	variant = X_MARKERS; frame(0, 1, &mask);
+	CHECK(c_rd32(NULL, CTX + 0x4400) == 0 && c_rd32(NULL, CTX + 0x4000 + 520 + 1024 + 8) == 0xfeedf00d,
+	      "the EVM context's overrun zeroed what lay behind it, and no more");
+	variant = X_NONE;
 	printf("t_contract: %d checks, %d failures\n", checks, failures);
 	mbxemu_free(E);
 	return failures ? 1 : 0;

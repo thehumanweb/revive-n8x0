@@ -4,7 +4,7 @@
  * DRM_IOCTL_MBX_BO_CREATE/INFO, the same stream (tri_frame.h) in one
  * DRM_IOCTL_MBX_SUBMIT, the picture read back through the buffer's mmap.
  *
- *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-C r_ctl] [-M r_sampling] [-S state_word]
+ *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-G] [-C r_ctl] [-M r_sampling] [-S state_word]
  *
  * -D dumps what the job left in the region array, the tail pointers and the
  * background-object buffer (nonzero words), to see where the TA binned the triangle.
@@ -84,17 +84,18 @@ int main(int argc, char **argv)
 	float deg = 0;
 	int o, fd, i, x, y, lit = 0, ret, dump = 0;
 	const char *pbfile = NULL;
-	int empty = 0;
+	int empty = 0, gradient = 0;
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EC:M:S:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
 		else if (o == 'D') dump = 1;
 		else if (o == 'P') pbfile = optarg;
 		else if (o == 'E') empty = 1;
+		else if (o == 'G') gradient = 1;
 		else if (o == 'C') r_ctl = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'M') r_samp = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'S') tri_state_word = (uint32_t)strtoul(optarg, NULL, 0);
@@ -112,7 +113,7 @@ int main(int argc, char **argv)
 	}
 	px = surf.map;
 	for (i = 0; i < TRI_W * TRI_H; i++)
-		px[i] = TRI_CLEAR;
+		px[i] = gradient ? 0xff000000u | (uint32_t)i : TRI_CLEAR;	/* -G: every pixel its own value */
 	stream = calloc(128, 4);
 
 	memset(&s, 0, sizeof(s));

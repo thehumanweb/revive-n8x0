@@ -429,11 +429,46 @@ circuit.
 
     Not known: which miss causes which effect. With all of it missing (what the first runs of the
     driver did) the chip flushed noise (mostly ones with single bits cleared) in every tile with
-    an object and, once, wrote into the kernel's page tables; with only the background object
-    whole, an empty scene left the target untouched and one with an object still gave noise.
+    an object and, once, wrote into the kernel's page tables. With all of it done by the driver
+    the page tables stay intact, but a tile with an object still comes out as the same kind of
+    noise. A scene with no objects leaves every tile without a list untouched (the chip does not
+    draw the background there: assumption 5 says the model does) and processes only the last
+    region entry, the one with the end mark, which came out as noise with the whole background
+    object and unchanged with its texture address moved.
     In strict mode (the default) the model gives white in the tiles that hold objects when any
     check fails, and white as every tile's start when the background object is not whole
     (instead of the target's own pixels, which assumption 6 used to say and the chip does not
     do); `mbxemu_set_strict(e, 0)` restores the forgiving behaviour and still counts. The model's
     render still draws from the TA's scene in memory and does not read the buffer's lists or
     objects, so a wrong list or object word is not seen.
+
+    More of the contract, in the model since (all found during device testing; amounts marked
+    "assumed" are guesses that fit one figure):
+    - the tail area: a pointer not 64 KB aligned is used rounded down, and the TA zeroes the area
+      there (`ta.c` `tails_clobber()`: assumed 7 bytes for each entry of the grid's bit-interleaved
+      index range, 7 KB at 400 x 240, the one figure seen);
+    - the contexts: 16 KB aligned, and the EVM context is written past its 520 bytes at the
+      scene's end (assumed 1 KB), so what lies behind it is zeroed: pad it;
+    - lists in memory: the render checks each listed tile's list (a block of 16 entries, the 16th
+      linking on, `0xf0000000` ending it) and a damaged one (an empty entry before its end word,
+      no end word) gives garbage. The chip's ISP reads them; the model still draws from its
+      scene and only checks them. A TA stream without its end word never completes (no
+      `TA_COMPLETE`), which was always modelled;
+    - a render kicked while the scene is still streamed (no end word, no close) is counted
+      (`V_RENDER_EARLY`); the model cannot show timing, so this is the only way a client's
+      early kick appears;
+    - after a partial render the free list is damaged; the next partial render hangs the core
+      (no completion) unless the list is rebuilt with `0x838` (`V_FL_STALE`);
+    - a write through a page no table entry maps lands on physical page 0: unused pages must
+      point at one scratch page (`V_STRAY`);
+    - an empty tile's region word 1 keeps what it held (the TA writes word 1 only for tiles that
+      get a list).
+
+    Not modelled, for want of what the chip does: a mismatch between `0x860` and the tile count
+    in `0x85c` (found on the device to make the deallocation free the wrong pages and hang the
+    core; the model has not used `0x860` and its encoding is not known); the TA input FIFO's
+    59 words and the timing of anything (the model finishes inside the register access); the
+    services' TA-busy ordering (a services-side hang, not the chip's). Unexplained on the
+    device, no counterpart here: rendering into an oversized buffer came out black; stream-out's
+    second place (Y) is not predictable (assumption 23); the depth of a partial render's lost
+    macro tile.

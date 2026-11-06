@@ -126,6 +126,7 @@ struct cvtx {
 struct scene {
 	int used;		/* the slot holds a scene */
 	int complete;		/* its end word came: the next render consumes it */
+	int closed;		/* a close (0x808) came: a partial render may take it */
 	uint32_t regions, tails, config, width, height;	/* the TA's registers at its start */
 	struct rstate *states;
 	int nstates, cstates;
@@ -245,11 +246,16 @@ struct pbw {
 #define V_REGION_INIT	(1u << 5)	/* the region array was not initialised (0x22000000 | origin) */
 #define V_REGION_B30	(1u << 6)	/* the render's region entries lack bit 30 */
 #define V_BG		(1u << 7)	/* the background object is not a whole object */
+#define V_LIST		(1u << 8)	/* a tile's list in memory is damaged (an empty entry, no end word) */
+#define V_FL_STALE	(1u << 9)	/* a partial render after a partial render, the free list not rebuilt */
+#define V_RENDER_EARLY	(1u << 10)	/* a render kicked while the scene is still being streamed */
+#define V_STRAY		(1u << 11)	/* a write through a page no table entry maps (no scratch page) */
 
 struct mbxemu {
 	struct mbxemu_host host;
 	int strict;			/* violations have the chip's consequences (default) */
 	uint32_t viol;			/* this scene's violations */
+	int fl_stale;			/* a partial render has run since the free list was built */
 	uint32_t viol_ever;
 	int trace;
 	uint32_t regs[0x4000 / 4];

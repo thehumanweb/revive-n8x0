@@ -164,8 +164,14 @@ void dev_write(struct mbxemu *e, uint32_t dev, const void *buf, uint32_t len)
 
 		if (n > len)
 			n = len;
-		if (!translate(e, dev, &phys) && e->host.mem_write)
-			e->host.mem_write(e->host.opaque, phys, p, n);
+		if (!translate(e, dev, &phys)) {
+			/* a page no table entry maps lands on physical page 0: the driver must point unused pages
+			 * at a scratch page (README assumption 31) */
+			if ((e->regs[R_MMU_CTRL / 4] & 1) && !(phys >> 12))
+				emu_violation(e, V_STRAY, "a write through an unmapped page (no scratch page behind it)");
+			else if (e->host.mem_write)
+				e->host.mem_write(e->host.opaque, phys, p, n);
+		}
 		if (pc_slot(e, dev >> 12, &k))
 			memcpy(e->pc->data[k] + (dev & 0xfff), p, n);
 		p += n;
@@ -324,6 +330,7 @@ static void fl_build(struct mbxemu *e)
 		}
 	}
 	pb_fl_built(e, built);
+	e->fl_stale = 0;		/* a rebuild repairs what a partial render left */
 	emu_raise(e, I_EVM_DALLOC);
 }
 

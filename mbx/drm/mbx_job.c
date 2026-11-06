@@ -88,6 +88,7 @@ static void mbx_reset_cores(struct mbx_device *m)
 	mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_MASK);
 	m->active_vm = NULL;
 	m->pb_built = false;	/* a reset empties the free list */
+	m->ctx_loaded = false;	/* and the contexts */
 }
 
 
@@ -122,6 +123,11 @@ static const struct dma_fence_ops mbx_fence_ops = {
 	.get_timeline_name = mbx_fence_timeline_name,
 };
 
+/* While 0x860's encoding is found out: 0 leaves it alone, 1..7 are encodings (mbx_tiles_value) */
+static int tiles_mode;
+module_param(tiles_mode, int, 0644);
+MODULE_PARM_DESC(tiles_mode, "debug: how 0x860 is programmed (0 not at all)");
+
 /* The frame, on the hardware: with the job lock held, in the job's address space */
 static int mbx_job_run(struct mbx_job *job)
 {
@@ -142,7 +148,14 @@ static int mbx_job_run(struct mbx_job *job)
 		dev_err(m->dev, "free list build failed (%d)\n", ret);
 		goto reset;
 	}
+	mbx_ctx_load(m);
+	mbx_pb_set_background(m, a);
+	ret = mbx_job_prepare_buffers(job->vm, a);
+	if (ret)
+		goto reset;
 	mbx_write(m, MBX_REG_TA_CONFIG, a->ta_config);
+	if (tiles_mode)
+		mbx_write(m, MBX_REG_TILES, mbx_tiles_value(a, tiles_mode));
 	mbx_write(m, MBX_REG_TA_WIDTH, a->ta_width);
 	mbx_write(m, MBX_REG_TA_HEIGHT, a->ta_height);
 	mbx_write(m, MBX_REG_TA_REGIONS, a->ta_regions);
@@ -154,6 +167,9 @@ static int mbx_job_run(struct mbx_job *job)
 	if (ret)
 		goto reset;
 
+	ret = mbx_job_region_bit30(job->vm, a);
+	if (ret)
+		goto reset;
 	mbx_write(m, MBX_REG_R_REGIONS, a->r_regions);
 	mbx_write(m, MBX_REG_R_CTL, a->r_ctl);
 	mbx_write(m, MBX_REG_R_SAMPLING, a->r_sampling);
@@ -164,12 +180,7 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_R_ADDR, a->r_addr);
 	mbx_write(m, MBX_REG_R_STRIDE, a->r_stride);
 	mbx_write(m, MBX_REG_R_ZBUF, a->r_zbuf);
-	if (a->flags & MBX_SUBMIT_BG_TARGET) {
-		mbx_pb_set_background(m, a);
-		mbx_write(m, MBX_REG_PB_BASE, MBX_PB_VA);
-	} else {
-		mbx_write(m, MBX_REG_PB_BASE, a->r_pb);
-	}
+	mbx_write(m, MBX_REG_PB_BASE, MBX_PB_VA);
 	mbx_write(m, MBX_REG_R_6DC, a->r_6dc);
 	mbx_write(m, MBX_REG_R_HW_CONTEXT, a->ta_context);
 	mbx_write(m, MBX_REG_R_KICK, 1);
@@ -263,7 +274,7 @@ int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
 	u32 i;
 	int ret;
 
-	if ((a->flags & ~MBX_SUBMIT_BG_TARGET) || a->stream_words > MBX_MAX_STREAM_WORDS || a->n_bos > MBX_MAX_BOS)
+	if (a->flags || a->stream_words > MBX_MAX_STREAM_WORDS || a->n_bos > MBX_MAX_BOS)
 		return -EINVAL;
 	job = kzalloc(sizeof(*job), GFP_KERNEL);
 	if (!job)
@@ -283,6 +294,14 @@ int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
 	ret = mbx_check_stream(job->stream, a->stream_words);
 	if (ret)
 		goto err;
+	/* the buffers the contract needs (mbx/README.md assumption 31): the tail pointers 64 KB aligned and
+	 * 64 KB, room for the region array, a target row the background texture can address */
+	if ((a->ta_tails & 0xffff) || mbx_vm_room(f->vm, a->ta_tails) < 0x10000 ||
+	    mbx_vm_room(f->vm, a->ta_regions) < mbx_region_bytes(a) ||
+	    ((a->r_stride * (a->r_format == 9 ? 2 : 1)) & 15)) {
+		ret = -EINVAL;
+		goto err;
+	}
 
 	if (a->n_bos) {
 		ubos = memdup_user(u64_to_user_ptr(a->bos), (size_t)a->n_bos * sizeof(*ubos));

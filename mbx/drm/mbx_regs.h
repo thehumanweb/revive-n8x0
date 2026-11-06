@@ -22,18 +22,24 @@
 #define MBX_REG_R_STRIDE	0x660
 #define MBX_REG_R_ZBUF		0x674
 #define MBX_REG_R_KICK		0x680
+#define MBX_REG_R_6D8		0x6d8	/* 0x09000000 with the free list (found during device testing) */
 #define MBX_REG_R_6DC		0x6dc
 #define MBX_REG_R_HW_CONTEXT	0x6ec
 
 /* the TA */
 #define MBX_REG_TA_START	0x800
 #define MBX_REG_TA_CONTEXT_ID	0x810
+#define MBX_REG_TA_STORE	0x818	/* 1: the context's scene to the TA context memory */
+#define MBX_REG_TA_CTX		0x820	/* the TA context memory (the model's name) */
+#define MBX_REG_EVM_CTX		0x864	/* the EVM context */
+#define MBX_REG_CE0		0xce0	/* 1 with the free list */
 #define MBX_REG_PB_BASE		0x83c
 #define MBX_REG_TA_TAILS	0x840
 #define MBX_REG_TA_REGIONS	0x844
 #define MBX_REG_TA_WIDTH	0x84c
 #define MBX_REG_TA_HEIGHT	0x850
 #define MBX_REG_TA_CONFIG	0x85c
+#define MBX_REG_TILES		0x860	/* a tile count of the scene: its encoding is being found out */
 
 /* the parameter buffer's free list (mbx/README.md assumptions 22 and 26): a table of 16-bit
  * entries in device memory, one a page, page p at device address p << 12 */
