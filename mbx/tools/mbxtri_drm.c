@@ -4,10 +4,12 @@
  * DRM_IOCTL_MBX_BO_CREATE/INFO, the same stream (tri_frame.h) in one
  * DRM_IOCTL_MBX_SUBMIT, the picture read back through the buffer's mmap.
  *
- *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D]
+ *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-B addr] [-K] [-E]
  *
  * -D dumps what the job left in the region array, the tail pointers and the
  * background-object buffer (nonzero words), to see where the TA binned the triangle.
+ * -P file writes the parameter buffer's first 8 pages after the table's 16 KB
+ * (DRM_IOCTL_MBX_PB_DUMP, root only) to file, raw, with the table's first 64 bytes first.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -81,13 +83,20 @@ int main(int argc, char **argv)
 	uint32_t *stream, *px;
 	float deg = 0;
 	int o, fd, i, x, y, lit = 0, ret, dump = 0;
+	const char *pbfile = NULL;
+	uint32_t r_pb_override = 0, sflags = 0;
+	int empty = 0;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:D")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:B:KE")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
 		else if (o == 'D') dump = 1;
+		else if (o == 'P') pbfile = optarg;
+		else if (o == 'E') empty = 1;
+		else if (o == 'K') sflags = MBX_SUBMIT_BG_TARGET;
+		else if (o == 'B') r_pb_override = (uint32_t)strtoul(optarg, NULL, 0);
 		else return 2;
 	}
 	if ((fd = open_node(dev)) < 0) {
@@ -106,6 +115,11 @@ int main(int argc, char **argv)
 
 	memset(&s, 0, sizeof(s));
 	s.stream_words = tri_stream(stream, deg);
+	if (empty) {			/* -E: no triangle, only the end of the scene */
+		stream[0] = 1;			/* a chunk of type 0 (the TA port), one word */
+		stream[1] = 0xf0000000;
+		s.stream_words = 2;
+	}
 	s.stream = (uintptr_t)stream;
 	s.ta_config = 0x80 | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10;
 	s.ta_width = (uint32_t)TRI_W << 16;
@@ -120,10 +134,29 @@ int main(int argc, char **argv)
 	s.r_height = (uint32_t)(TRI_H - 1) << 16;
 	s.r_addr = surf.va;
 	s.r_stride = TRI_W;			/* words */
-	s.r_pb = pb.va;
+	s.flags = sflags;
+	s.r_pb = r_pb_override ? r_pb_override : pb.va;	/* -B: the parameter buffer's own base instead of a separate background object */
 	if (ioctl(fd, DRM_IOCTL_MBX_SUBMIT, &s)) {
 		fprintf(stderr, "mbxtri-drm: submit: %s\n", strerror(errno));
 		return 1;
+	}
+	if (pbfile) {
+		/* 64 bytes of the free list's table, then the first 8 pages of the parameter buffer */
+		static uint8_t buf[64 + 8 * 4096];
+		struct drm_mbx_pb_dump d = { .ptr = (uintptr_t)buf, .offset = 0, .size = 64 };
+
+		if (!ioctl(fd, DRM_IOCTL_MBX_PB_DUMP, &d)) {
+			d.ptr = (uintptr_t)(buf + 64);
+			d.offset = 16384;	/* MBX_PB_TABLE_SIZE: the pages follow the table */
+			d.size = 8 * 4096;
+			if (!ioctl(fd, DRM_IOCTL_MBX_PB_DUMP, &d) && (f = fopen(pbfile, "wb"))) {
+				fwrite(buf, 1, sizeof(buf), f);
+				fclose(f);
+				fprintf(stderr, "mbxtri-drm: wrote %s\n", pbfile);
+			}
+		} else {
+			fprintf(stderr, "mbxtri-drm: PB_DUMP: %s\n", strerror(errno));
+		}
 	}
 	if (dump) {
 		struct { const char *name; struct bo *b; } bufs[] = { { "regions", &regions }, { "tails", &tails }, { "pb", &pb } };

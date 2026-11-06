@@ -164,7 +164,12 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_R_ADDR, a->r_addr);
 	mbx_write(m, MBX_REG_R_STRIDE, a->r_stride);
 	mbx_write(m, MBX_REG_R_ZBUF, a->r_zbuf);
-	mbx_write(m, MBX_REG_PB_BASE, a->r_pb);
+	if (a->flags & MBX_SUBMIT_BG_TARGET) {
+		mbx_pb_set_background(m, a);
+		mbx_write(m, MBX_REG_PB_BASE, MBX_PB_VA);
+	} else {
+		mbx_write(m, MBX_REG_PB_BASE, a->r_pb);
+	}
 	mbx_write(m, MBX_REG_R_6DC, a->r_6dc);
 	mbx_write(m, MBX_REG_R_HW_CONTEXT, a->ta_context);
 	mbx_write(m, MBX_REG_R_KICK, 1);
@@ -258,7 +263,7 @@ int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
 	u32 i;
 	int ret;
 
-	if (a->flags || a->stream_words > MBX_MAX_STREAM_WORDS || a->n_bos > MBX_MAX_BOS)
+	if ((a->flags & ~MBX_SUBMIT_BG_TARGET) || a->stream_words > MBX_MAX_STREAM_WORDS || a->n_bos > MBX_MAX_BOS)
 		return -EINVAL;
 	job = kzalloc(sizeof(*job), GFP_KERNEL);
 	if (!job)

@@ -77,6 +77,13 @@ struct drm_mbx_submit_bo {
  * background object) is the caller's to keep until the fence is done. A job that fails
  * (the TA overflows, a timeout) resets the cores and its fence reports -EIO.
  */
+/*
+ * drm_mbx_submit.flags: the kernel builds the background object (the first words of the
+ * parameter buffer: a linear texture of the render target itself, which the tiles start
+ * from) and points 0x83c at the buffer; r_pb is then ignored.
+ */
+#define MBX_SUBMIT_BG_TARGET	(1u << 0)
+
 struct drm_mbx_submit {
 	__u64 stream;		/* in: user pointer to the chunks */
 	__u32 stream_words;
@@ -115,12 +122,25 @@ struct drm_mbx_wait_fence {
 	__u64 timeout_ns;
 };
 
+/*
+ * A debugging aid (root only, CAP_SYS_ADMIN): copies size bytes of the parameter buffer
+ * (the free list's table, then its pages: device address MBX_PB_TABLE_VA onward is
+ * offset 0) at offset to the user buffer at ptr. For comparing what the TA wrote with
+ * the model's.
+ */
+struct drm_mbx_pb_dump {
+	__u64 ptr;
+	__u32 offset;
+	__u32 size;
+};
+
 #define DRM_MBX_GET_PARAM	0x00
 #define DRM_MBX_BO_CREATE	0x01
 #define DRM_MBX_BO_INFO		0x02
 #define DRM_MBX_BO_UNMAP	0x03
 #define DRM_MBX_SUBMIT		0x04
 #define DRM_MBX_WAIT_FENCE	0x05
+#define DRM_MBX_PB_DUMP		0x06
 
 #define DRM_IOCTL_MBX_GET_PARAM \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_MBX_GET_PARAM, struct drm_mbx_get_param)
@@ -134,6 +154,8 @@ struct drm_mbx_wait_fence {
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_MBX_SUBMIT, struct drm_mbx_submit)
 #define DRM_IOCTL_MBX_WAIT_FENCE \
 	DRM_IOW(DRM_COMMAND_BASE + DRM_MBX_WAIT_FENCE, struct drm_mbx_wait_fence)
+#define DRM_IOCTL_MBX_PB_DUMP \
+	DRM_IOW(DRM_COMMAND_BASE + DRM_MBX_PB_DUMP, struct drm_mbx_pb_dump)
 
 #if defined(__cplusplus)
 }

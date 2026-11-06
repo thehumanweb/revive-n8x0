@@ -304,7 +304,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	uint32_t i, st;
 	int ret = 0;
 
-	if (a->flags || a->stream_words > (256u << 10) || a->n_bos > 64)
+	if ((a->flags & ~MBX_SUBMIT_BG_TARGET) || a->stream_words > (256u << 10) || a->n_bos > 64)
 		return -EINVAL;
 	/* chunks whole and of a known type, as the kernel checks them */
 	for (i = 0; i < a->stream_words;) {
@@ -369,7 +369,22 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	rw(R_ADDR, a->r_addr);
 	rw(R_STRIDE, a->r_stride);
 	rw(R_ZBUF, a->r_zbuf);
-	rw(R_PB_BASE, a->r_pb);
+	if (a->flags & MBX_SUBMIT_BG_TARGET) {
+		/* as the kernel driver (mbx_pb.c, mbx_pb_set_background): the background object */
+		uint32_t w = (a->r_width >> 16 & 0x7ff) + 1, h = (a->r_height >> 16 & 0x7ff) + 1;
+		uint32_t fmt = a->r_format == 9 ? 1 : 6, stride = a->r_stride * (fmt == 1 ? 2 : 1);
+		uint32_t lw = 3, lh = 3, field = (stride + 7) / 8;
+		uint32_t *bg = (uint32_t *)(sim.mem + sim.pb.mem_addr + PB_TABLE_SIZE);
+
+		while ((1u << lw) < w) lw++;
+		while ((1u << lh) < h) lh++;
+		bg[0] = 0;
+		bg[1] = (lw - 3) << 24 | (lh - 3) << 20 | fmt << 14 | (field & 1);
+		bg[2] = (field >> 1) << 18 | (a->r_addr >> 7);
+		rw(R_PB_BASE, PB_VA);
+	} else {
+		rw(R_PB_BASE, a->r_pb);
+	}
 	rw(R_6DC, a->r_6dc);
 	rw(R_HW_CONTEXT, a->ta_context);
 	rw(R_KICK, 1);
@@ -395,6 +410,18 @@ static int ioctl_wait_fence(int fd, unsigned long request, void *arg)
 	return w->fence > sim.seqno ? -EINVAL : 0;
 }
 
+/* the parameter buffer's bytes, as the kernel driver's ioctl gives them */
+static int ioctl_pb_dump(int fd, unsigned long request, void *arg)
+{
+	struct drm_mbx_pb_dump *d = arg;
+	size_t total = PB_TABLE_SIZE + (size_t)PB_PAGES * PAGE;
+
+	if (d->offset > total || d->size > total - d->offset)
+		return -EINVAL;
+	memcpy((void *)(uintptr_t)d->ptr, sim.mem + sim.pb.mem_addr + d->offset, d->size);
+	return 0;
+}
+
 static ioctl_fn_t driver_ioctls[] = {
 	[DRM_MBX_GET_PARAM] = ioctl_get_param,
 	[DRM_MBX_BO_CREATE] = ioctl_bo_create,
@@ -402,6 +429,7 @@ static ioctl_fn_t driver_ioctls[] = {
 	[DRM_MBX_BO_UNMAP] = ioctl_bo_unmap,
 	[DRM_MBX_SUBMIT] = ioctl_submit,
 	[DRM_MBX_WAIT_FENCE] = ioctl_wait_fence,
+	[DRM_MBX_PB_DUMP] = ioctl_pb_dump,
 };
 
 void drm_shim_driver_init(void)

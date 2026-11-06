@@ -141,6 +141,7 @@ static const struct drm_ioctl_desc mbx_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(MBX_BO_UNMAP, mbx_ioctl_bo_unmap, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MBX_SUBMIT, mbx_ioctl_submit, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(MBX_WAIT_FENCE, mbx_ioctl_wait_fence, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(MBX_PB_DUMP, mbx_ioctl_pb_dump, DRM_RENDER_ALLOW),
 };
 
 DEFINE_DRM_GEM_FOPS(mbx_fops);

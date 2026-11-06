@@ -116,6 +116,8 @@ void mbx_vm_activate(struct mbx_vm *vm);	/* with job_lock held */
 int mbx_pb_create(struct mbx_device *m);
 void mbx_pb_destroy(struct mbx_device *m);
 int mbx_pb_build(struct mbx_device *m, unsigned long ms);	/* with the job's space active */
+void mbx_pb_set_background(struct mbx_device *m, const struct drm_mbx_submit *a);
+int mbx_ioctl_pb_dump(struct drm_device *dev, void *data, struct drm_file *file);
 
 /* mbx_gem.c */
 int mbx_ioctl_bo_create(struct drm_device *dev, void *data, struct drm_file *file);
