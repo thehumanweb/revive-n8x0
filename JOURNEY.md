@@ -198,3 +198,18 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
 - Next: a drm-shim backend (Mesa's `src/drm-shim`) that implements our ioctls on
   top of `libmbxemu` in-process, so the same DRM winsys code runs on the host;
   then a real `pipe_context`.
+
+### 2026-11-06: the host sim (drm-shim)
+
+- `mesa/src/gallium/drivers/mbx/drm-shim/mbx_sim.c` is a Mesa drm-shim backend:
+  it implements the five mbx ioctls in userspace on top of the emulator core
+  (copied into the Mesa tree by `prepare-mesa.sh`), with the same layout as
+  the kernel driver: per-file page tables in the shim's memfd (physical memory),
+  buffers mapped with a VMA heap, a submit that sets the MMU, the TA, feeds the
+  stream, renders. `LD_PRELOAD=libmbx_sim_drm_shim.so` makes a program see an
+  `mbx` render node, so Mesa's real DRM winsys and driver run on the host
+  without a kernel or QEMU. (Mesa builds it with `-Dtools=drm-shim`.)
+- Check: the guest program `mbxtri-drm`, built for x86 and run on the shim, draws
+  the same picture as the host emulator directly (byte-identical PPM).
+- Next: a real `pipe_context` for mbx: buffers over the ioctls, state objects,
+  `draw_vbo` emitting the TA stream, then NIR to VGP.

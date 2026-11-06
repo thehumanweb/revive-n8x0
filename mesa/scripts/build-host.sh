@@ -13,5 +13,5 @@ docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work -w /work n81
 		-Dgbm=enabled -Dplatforms= -Dgles1=disabled -Dgles2=enabled -Dopengl=false \
 		-Dvideo-codecs= -Dgallium-rusticl=false -Dglvnd=disabled \
 		-Dlmsensors=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dbuild-tests=false \
-		-Dshader-cache=disabled -Dtools= &&
+		-Dshader-cache=disabled -Dtools=drm-shim &&
 	ninja -C build/mesa-host install"

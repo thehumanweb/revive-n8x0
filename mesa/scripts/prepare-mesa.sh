@@ -22,4 +22,8 @@ for p in mesa/patches/*.patch; do
 done
 cp -a mesa/src/. $M/src/
 cp mbx/drm/mbx_drm.h $M/include/drm-uapi/mbx_drm.h
+# the emulator core, for the host sim (drm-shim)
+E=$M/src/gallium/drivers/mbx/drm-shim/emu
+mkdir -p $E
+cp mbx/core.c mbx/ta.c mbx/vgp.c mbx/render.c mbx/rcptab.c mbx/texture.c mbx/twod.c mbx/pb.c mbx/emu.h mbx/mbxemu.h $E/
 echo "prepared $M"
