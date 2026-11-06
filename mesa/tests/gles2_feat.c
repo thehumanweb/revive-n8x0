@@ -447,7 +447,50 @@ static int t_tex_4444(char *why)
 	return ok;
 }
 
+static int t_scissor_draw(char *why)
+{
+	/* a green full-screen quad inside the scissor rectangle (16, 16) to (48, 48) */
+	static const float v[] = { -1, -1, 0, 1, 0, 1, 1, -1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1,
+				   -1, -1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, -1, 1, 0, 1, 0, 1 };
+
+	begin();
+	glEnable(GL_SCISSOR_TEST);
+	glScissor(16, 16, 32, 32);
+	draw(GL_TRIANGLES, v, 6);
+	glDisable(GL_SCISSOR_TEST);
+	CHECK(32, 32, 0, 255, 0);
+	CHECK(16, 16, 0, 255, 0);
+	CHECK(47, 47, 0, 255, 0);
+	CHECK(15, 32, 0, 0, 0);
+	CHECK(48, 32, 0, 0, 0);
+	CHECK(32, 15, 0, 0, 0);
+	CHECK(32, 48, 0, 0, 0);
+	CHECK(8, 8, 0, 0, 0);
+	CHECK(56, 56, 0, 0, 0);
+	return 1;
+}
+
+static int t_scissor_clear(char *why)
+{
+	begin();
+	glEnable(GL_SCISSOR_TEST);
+	glScissor(8, 24, 20, 16);
+	glClearColor(1, 0, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glDisable(GL_SCISSOR_TEST);
+	CHECK(8, 24, 255, 0, 0);
+	CHECK(27, 39, 255, 0, 0);
+	CHECK(18, 32, 255, 0, 0);
+	CHECK(7, 32, 0, 0, 0);
+	CHECK(28, 32, 0, 0, 0);
+	CHECK(18, 23, 0, 0, 0);
+	CHECK(18, 40, 0, 0, 0);
+	return 1;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "scissor_draw", t_scissor_draw },
+	{ "scissor_clear", t_scissor_clear },
 	{ "tex_replace", t_tex_replace },
 	{ "tex_modulate", t_tex_modulate },
 	{ "tex_npot", t_tex_npot },

@@ -50,6 +50,8 @@ struct mbx_vgp_program {
 	bool gouraud;			/* the varying colour is interpolated */
 	uint32_t st_extra;		/* ISP/TSP state bits the shader wants */
 	uint32_t sections;		/* the sections word this program's draws send */
+	bool scissor;			/* the variant with the scissor as four user clip planes (o5.xyzw) */
+	int scissor_slot;		/* its four planes: uniform slots scissor_slot .. +3 */
 	bool tex;			/* unit 0 is sampled */
 	uint32_t tex_c;			/* its combiner (texture word C) */
 	int tex_scale_slot;		/* the uniform slot holding the texture's (width / padded width, height / padded height) */

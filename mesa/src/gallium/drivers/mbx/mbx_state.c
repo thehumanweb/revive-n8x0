@@ -50,15 +50,19 @@ static void mbx_set_framebuffer_state(struct pipe_context *pctx, const struct pi
 static void mbx_set_scissor_states(struct pipe_context *pctx, unsigned start, unsigned count,
 				   const struct pipe_scissor_state *s)
 {
-	if (count)
+	if (count) {
 		mbx_context(pctx)->scissor = s[0];
+		mbx_context(pctx)->const_serial++;	/* the scissor's clip planes are program constants */
+	}
 }
 
 static void mbx_set_viewport_states(struct pipe_context *pctx, unsigned start, unsigned count,
 				    const struct pipe_viewport_state *v)
 {
-	if (count)
+	if (count) {
 		mbx_context(pctx)->viewport = v[0];
+		mbx_context(pctx)->const_serial++;
+	}
 }
 
 static void mbx_set_vertex_buffers(struct pipe_context *pctx, unsigned count,

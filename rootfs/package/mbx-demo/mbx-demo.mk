@@ -15,11 +15,14 @@ define MBX_DEMO_BUILD_CMDS
 		-I$(STAGING_DIR)/usr/include/libdrm $(TARGET_LDFLAGS) -lgbm -lEGL -lGLESv2 -ldrm -lm
 	$(TARGET_CC) $(TARGET_CFLAGS) -O2 -std=gnu11 -o $(@D)/gles2_tri $(@D)/gles2_tri.c \
 		$(TARGET_LDFLAGS) -lEGL -lGLESv2 -lm
+	$(TARGET_CC) $(TARGET_CFLAGS) -O2 -std=gnu11 -o $(@D)/gles2_feat $(@D)/gles2_feat.c \
+		$(TARGET_LDFLAGS) -lEGL -lGLESv2 -lm
 endef
 
 define MBX_DEMO_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/gbm_tri $(TARGET_DIR)/usr/bin/gbm_tri
 	$(INSTALL) -D -m 0755 $(@D)/gles2_tri $(TARGET_DIR)/usr/bin/gles2_tri
+	$(INSTALL) -D -m 0755 $(@D)/gles2_feat $(TARGET_DIR)/usr/bin/gles2_feat
 endef
 
 $(eval $(generic-package))

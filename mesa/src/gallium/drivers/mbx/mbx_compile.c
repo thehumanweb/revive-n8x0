@@ -49,6 +49,7 @@ struct vop {
 	enum dkind dk;
 	int dreg, dlane;
 	bool vec;		/* the four lanes at once (the position copy) */
+	bool vsrcs;		/* every source is a whole register (a dot product) */
 };
 
 struct cc {
@@ -374,6 +375,25 @@ static bool pass_one(struct cc *c)
 			c->vuse[v.idx]++;
 		write_dest(c, v, D_FIXED, POS_REG, lane);
 	}
+	if (c->prog->scissor) {
+		/* the scissor as four clip planes in o5.xyzw: each a dot product of the clip position with a constant
+		 * (a, 0, 0, b) the draw fills in from the viewport and the scissor rectangle */
+		int slot = c->max_uniform + 1, k;
+
+		for (k = 0; k < 4; k++) {
+			struct vop *o = add_op(c, MBX_VGP_DP4);
+
+			o->n = 2;
+			o->src[0] = fixed_temp(POS_REG, 0);
+			o->src[1] = (struct vsrc){ .kind = V_CONST, .idx = slot + k, .lane = 0 };
+			o->vsrcs = true;
+			o->dk = D_OUT;
+			o->dreg = 5;
+			o->dlane = k;
+		}
+		c->max_uniform = slot + 3;
+		c->prog->scissor_slot = slot;
+	}
 	{
 		struct vop *o = add_op(c, MBX_VGP_MOV);	/* o0 = r13, the four lanes at once */
 
@@ -591,6 +611,9 @@ static bool pass_two(struct cc *c)
 		}
 		if (o->vec)
 			src[0].swizzle = MBX_VGP_XYZW;
+		if (o->vsrcs)
+			for (k = 0; k < o->n; k++)
+				src[k].swizzle = MBX_VGP_XYZW;
 
 		/* a lane dies at its last reader; its slot can be this result's */
 		for (k = 0; k < o->n; k++)

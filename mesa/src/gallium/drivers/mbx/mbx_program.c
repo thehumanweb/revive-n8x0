@@ -69,14 +69,17 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 {
 	struct mbx_vgp_program *p;
 
+	bool scissor = ctx->rast && ctx->rast->scissor;
+
 	for (p = ctx->programs; p; p = p->next)
-		if (p->vs == ctx->vs && p->fs == ctx->fs)
+		if (p->vs == ctx->vs && p->fs == ctx->fs && p->scissor == scissor)
 			return p->ninsn ? p : NULL;
 	p = CALLOC_STRUCT(mbx_vgp_program);
 	if (!p)
 		return NULL;
 	p->vs = ctx->vs;
 	p->fs = ctx->fs;
+	p->scissor = scissor;
 	p->next = ctx->programs;
 	ctx->programs = p;	/* kept even when it fails (ninsn 0), so it is not tried again */
 	if (ctx->fs->fs_info.kind != MBX_FS_MATCHED) {
@@ -92,7 +95,7 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 		p->tex_c = ctx->fs->fs_info.modulate ? 0x86884610 : 0xd6887610;
 		p->st_extra |= 1u << 16;	/* state bits 16-18: one texture unit (the value is the model's: 1-4 mean one unit; not confirmed on the chip) */
 	}
-	p->sections = 0xf0020000 | 0x4;	/* the VGP section the program is loaded in (bit 2); bit 17 is needed on the chip (observed on an N810), the model ignores it */
+	p->sections = 0xf0020000 | 0x4 | (scissor ? 0xfu << 20 : 0);	/* user clip planes 0-3 on for the scissor */	/* the VGP section the program is loaded in (bit 2); bit 17 is needed on the chip (observed on an N810), the model ignores it */
 	if (!mbx_compile_vs(ctx->vs->nir, &ctx->fs->fs_info, p)) {
 		p->ninsn = 0;
 		return NULL;

@@ -199,6 +199,7 @@ static void mbx_init_screen_caps(struct mbx_screen *screen)
 	caps->mixed_framebuffer_sizes = true;
 	caps->mixed_color_depth_bits = true;
 	caps->alpha_test = false;
+	caps->clear_scissored = true;	/* pipe->clear takes the scissor (a CPU fill of the rectangle) */
 	caps->two_sided_color = false;
 	caps->texrect = false;
 	caps->fs_coord_origin_upper_left = true;

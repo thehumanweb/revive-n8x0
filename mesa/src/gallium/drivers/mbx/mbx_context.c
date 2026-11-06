@@ -89,9 +89,14 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 		uint8_t *map;
 		uint32_t v;
 
-		if (scissor && (scissor->minx > 0 || scissor->miny > 0 || scissor->maxx < ctx->fb.width ||
-				scissor->maxy < ctx->fb.height))
-			mesa_logw("mbx: a scissored clear clears the whole target for now");
+		unsigned x0 = 0, y0 = 0, x1 = ctx->fb.width, y1 = ctx->fb.height;
+
+		if (scissor) {		/* the CPU fill is exactly the rectangle */
+			x0 = MIN2(MAX2(scissor->minx, 0), x1);
+			y0 = MIN2(MAX2(scissor->miny, 0), y1);
+			x1 = MIN2(scissor->maxx, x1);
+			y1 = MIN2(scissor->maxy, y1);
+		}
 		mbx_job_flush(ctx);	/* the CPU fill comes after what was drawn */
 		mbx_resource_wait(ctx->screen, rsc);
 		map = mbx_bo_map(rsc->bo);
@@ -100,14 +105,14 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 		if (!map)
 			return;
 		v = pack_clear_colour(rsc->base.format, color);
-		for (y = 0; y < ctx->fb.height; y++) {
+		for (y = y0; y < y1; y++) {
 			uint8_t *row = map + (uint64_t)y * rsc->stride;
 
 			if (bpp == 4)
-				for (x = 0; x < ctx->fb.width; x++)
+				for (x = x0; x < x1; x++)
 					((uint32_t *)row)[x] = v;
 			else
-				for (x = 0; x < ctx->fb.width; x++)
+				for (x = x0; x < x1; x++)
 					((uint16_t *)row)[x] = (uint16_t)v;
 		}
 	}

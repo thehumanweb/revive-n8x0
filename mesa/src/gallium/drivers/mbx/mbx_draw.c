@@ -240,7 +240,24 @@ static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *
 		mbx_emit(ctx, MBX_CH_TA, 0xa0000000 | (prog->nconst - 1));
 		for (i = 0; i < prog->nconst; i++) {
 			for (unsigned c = 0; c < 4; c++) {
-				if (prog->tex && (int)i == prog->tex_scale_slot) {
+				if (prog->scissor && (int)i >= prog->scissor_slot && (int)i < prog->scissor_slot + 4) {
+					/* plane k of the window-space rectangle: a * clip x (or y) + b * clip w >= 0, with
+					 * x_win = x / w * scale + translate (the viewport the header sends) */
+					const struct pipe_viewport_state *vp = &ctx->viewport;
+					unsigned k = i - prog->scissor_slot;
+					float sc = k < 2 ? vp->scale[0] : vp->scale[1], tr = k < 2 ? vp->translate[0] : vp->translate[1];
+					float lo = k < 2 ? ctx->scissor.minx : ctx->scissor.miny, hi = k < 2 ? ctx->scissor.maxx : ctx->scissor.maxy;
+					float v[4] = { 0, 0, 0, 0 };
+
+					if (k & 1) {		/* the high edge: hi - x_win >= 0 */
+						v[k < 2 ? 0 : 1] = -sc;
+						v[3] = hi - tr;
+					} else {		/* the low edge: x_win - lo >= 0 */
+						v[k < 2 ? 0 : 1] = sc;
+						v[3] = tr - lo;
+					}
+					mbx_emit_f(ctx, MBX_CH_TA, v[c]);
+				} else if (prog->tex && (int)i == prog->tex_scale_slot) {
 					float s = 1.0f;
 
 					if (ctx->views[0] && c < 2) {
