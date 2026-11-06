@@ -2,3 +2,4 @@
 *.a
 mbxtri
 mbxtri-drm
+tests/t_vgp

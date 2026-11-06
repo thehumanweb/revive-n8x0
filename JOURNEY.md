@@ -92,7 +92,7 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
      word, a code header `0x90000000 | first << 16 | last` and two words an
      instruction, constants `0xa0000000 | first << 16 | last` and four floats
      each; then the primitive word (`0x70000000` triangle list), the sections
-     word (`0xf0020000 | mask`), vertices as the layout names them, TA control
+     word (`0xf0020000 | mask`; the chip needs bit 17, observed on a real N810 by the user's probe), vertices as the layout names them, TA control
      port 1 (object ends), and `0xf0000000` (scene ends).
   3. Render: `0x608` regions, `0x610` = `0x30000` (depth on chip), `0x61c`,
      `0x650` format (0xe ARGB8888), `0x654`/`0x658` (size-1) << 16, `0x65c`
@@ -152,3 +152,22 @@ comes from `mbx/*.c` and its README, nothing from outside the tree.
 - Not yet: asynchronous submit and fences, the parameter buffer and free list
   (the model does without; the real chip needs it), partial render on
   overflow, DMA feeding, runtime PM, and the real N810.
+
+### 2026-11-06: the VGP encoder (`mbx/lib/mbx_vgp.h`)
+
+- A header-only encoder, decoder and disassembler for VGP instructions, with
+  the hardware's rules built in (one constant register and one input register
+  an instruction, sources from src0, 192 constants, temporaries 0-13, outputs
+  0-7, register file 3 refused). Errors come back as `MBX_VGP_E_*`, so the
+  compiler can report which rule a shader broke.
+- `make -C mbx test` runs `tests/t_vgp.c`: every legal instruction it can
+  generate (all opcodes with a reference: MOV, ADD, MUL, MAD, DP3, DP4, MIN,
+  MAX, SLT, SGE, FRC, RCP, RSQ, EXP, LOG, DST; random registers, swizzles,
+  negates, masks, constant windows and relative constants) is run through the
+  model's own `vgp_exec()` and compared with a reference that works from the
+  operand description, so a field in the wrong bit would show. 128,034 checks,
+  no failures. Also: refusals, the disassembly text, AMV and `c[a0+n]` with a
+  window. Not covered: LIT, EXPP, LOGP (no reference written yet).
+- Next: the draw-state encoders (header blocks and the ISP/TSP state word,
+  texture words, blend and depth state) as a library of the same kind, then
+  Mesa.
