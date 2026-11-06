@@ -40,6 +40,7 @@ static inline void tri_taf(struct tri_sw *s, float f) { uint32_t u; memcpy(&u, &
 
 /* The ISP/TSP state word of the triangle's object (Gouraud, depth test LESS); mbxtri-drm -S overrides it */
 static uint32_t tri_state_word = 1u << 22 | 1u << 9;
+static uint32_t tri_clear_state = 0xe00 | 0x100;	/* the depth-only clear's state word (mbxtri-drm -K overrides it) */
 static int tri_with_clear = 1;		/* 0: leave out the depth-only clear (tests) */
 static int tri_with_triangle = 1;	/* 0: leave out the triangle (experiments) */
 
@@ -111,7 +112,7 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 		tri_ta(&s, pc[0]);
 		tri_ta(&s, pc[1]);
 		tri_ta(&s, 0x10000000 | 0x1 | 0x2 | 0x20);	/* state, alpha test, layout */
-		tri_ta(&s, 0xe00 | 0x100);		/* depth ALWAYS, written; no colour */
+		tri_ta(&s, tri_clear_state);		/* depth ALWAYS, written; no colour */
 		tri_ta(&s, 0);				/* alpha test off */
 		tri_ta(&s, 0x3);			/* vertices: three floats */
 		tri_ta(&s, 0x70000000);			/* a triangle list */
