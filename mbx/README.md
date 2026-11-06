@@ -571,7 +571,7 @@ circuit.
     function NEVER: with bit 25 of the state word set the unit honours it and rejects every pixel (nothing drawn),
     with bit 25 clear it is half applied: the footprint stays but the colour is the model's colour **ANDed with
     what the target held** (1000 of 1144 pixels; with ALWAYS and bit 25 clear 178). Source factor ZERO writes
-    black. The model applies the alpha function when bit 25 is set even with bit 14 clear. The clear object
+    black. The model applies the alpha function when bit 25 is set even with bit 14 clear. The contract checks: a colour-writing draw with bit 25 clear is a soft violation (`V_STATE25`, counted: the unit's colour path differs); a NEVER alpha function with bit 25 set draws nothing and is not a violation, it is what the unit does. Not required: base bits on every state word (the clear object's state word does without). The clear object
     takes the same alpha word (`0xe0000000`; its state word's base bits make no difference). Registers: every
     bit of `0x648`, `0x64c` and `0x6d0` flipped one at a time changes nothing; bits 0 and 1 of `0x644` and bits
     12-25 of `0x60c` change which pixels are drawn; the render format `0x650` values other than `0xe` (and

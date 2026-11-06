@@ -136,7 +136,7 @@ static void clear_surface(void)
 static struct mbxemu_host HOST;
 /* test-only variants of a frame, on top of the skipped steps */
 enum { X_NONE, X_CTX_UNALIGNED, X_NO_END, X_BREAK_LIST, X_CTX_UNMAPPED, X_STALE, X_MARKERS, X_NO_BASE, X_GRID,
-       X_FMT, X_ENTRY, X_ALIGN4K, X_NO_CLEAR, X_MMU_PROTOCOL };
+       X_FMT, X_ENTRY, X_ALIGN4K, X_NO_CLEAR, X_MMU_PROTOCOL, X_NO_BIT25, X_ALPHA_NEVER };
 static int variant;
 
 static int frame(uint32_t skip, int strict, uint32_t *mask)
@@ -213,6 +213,8 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	wr(R_TA_CONTEXT_ID, 0);
 	wr(R_TA_START, 1);
 	tri_with_clear = variant != X_NO_CLEAR;
+	tri_state_word = variant == X_NO_BIT25 ? 0x20400200 : 0x22400200;
+	tri_alpha_word = variant == X_ALPHA_NEVER ? 0 : 0xe0000000;
 	n = tri_stream(stream, 0);
 	for (i = 0; i < n;) {
 		uint32_t type = stream[i] >> 28, count = stream[i] & 0xffff, k;
@@ -344,6 +346,12 @@ int main(void)
 	CHECK(mask & V_DEPTH_CLEAR && n != 1144, "no depth-only clear: counted, the depth starts as NaN and the triangle fails its test (mask %#x, %d)", mask, n);
 	variant = X_NO_CLEAR; n = frame(0, 0, &mask);
 	CHECK(mask & V_DEPTH_CLEAR && n == 1144, "no depth-only clear, forgiving mode: counted, the triangle is drawn (%d)", n);
+	variant = X_NO_BIT25; n = frame(0, 1, &mask);
+	CHECK(mask & V_STATE25 && n == 1144, "bit 25 clear on a colour-writing draw: counted (soft), the model's colour is drawn (mask %#x, %d)", mask, n);
+	variant = X_NONE; frame(0, 1, &mask);
+	CHECK(!(mask & V_STATE25), "bit 25 set: not counted (mask %#x)", mask);
+	variant = X_ALPHA_NEVER; n = frame(0, 1, &mask);
+	CHECK(!(mask & V_STATE25) && n == 0, "alpha function NEVER with bit 25 set: nothing drawn, no violation (mask %#x, %d)", mask, n);
 	variant = X_NONE;
 	printf("t_contract: %d checks, %d failures\n", checks, failures);
 	mbxemu_free(E);

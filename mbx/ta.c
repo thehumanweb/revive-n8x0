@@ -586,6 +586,11 @@ static void add_prim(struct mbxemu *e, const struct vtx *a, const struct vtx *b,
 	/* a depth-only clear: screen space, the depth written, no colour (state bits 8 set, 7 clear) */
 	if (screen_space(e) && (e->cur.st & 0x180) == 0x100)
 		s->has_clear = 1;
+	/* found during device testing: a colour-writing prim without bit 25 gets its colour ANDed with the target.
+	 * (A never-passing alpha function with bit 25 set draws nothing; render.c models that.) */
+	if (!(e->cur.st & (1u << 25)) && !(e->cur.st & (1u << 8)))
+		emu_violation(e, V_STATE25, "a draw writes colour with bit 25 of the state word clear: on the N810 the colour is "
+			      "ANDed with what the target held");
 	p = &s->prims[s->nprims++];
 	p->v[0] = *a;
 	p->v[1] = *b;

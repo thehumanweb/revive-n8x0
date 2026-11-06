@@ -269,7 +269,8 @@ struct pbw {
 #define V_TILES		(1u << 22)	/* 0x860 does not match the tile grid in 0x85c: the deallocation frees the wrong pages */
 #define V_PB_FILL	(1u << 21)	/* the parameter buffer was not filled with 0xf0000000 end words before the build */
 #define V_DEPTH_CLEAR	(1u << 20)	/* the scene has no depth-only clear: the tile's depth starts as NaN */
-#define V_SOFT		(V_TLB | V_MMU_SEQ | V_TILES | V_PB_FILL | V_DEPTH_CLEAR | V_ALIGN_SOFT | V_GRID | V_FMT | V_FL_CHAIN | V_TA_BASE | V_REGS | V_WRITE_OUT)
+#define V_STATE25	(1u << 25)	/* a draw that writes colour with bit 25 of its state word clear: the colour path differs on the chip (ANDed with the target) */
+#define V_SOFT		(V_STATE25 | V_TLB | V_MMU_SEQ | V_TILES | V_PB_FILL | V_DEPTH_CLEAR | V_ALIGN_SOFT | V_GRID | V_FMT | V_FL_CHAIN | V_TA_BASE | V_REGS | V_WRITE_OUT)
 
 struct mbxemu {
 	struct mbxemu_host host;
