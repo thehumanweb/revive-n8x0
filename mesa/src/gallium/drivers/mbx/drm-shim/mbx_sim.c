@@ -375,6 +375,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	rw(R_INT_CLEAR, 0x7fff);
 
 	if (!sim.pb_built) {
+		mbx_contract_pb_fill(&SIM_IO, PB_VA, PB_PAGES);
 		mbx_contract_freelist(&SIM_IO, PB_TABLE_VA, PB_VA, PB_LAST_PAGE);
 		rw(R_FL_BUILD, 1);
 		if (!(mbxemu_reg_read(sim.emu, R_INT_STATUS) & I_EVM_DALLOC)) {
@@ -394,7 +395,8 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 		mbx_contract_regions(&SIM_IO, a->ta_regions, tx, ty);
 		mbx_contract_tails(&SIM_IO, a->ta_tails, 0x10000);
 	}
-	rw(R_TA_CONFIG, a->ta_config);
+	mbx_contract_ta_setup(&SIM_IO);
+	rw(R_TA_CONFIG, a->ta_config | 0xe1);	/* the stock stack's base bits, as the kernel driver */
 	rw(R_TA_WIDTH, a->ta_width);
 	rw(R_TA_HEIGHT, a->ta_height);
 	rw(R_TA_REGIONS, a->ta_regions);

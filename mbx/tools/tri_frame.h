@@ -40,6 +40,7 @@ static inline void tri_taf(struct tri_sw *s, float f) { uint32_t u; memcpy(&u, &
 
 /* The ISP/TSP state word of the triangle's object (Gouraud, depth test LESS); mbxtri-drm -S overrides it */
 static uint32_t tri_state_word = 1u << 22 | 1u << 9;
+static int tri_with_clear = 1;		/* 0: leave out the depth-only clear (tests) */
 
 /* VGP instruction encoding (mbx/vgp.c's header comment) */
 enum { VOP_MOV = 1, VOP_DP4 = 8 };
@@ -86,6 +87,39 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 	float c = cosf(deg * (float)M_PI / 180), sn = sinf(deg * (float)M_PI / 180);
 	float m[16] = { c, -sn, 0, 0, sn, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 	int i;
+
+	/*
+	 * What a frame starts with (found during device testing): the region clip control, then a
+	 * depth-only clear to the far plane, without which the tile's depth reads as NaN and most depth
+	 * tests fail. The clear is a screen-space object (sections word 0xb00b0800: positions in pixels,
+	 * z as sent): one triangle twice the target at z = 1.0, depth test always and written, no colour
+	 * (state bit 8).
+	 */
+	tri_ta(&s, 0x10000010);			/* an object header naming the one-word region clip control */
+	tri_ta(&s, 0);
+	if (tri_with_clear) {
+		/* section bit 11, the screen-space passthrough the clear names: o0 = v0, at the last
+		 * instruction slot (255), clear of any driver program */
+		struct tri_src pass[1] = { { VF_IN, 0, VXYZW } };
+		uint32_t pc[2];
+
+		tri_enc(pc, VOP_MOV, VOUT(0), 0xf, pass, 1);
+		tri_ta(&s, 0x80000000 | 0x800);
+		tri_ta(&s, 0u << 16 | 255u << 8 | 255);
+		tri_ta(&s, 0x90000000 | 255u << 16 | 255);
+		tri_ta(&s, pc[0]);
+		tri_ta(&s, pc[1]);
+		tri_ta(&s, 0x10000000 | 0x1 | 0x2 | 0x20);	/* state, alpha test, layout */
+		tri_ta(&s, 0xe00 | 0x100);		/* depth ALWAYS, written; no colour */
+		tri_ta(&s, 0);				/* alpha test off */
+		tri_ta(&s, 0x3);			/* vertices: three floats */
+		tri_ta(&s, 0x70000000);			/* a triangle list */
+		tri_ta(&s, 0xb00b0800);			/* screen space */
+		tri_taf(&s, 0); tri_taf(&s, 0); tri_taf(&s, 1.0f);
+		tri_taf(&s, 2.0f * TRI_W); tri_taf(&s, 0); tri_taf(&s, 1.0f);
+		tri_taf(&s, 0); tri_taf(&s, 2.0f * TRI_H); tri_taf(&s, 1.0f);
+		tri_put(&s, CH_CTL, 1);			/* the object ends */
+	}
 
 	/* the object header: state, alpha test, layout, viewport, depth */
 	tri_ta(&s, 0x10000000 | 0x1 | 0x2 | 0x20 | 0x80 | 0x100);

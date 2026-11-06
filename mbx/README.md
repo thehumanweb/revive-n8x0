@@ -480,3 +480,55 @@ circuit.
     `0xcc0`-`0xce4` after a job: `0xcc0`..`0xcd8` the same in every job
     (`0c1033c2 29476053 d9f7855c badff4e3 6f3bdd1e 08a8822a 00000001`), `0xce4` different each
     job (`d631b1e3`, `754d38ee`: a signature or counter); the model has only the counter at `0xcc4`.
+
+    Checks added from a second list (all counted and logged; the **soft** ones, marked `V_SOFT` in
+    `emu.h`, are from the stock stack or GLES and not confirmed on the device, and never garble the
+    picture): the contexts `0x820` and the free list table `0x824` 16 KB aligned and `0x844`,
+    `0x864` 4 KB (soft); `0x85c`'s tile grid agreeing with `0x84c` and `0x850` (soft); `0x85c`'s base
+    bits `0xe1` (soft; the driver writes them since); the free list chaining from `0x828` to `0x82c`
+    (soft); the render's format, address and row (`0x650`, `0x65c`, `0x660`) describing the same
+    target as the background object's texture words (soft); the set of render registers written
+    since the last kick (soft): `0x608 0x60c 0x610 0x614 0x618 0x61c 0x63c 0x644 0x648 0x64c 0x650
+    0x654 0x658 0x65c 0x660 0x674 0x6d0 0x6dc 0x860 0x680`, and `0x854`, `0x858` before the TA start.
+    The driver and the tools do not write `0x60c 0x614 0x618 0x644 0x648 0x64c 0x6d0 0x854 0x858`
+    or `0x860` yet because their values are not known here, so those misses are counted on every
+    frame; a region entry with neither a list address nor bit 25 is hard (garbage). The write watch
+    (soft) logs a bus write by the TA or the render outside the target, the parameter buffer and its
+    table, the region arrays, the tail block, the contexts and the Z buffer, with its address.
+    Not done: a cross-check of each list's objects in memory against the model's scene (it would
+    call for the model's page layout, assumption 26, to be the chip's).
+
+33. **The flow of a frame** (found during device testing; the stock stack's, which the model, the kernel
+    driver and the tools now follow where the values are known).
+    - Once, at power-up: reset and read `0xf00` (`0x01010003`); the MMU (eight page-table pages
+      at `0x1000`-`0x101c`, `0x1020` enables it, every unused entry on one scratch page); the
+      parameter buffer (N pages and a spare, page 0 reserved for the background object); the
+      buffer filled with `0xf0000000` end words, the 26-word background object into page 0; the free
+      list (`0x824` table, `0x828` the buffer's page + 1, `0x82c` last, `0x83c` the base,
+      `0x6d8` = `0x09000000`, `0xce0` = 1, `0x838` = 1, then wait for EVM_DALLOC); the contexts
+      (`0x864`, `0x820`, `0x810` = 0, `0x818` = 1).
+    - Once per render target: the tile grid (16 x 16 pixels in macro tiles), two region arrays (one
+      8-byte entry a tile, grouped by macro tile, each `0x22000000 | origin y << 8 | x`, word 1 = 0),
+      the tail pointers (64 KB aligned, zeroed), the contexts (a page and 520 bytes, 16 KB aligned and
+      padded).
+    - Each frame: take the TA and one of the two region arrays; update the background object's format
+      and address words for the colour buffer; queue the render's 20 registers (`0x608 0x60c 0x610
+      0x614 0x618 0x61c 0x63c 0x644 0x648 0x64c 0x650 0x654 0x658 0x65c 0x660 0x674 0x6d0 0x6dc
+      0x860`, then `0x680` = 1, the kick, last; the render waits for the scene); zero the tail pointers
+      (stale ones make some macro tiles render); the TA: `0x85c` the grid and the base bits `0xe1`,
+      `0x840` the tails, `0x844` the regions, `0x84c` and `0x850` the size, `0x854` and `0x858` =
+      `0x3727c5ac`, `0x800` = 1; the stream; the end word `0xf0000000` after releasing and taking the
+      TA again.
+    - The stream: the region clip control (`0x10000010`, 0); a depth-only clear to the far plane (a
+      screen-space object: without it the tile's depth reads as NaN and most depth tests fail; the
+      model gives NaN, `V_DEPTH_CLEAR`); the draws, each with a header (`0x10000000 | mask`: the state,
+      alpha test, texture units, vertex layout, viewport and depth transform blocks GLES sends), a
+      primitive word, the sections word (`0xf0020000 | mask`, bit 17 needed) and the vertices (x, y, z,
+      1/w, packed colours).
+    - The chip: the TA bins each triangle into the lists of the tiles it touches, from the free list,
+      writing vertex blocks and 16-word lists ending `0xf0000000`, filling in each region entry's list
+      address and clearing bit 25. The kick draws, for each tile of the region array, the background
+      object first (a screen-sized triangle textured with the target itself, so uncovered pixels keep
+      their value), then the tile's list, to the last entry's end mark; it raises RENDER_COMPLETE and
+      EVM_DALLOC and returns the tile pages. (On the unit the render skipped entries without a list
+      and did not draw the background there; see the journal.)

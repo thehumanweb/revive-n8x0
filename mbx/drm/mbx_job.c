@@ -156,7 +156,9 @@ static int mbx_job_run(struct mbx_job *job)
 	ret = mbx_job_prepare_buffers(job->vm, a);
 	if (ret)
 		goto reset;
-	mbx_write(m, MBX_REG_TA_CONFIG, a->ta_config);
+	mbx_write(m, MBX_REG_TA_854, 0x3727c5ac);
+	mbx_write(m, MBX_REG_TA_858, 0x3727c5ac);
+	mbx_write(m, MBX_REG_TA_CONFIG, a->ta_config | 0xe1);	/* the stock stack's base bits */
 	if (tiles_mode)
 		mbx_write(m, MBX_REG_TILES, mbx_tiles_value(a, tiles_mode));
 	mbx_write(m, MBX_REG_TA_WIDTH, a->ta_width);

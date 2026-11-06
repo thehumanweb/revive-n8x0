@@ -109,6 +109,7 @@ static void setup_mmu(void)
 static int build_list(uint32_t first, uint32_t last)
 {
 	wr(R_INT_CLEAR, 0x7fff);
+	mbx_contract_pb_fill(&IO, PB_VA, PB_PAGES);
 	mbx_contract_freelist(&IO, PB_TABLE_VA, PB_VA, last);
 	wr(R_FL_FIRST, first);
 	wr(R_FL_BUILD, 1);
@@ -121,11 +122,12 @@ static uint32_t send_frame(void)
 
 	wr(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE | I_TA_OFLOW | I_EVM_DALLOC);
 	wr(R_INT_CLEAR, 0x7fff);
-	wr(R_TA_CONFIG, 0x80 | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10);
+	wr(R_TA_CONFIG, MBX_TA_BASE | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10);
 	wr(R_TA_WIDTH, (uint32_t)TRI_W << 16);
 	wr(R_TA_HEIGHT, (uint32_t)TRI_H << 16);
 	wr(R_TA_REGIONS, REGIONS);
 	wr(R_TA_TAILS, TAILS);
+	mbx_contract_ta_setup(&IO);
 	mbx_contract_contexts(&IO, CTX);	/* before the first TA: the TA and EVM contexts */
 	mbx_contract_background(&IO, PB_VA, SURF, TRI_W, TRI_W / 16, TRI_H / 16, 0);
 	mbx_contract_regions(&IO, REGIONS, TRI_W / 16, TRI_H / 16);

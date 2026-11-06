@@ -91,6 +91,34 @@ static bool target_bos(struct mbx_context *ctx, unsigned w, unsigned h)
 	return t->regions && t->tails;
 }
 
+/*
+ * What a frame starts with (mbx/lib/mbx_contract.h, found during device testing): the region clip
+ * control, then a depth-only clear to the far plane (a screen-space object: one triangle twice the
+ * target, depth written, no colour), without which the tile's depth reads as NaN and most depth tests
+ * fail. Section bit 11 names the passthrough (o0 = v0) the clear's vertices go through, kept in the
+ * last VGP instruction slot, clear of any program the compiler makes.
+ */
+static void emit_frame_start(struct mbx_context *ctx, float depth)
+{
+	mbx_emit(ctx, MBX_CH_TA, 0x10000010);	/* an object header naming the one-word region clip control */
+	mbx_emit(ctx, MBX_CH_TA, 0);
+	mbx_emit(ctx, MBX_CH_TA, 0x80000000 | 0x800);
+	mbx_emit(ctx, MBX_CH_TA, 255u << 8 | 255);
+	mbx_emit(ctx, MBX_CH_TA, 0x90000000 | 255u << 16 | 255);
+	mbx_emit(ctx, MBX_CH_TA, 0xe4e4e401);	/* MOV o0, v0 */
+	mbx_emit(ctx, MBX_CH_TA, 0x03c00000);
+	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | 0x20);	/* state, alpha test, layout */
+	mbx_emit(ctx, MBX_CH_TA, 0xe00 | 0x100);	/* depth always, written; no colour */
+	mbx_emit(ctx, MBX_CH_TA, 0);
+	mbx_emit(ctx, MBX_CH_TA, 0x3);		/* vertices: three floats */
+	mbx_emit(ctx, MBX_CH_TA, 0x70000000);	/* a triangle list */
+	mbx_emit(ctx, MBX_CH_TA, 0xb00b0800);	/* screen space */
+	mbx_emit_f(ctx, MBX_CH_TA, 0); mbx_emit_f(ctx, MBX_CH_TA, 0); mbx_emit_f(ctx, MBX_CH_TA, depth);
+	mbx_emit_f(ctx, MBX_CH_TA, 2.0f * ctx->fb.width); mbx_emit_f(ctx, MBX_CH_TA, 0); mbx_emit_f(ctx, MBX_CH_TA, depth);
+	mbx_emit_f(ctx, MBX_CH_TA, 0); mbx_emit_f(ctx, MBX_CH_TA, 2.0f * ctx->fb.height); mbx_emit_f(ctx, MBX_CH_TA, depth);
+	mbx_emit(ctx, MBX_CH_CTL, 1);		/* the object ends */
+}
+
 bool mbx_job_begin(struct mbx_context *ctx)
 {
 	struct mbx_job *job = &ctx->job;
@@ -104,6 +132,7 @@ bool mbx_job_begin(struct mbx_context *ctx)
 		return false;
 	pipe_resource_reference((struct pipe_resource **)&job->color, cbuf->texture);
 	job->active = true;
+	emit_frame_start(ctx, job->clear_depth);
 	return true;
 }
 

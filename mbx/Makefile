@@ -8,7 +8,7 @@ CORE = core.o ta.o vgp.o render.o rcptab.o texture.o twod.o pb.o
 all: libmbxemu.a
 
 # mbxtri: a triangle on the host, no kernel (tools/)
-mbxtri: tools/mbxtri.c libmbxemu.a
+mbxtri: tools/mbxtri.c tools/tri_frame.h lib/mbx_contract.h libmbxemu.a
 	$(CC) $(CFLAGS) -o $@ tools/mbxtri.c libmbxemu.a -lm
 
 libmbxemu.a: $(CORE)

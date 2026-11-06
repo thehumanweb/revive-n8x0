@@ -192,6 +192,38 @@ static void check_contract(struct mbxemu *e, const struct scene *s)
 		emu_violation(e, V_CTX, "the TA or EVM context (0x820, 0x864) is not set");
 	else if ((R[R_TA_CTX_BASE / 4] | R[R_EVM_CTX_BASE / 4]) & 0x3fff)
 		emu_violation(e, V_CTX, "the TA or EVM context (0x820, 0x864) is not 16 KB aligned");
+	/* soft: what the stock stack and GLES do, not confirmed on the device */
+	if ((R[R_TA_CTX_BASE / 4] | R[R_FL_TABLE / 4]) & 0x3fff || (R[R_TA_REGIONS / 4] | R[R_EVM_CTX_BASE / 4]) & 0xfff)
+		emu_violation(e, V_ALIGN_SOFT, "0x820 and 0x824 are not 16 KB aligned, or 0x844 and 0x864 not 4 KB");
+	{
+		uint32_t tx = (s->config >> 20 & 0x3ff) + 1, ty = (s->config >> 10 & 0x3ff) + 1;
+
+		if (tx != (s->width + 15) / 16 || ty != (s->height + 15) / 16)
+			emu_violation(e, V_GRID, "0x85c's tile grid does not match the size in 0x84c and 0x850");
+	}
+	if ((s->config & 0xe1) != 0xe1)
+		emu_violation(e, V_TA_BASE, "0x85c lacks the base bits 0xe1");
+	if (R[R_FL_LAST / 4] < R[R_FL_FIRST / 4])
+		emu_violation(e, V_FL_CHAIN, "the free list's last page (0x82c) is below its first (0x828)");
+	else if (R[R_FL_FIRST / 4] < R[R_FL_LAST / 4]) {
+		uint16_t v = 0;
+
+		dev_read(e, R[R_FL_TABLE / 4] + R[R_FL_FIRST / 4] * 2, &v, 2);
+		if (v != R[R_FL_FIRST / 4] + 1)
+			emu_violation(e, V_FL_CHAIN, "the free list's table does not chain from its first page");
+	}
+	{
+		static const uint16_t need[] = { 0x854, 0x858 };
+		unsigned int k;
+
+		for (k = 0; k < sizeof(need) / sizeof(need[0]); k++)
+			if (!(e->written[need[k] >> 7] >> (need[k] >> 2 & 31) & 1)) {
+				emu_violation(e, V_REGS, "a TA setup register (0x854, 0x858) was not written");
+				break;
+			}
+		e->written[0x854 >> 7] &= ~(1u << (0x854 >> 2 & 31));
+		e->written[0x858 >> 7] &= ~(1u << (0x858 >> 2 & 31));
+	}
 	if (s->regions && (dev_read32(e, s->regions) & 0x22000000) != 0x22000000)
 		emu_violation(e, V_REGION_INIT, "the region array was not initialised "
 			      "(0x22000000 | the macro tile's origin)");
@@ -237,15 +269,15 @@ void ta_start(struct mbxemu *e)
 		e->stats.scenes++;
 	s->regions = e->regs[R_TA_REGIONS / 4];
 	s->tails = e->regs[R_TA_TAILS / 4];
+	s->config = e->regs[R_TA_CONFIG / 4];
+	s->width = e->regs[R_TA_WIDTH / 4] >> 16;
+	s->height = e->regs[R_TA_HEIGHT / 4] >> 16;
 	s->closed = 0;
 	if (fresh)
 		e->viol = 0;
 	check_contract(e, s);
 	if (s->tails & 0xffff)
 		tails_clobber(e, s);
-	s->config = e->regs[R_TA_CONFIG / 4];
-	s->width = e->regs[R_TA_WIDTH / 4] >> 16;
-	s->height = e->regs[R_TA_HEIGHT / 4] >> 16;
 	e->mode = TA_CMD;
 	e->fifo_fill = 0;
 	e->asm_n = 0;
@@ -545,6 +577,9 @@ static void add_prim(struct mbxemu *e, const struct vtx *a, const struct vtx *b,
 		s->prims = t;
 		s->cprims = n;
 	}
+	/* a depth-only clear: screen space, the depth written, no colour (state bits 8 set, 7 clear) */
+	if (screen_space(e) && (e->cur.st & 0x180) == 0x100)
+		s->has_clear = 1;
 	p = &s->prims[s->nprims++];
 	p->v[0] = *a;
 	p->v[1] = *b;

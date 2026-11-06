@@ -130,7 +130,8 @@ static void clear_surface(void)
 
 static struct mbxemu_host HOST;
 /* test-only variants of a frame, on top of the skipped steps */
-enum { X_NONE, X_CTX_UNALIGNED, X_NO_END, X_BREAK_LIST, X_CTX_UNMAPPED, X_STALE, X_MARKERS };
+enum { X_NONE, X_CTX_UNALIGNED, X_NO_END, X_BREAK_LIST, X_CTX_UNMAPPED, X_STALE, X_MARKERS, X_NO_BASE, X_GRID,
+       X_FMT, X_ENTRY, X_ALIGN4K, X_NO_CLEAR };
 static int variant;
 
 static int frame(uint32_t skip, int strict, uint32_t *mask)
@@ -145,6 +146,7 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	mbxemu_set_strict(E, strict);
 	setup_mmu();
 	wr(R_INT_CLEAR, 0x7fff);
+	mbx_contract_pb_fill(&IO, PB_VA, PB_PAGES);
 	mbx_contract_freelist(&IO, PB_TABLE_VA, PB_VA, PB_LAST_PAGE);
 	wr(R_FL_FIRST, skip & V_FL_OVERLAP ? PB_FIRST_PAGE : PB_FIRST_PAGE + 1);
 	if (skip & V_FL_REGS)
@@ -154,15 +156,16 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	wr(R_FL_BUILD, 1);
 	clear_surface();
 	wr(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE | I_TA_OFLOW | I_EVM_DALLOC);
-	wr(R_TA_CONFIG, 0x80 | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10);
-	wr(R_TA_WIDTH, (uint32_t)TRI_W << 16);
+	wr(R_TA_CONFIG, (variant == X_NO_BASE ? 0x80 : MBX_TA_BASE) | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10);
+	wr(R_TA_WIDTH, (uint32_t)(variant == X_GRID ? TRI_W + 32 : TRI_W) << 16);
 	wr(R_TA_HEIGHT, (uint32_t)TRI_H << 16);
+	mbx_contract_ta_setup(&IO);
 	wr(R_TA_REGIONS, REGIONS);
 	if (skip & V_TAILS_ALIGN)
 		tails += 0x1000;
 	wr(R_TA_TAILS, tails);
 	if (!(skip & V_CTX)) {
-		uint32_t ctx = variant == X_CTX_UNALIGNED ? CTX + 0x1000 : variant == X_CTX_UNMAPPED ? 0x70000 : CTX;
+		uint32_t ctx = variant == X_CTX_UNALIGNED ? CTX + 0x1000 : variant == X_ALIGN4K ? CTX + 0x100 : variant == X_CTX_UNMAPPED ? 0x70000 : CTX;
 
 		mbx_contract_contexts(&IO, ctx);
 	}
@@ -181,6 +184,7 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	mbx_contract_tails(&IO, TAILS, 4096);
 	wr(R_TA_CONTEXT_ID, 0);
 	wr(R_TA_START, 1);
+	tri_with_clear = variant != X_NO_CLEAR;
 	n = tri_stream(stream, 0);
 	for (i = 0; i < n;) {
 		uint32_t type = stream[i] >> 28, count = stream[i] & 0xffff, k;
@@ -197,6 +201,10 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	}
 	if (variant == X_STALE)
 		wr(0x808, 1);					/* a close: a partial render's */
+	if (variant == X_ENTRY) {
+		c_wr32(NULL, REGIONS + 8 * 5, 0x00000005 | 0x40000000);	/* entry 5: no bit 25 ... */
+		c_wr32(NULL, REGIONS + 8 * 5 + 4, 0);			/* ... and no list */
+	}
 	if (variant == X_BREAK_LIST) {
 		uint32_t head = c_rd32(NULL, REGIONS + 4);	/* the first tile's list */
 
@@ -205,7 +213,7 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	wr(R_REGIONS, REGIONS);
 	wr(R_RENDER_CTL, 0x30000);
 	wr(R_SAMPLING, 0x00020007);
-	wr(R_FORMAT, 0xe);
+	wr(R_FORMAT, variant == X_FMT ? 9 : 0xe);
 	wr(R_WIDTH, (uint32_t)(TRI_W - 1) << 16);
 	wr(R_HEIGHT, (uint32_t)(TRI_H - 1) << 16);
 	wr(R_ADDR, SURF);
@@ -247,7 +255,9 @@ int main(void)
 	E = mbxemu_new(&HOST);
 
 	n = frame(0, 1, &mask);
-	CHECK(mask == 0 && n == 1144, "everything in place: no violation, the triangle (mask %#x, %d pixels)", mask, n);
+	CHECK((mask & ~V_SOFT) == 0 && n == 1144, "everything in place: no hard violation, the triangle (mask %#x, %d pixels)", mask, n);
+	/* what this stack does not do yet (values not known): the registers it never writes are counted, softly */
+	CHECK(mask & V_REGS, "the render registers this stack never writes are counted (mask %#x)", mask);
 	for (k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++) {
 		n = frame(cases[k].bit, 1, &mask);
 		CHECK(mask & cases[k].bit, "%s: counted (mask %#x)", cases[k].what, mask);
@@ -277,6 +287,23 @@ int main(void)
 	variant = X_MARKERS; frame(0, 1, &mask);
 	CHECK(c_rd32(NULL, CTX + 0x4400) == 0 && c_rd32(NULL, CTX + 0x4000 + 520 + 1024 + 8) == 0xfeedf00d,
 	      "the EVM context's overrun zeroed what lay behind it, and no more");
+	/* the soft checks count and never garble the picture */
+	variant = X_NO_BASE; n = frame(0, 1, &mask);
+	CHECK(mask & V_TA_BASE && n == 1144, "0x85c without the base bits 0xe1: counted, the triangle still drawn (mask %#x, %d)", mask, n);
+	variant = X_NONE; frame(0, 1, &mask);
+	CHECK(!(mask & V_TA_BASE), "0x85c with the base bits: not counted (mask %#x)", mask);
+	variant = X_GRID; n = frame(0, 1, &mask);
+	CHECK(mask & V_GRID, "0x85c's grid and 0x84c's size disagree: counted (mask %#x)", mask);
+	variant = X_FMT; n = frame(0, 1, &mask);
+	CHECK(mask & V_FMT, "the render's format and the background object disagree: counted (mask %#x)", mask);
+	variant = X_ENTRY; n = frame(0, 1, &mask);
+	CHECK(mask & V_REGION_ENTRY && n != 1144, "a region entry with neither a list nor bit 25: counted, garbage (mask %#x, %d)", mask, n);
+	variant = X_ALIGN4K; frame(0, 1, &mask);
+	CHECK(mask & V_ALIGN_SOFT, "the contexts not 16 KB aligned (soft): counted (mask %#x)", mask);
+	variant = X_NO_CLEAR; n = frame(0, 1, &mask);
+	CHECK(mask & V_DEPTH_CLEAR && n != 1144, "no depth-only clear: counted, the depth starts as NaN and the triangle fails its test (mask %#x, %d)", mask, n);
+	variant = X_NO_CLEAR; n = frame(0, 0, &mask);
+	CHECK(mask & V_DEPTH_CLEAR && n == 1144, "no depth-only clear, forgiving mode: counted, the triangle is drawn (%d)", n);
 	variant = X_NONE;
 	printf("t_contract: %d checks, %d failures\n", checks, failures);
 	mbxemu_free(E);

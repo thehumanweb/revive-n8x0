@@ -24,7 +24,8 @@
 void emu_violation(struct mbxemu *e, uint32_t bit, const char *what)
 {
 	if (!(e->viol & bit))
-		emu_log(e, "contract: %s%s", what, e->strict ? " (the chip gives garbage)" : "");
+		emu_log(e, "contract: %s%s", what, !e->strict ? "" :
+			bit & V_SOFT ? " (not confirmed on the device)" : " (the chip gives garbage)");
 	e->viol |= bit;
 	e->viol_ever |= bit;
 	e->stats.violations++;
@@ -118,6 +119,47 @@ static int translate(struct mbxemu *e, uint32_t dev, uint32_t *phys)
 	return 0;
 }
 
+/*
+ * The write watch (README assumption 31): while the TA or the render runs, the chip's writes belong in
+ * the target, the parameter buffer and its table, the region arrays, the tail area (the 64 KB block
+ * 0x840 names, rounded down) and the contexts (16 KB each, padded). A write elsewhere is the kind
+ * that reached the kernel's page tables on the N810; it is counted and logged with its address.
+ */
+static int in_range(uint32_t dev, uint32_t len, uint32_t base, uint32_t size)
+{
+	return size && dev >= base && dev + len <= base + size;
+}
+
+/* A grid side in tiles, padded to the macro tile the TA picks (mbx/ta.c, mt_size) */
+static uint32_t padded(uint32_t tiles)
+{
+	uint32_t mt = tiles <= 32 ? 4 : tiles <= 64 ? 8 : 16;
+
+	return (tiles + mt - 1) / mt * mt;
+}
+
+void emu_check_write(struct mbxemu *e, uint32_t dev, uint32_t len)
+{
+	const uint32_t *R = e->regs;
+	uint32_t cfg = R[R_TA_CONFIG / 4], tx = (cfg >> 20 & 0x3ff) + 1, ty = (cfg >> 10 & 0x3ff) + 1;
+	uint32_t last = R[R_FL_LAST / 4], rh = (R[R_HEIGHT / 4] >> 16 & 0x7ff) + 1;
+	uint32_t zaddr = R[R_ZBUF / 4] & ~0xffu, pb = R[R_PB_BASE / 4];
+	uint32_t regions = padded(tx) * padded(ty) * 8;
+	uint32_t zbytes = ((R[R_RENDER_CTL / 4] >> 8 & 0xff) + 1) * 16 * 4 * ((rh + 15) / 16 * 16);
+
+	if (in_range(dev, len, R[R_ADDR / 4], R[R_STRIDE / 4] * 4 * rh) ||
+	    (last && in_range(dev, len, pb, (last + 1) * 4096 - pb)) ||
+	    in_range(dev, len, R[R_FL_TABLE / 4], last ? (last + 1) * 2 + 2 : 0) ||
+	    in_range(dev, len, R[R_TA_REGIONS / 4], regions) || in_range(dev, len, R[R_REGIONS / 4], regions) ||
+	    in_range(dev, len, R[R_TA_TAILS / 4] & ~0xffffu, 0x10000) ||
+	    in_range(dev, len, R[R_TA_CTX_BASE / 4], 0x4000) || in_range(dev, len, R[R_EVM_CTX_BASE / 4], 0x4000) ||
+	    in_range(dev, len, zaddr, zaddr ? zbytes : 0) || e->so_on)
+		return;
+	emu_violation(e, V_WRITE_OUT, "the chip wrote outside the target, the buffer, the tails, the region arrays "
+		      "and the contexts");
+	emu_log(e, "contract: ... at device %#x (%u bytes)", dev, len);
+}
+
 static struct pcache *pc_slot(struct mbxemu *e, uint32_t page, int *idx)
 {
 	*idx = (int)(page % PCACHE);
@@ -164,6 +206,8 @@ void dev_write(struct mbxemu *e, uint32_t dev, const void *buf, uint32_t len)
 
 		if (n > len)
 			n = len;
+		if (e->watch)
+			emu_check_write(e, dev, n);
 		if (!translate(e, dev, &phys)) {
 			/* a page no table entry maps lands on physical page 0: the driver must point unused pages
 			 * at a scratch page (README assumption 31) */
@@ -329,6 +373,16 @@ static void fl_build(struct mbxemu *e)
 			dev_write(e, table + p * 2, &v, 2);
 		}
 	}
+	if (built) {
+		/* soft: the stock stack fills the buffer with end words before the build (the first word of each page) */
+		uint32_t n = 0;
+
+		for (p = first; p <= last; p++)
+			n += dev_read32(e, p << 12) != 0xf0000000u;
+		if (n)
+			emu_violation(e, V_PB_FILL, "the parameter buffer was not filled with 0xf0000000 end words "
+				      "before the free list build");
+	}
 	pb_fl_built(e, built);
 	e->fl_stale = 0;		/* a rebuild repairs what a partial render left */
 	emu_raise(e, I_EVM_DALLOC);
@@ -403,6 +457,7 @@ void mbxemu_reg_write(struct mbxemu *e, uint32_t reg, uint32_t v)
 {
 	reg &= 0x3ffc;
 	emu_trace(e, "write %#06x = %08x", reg, v);
+	e->written[reg >> 7] |= 1u << (reg >> 2 & 31);
 	switch (reg) {
 	case R_INT_STATUS:
 		emu_raise(e, v);
@@ -531,18 +586,22 @@ static void tq_drain(struct mbxemu *e)
 
 void mbxemu_ta_write(struct mbxemu *e, uint32_t off, uint32_t v)
 {
+	e->watch++;
 	if (e->pbw.stalled)
 		tq_push(e, off >> 2 & 3, v);
 	else
 		ta_word(e, off >> 2 & 3, v);
+	e->watch--;
 }
 
 void mbxemu_ta_ctl_write(struct mbxemu *e, uint32_t v)
 {
+	e->watch++;
 	if (e->pbw.stalled)
 		tq_push(e, 4, v);
 	else
 		ta_ctl(e, v);
+	e->watch--;
 }
 
 void mbxemu_2d_write(struct mbxemu *e, uint32_t v)

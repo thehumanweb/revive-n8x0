@@ -128,6 +128,7 @@ struct scene {
 	int used;		/* the slot holds a scene */
 	int complete;		/* its end word came: the next render consumes it */
 	int closed;		/* a close (0x808) came: a partial render may take it */
+	int has_clear;		/* a depth-only clear object (screen space, depth written, no colour) came */
 	uint32_t regions, tails, config, width, height;	/* the TA's registers at its start */
 	struct rstate *states;
 	int nstates, cstates;
@@ -251,12 +252,29 @@ struct pbw {
 #define V_FL_STALE	(1u << 9)	/* a partial render after a partial render, the free list not rebuilt */
 #define V_RENDER_EARLY	(1u << 10)	/* a render kicked while the scene is still being streamed */
 #define V_STRAY		(1u << 11)	/* a write through a page no table entry maps (no scratch page) */
+#define V_REGION_ENTRY	(1u << 12)	/* a region entry with neither a list address nor bit 25 */
+/*
+ * Soft checks: from the stock stack or GLES's choices, not confirmed on the device (README
+ * assumption 31). They are counted and logged; they do not turn the picture to garbage.
+ */
+#define V_ALIGN_SOFT	(1u << 13)	/* 0x820/0x824 not 16 KB, 0x844/0x864 not 4 KB aligned */
+#define V_GRID		(1u << 14)	/* 0x85c's grid and 0x84c/0x850's size disagree */
+#define V_FMT		(1u << 15)	/* the render's format, address or stride and the background object's disagree */
+#define V_FL_CHAIN	(1u << 16)	/* the free list's registers or table do not make a chain */
+#define V_TA_BASE	(1u << 17)	/* 0x85c lacks the base bits 0xe1 */
+#define V_REGS		(1u << 18)	/* a render or TA register of the set was not written since the last kick/start */
+#define V_WRITE_OUT	(1u << 19)	/* the chip wrote outside the target, the buffer, the tails, the regions, the contexts */
+#define V_PB_FILL	(1u << 21)	/* the parameter buffer was not filled with 0xf0000000 end words before the build */
+#define V_DEPTH_CLEAR	(1u << 20)	/* the scene has no depth-only clear: the tile's depth starts as NaN */
+#define V_SOFT		(V_PB_FILL | V_DEPTH_CLEAR | V_ALIGN_SOFT | V_GRID | V_FMT | V_FL_CHAIN | V_TA_BASE | V_REGS | V_WRITE_OUT)
 
 struct mbxemu {
 	struct mbxemu_host host;
 	int strict;			/* violations have the chip's consequences (default) */
 	uint32_t viol;			/* this scene's violations */
 	int fl_stale;			/* a partial render has run since the free list was built */
+	uint32_t written[0x4000 / 4 / 32];	/* registers written since they were last checked (render: the kick; TA: the start) */
+	int watch;			/* the TA or the render is running: bus writes are checked */
 	uint32_t viol_ever;
 	int trace;
 	uint32_t regs[0x4000 / 4];
@@ -307,6 +325,7 @@ struct mbxemu {
 /* core.c */
 void emu_log(struct mbxemu *e, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void emu_violation(struct mbxemu *e, uint32_t bit, const char *what);
+void emu_check_write(struct mbxemu *e, uint32_t dev, uint32_t len);	/* core.c: the write watch */
 #define emu_trace(e, ...) do { if ((e)->trace) emu_log(e, __VA_ARGS__); } while (0)
 void emu_raise(struct mbxemu *e, uint32_t bits);
 /* Device memory through the MMU; out of range or unmapped reads 0 */

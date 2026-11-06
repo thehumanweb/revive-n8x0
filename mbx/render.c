@@ -17,6 +17,7 @@
  */
 #include <math.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "emu.h"
@@ -43,6 +44,7 @@ struct rctx {
 	struct texunit bg;
 	int bg_target;			/* no background object: the target's own pixels (not strict) */
 	int bg_bad;			/* strict: the background object is not whole: tiles start white */
+	int depth_nan;			/* strict: the scene has no depth-only clear: the tile's depth starts as NaN */
 	uint32_t viol;			/* the scene's contract violations, with the render's own */
 	struct scene *s;
 	struct setup *su;		/* a setup per triangle */
@@ -1450,7 +1452,7 @@ static void tile(struct mbxemu *e, struct rctx *rc, uint32_t entry)
 		}
 	} else {
 		for (i = 0; i < TILE * TILE; i++)
-			zb[i] = rc->zclear;
+			zb[i] = rc->depth_nan ? NAN : rc->zclear;
 	}
 	memset(tile_claim, 0, sizeof(tile_claim));
 	memcpy(tile_col0, col, sizeof(tile_col0));
@@ -1592,10 +1594,38 @@ void render_kick(struct mbxemu *e)
 				emu_violation(e, V_BG, "the background object at 0x83c is not a whole object "
 					      "(a header, texture words A, B and C, a state word, three vertices)");
 				rc.bg_bad = e->strict;
+			} else {
+				/* soft: the render's format, address and row against the object's texture words */
+				uint32_t bytes = rc.fmt == 9 ? 2 : 4;
+
+				if (rc.bg.fmt != (rc.fmt == 9 ? 1u : 6u) || rc.bg.addr != rc.addr ||
+				    rc.bg.stride * bytes != rc.stride)
+					emu_violation(e, V_FMT, "the background object's texture (format, address, row) does "
+						      "not describe the render target (0x650, 0x65c, 0x660)");
 			}
 		}
 	}
 
+	e->watch++;		/* the render's writes are watched (emu_check_write) */
+	{
+		/* soft: every render register the stock stack writes, since the last kick (README assumption 31) */
+		static const uint16_t need[] = { 0x608, 0x60c, 0x610, 0x614, 0x618, 0x61c, 0x63c, 0x644, 0x648, 0x64c, 0x650,
+						 0x654, 0x658, 0x65c, 0x660, 0x674, 0x6d0, 0x6dc, 0x860, 0x680 };
+		char list[160] = "";
+		unsigned int k, n = 0;
+
+		for (k = 0; k < sizeof(need) / sizeof(need[0]); k++) {
+			if (!(e->written[need[k] >> 7] >> (need[k] >> 2 & 31) & 1) && n < 20)
+				n += (unsigned int)snprintf(list + n, sizeof(list) - n, " %#x", need[k]);
+			e->written[need[k] >> 7] &= ~(1u << (need[k] >> 2 & 31));
+		}
+		if (n) {
+			char msg[240];
+
+			snprintf(msg, sizeof(msg), "render registers not written since the last kick:%s", list);
+			emu_violation(e, V_REGS, msg);
+		}
+	}
 	rc.s = &e->ctx[R[R_HW_CONTEXT / 4] & 1];
 	if (!rc.s->used)
 		rc.s = NULL;
@@ -1609,6 +1639,7 @@ void render_kick(struct mbxemu *e)
 			      "free list: the core hangs");
 		if (e->strict) {
 			pcache_end(e);
+			e->watch--;
 			return;
 		}
 	}
@@ -1638,6 +1669,11 @@ void render_kick(struct mbxemu *e)
 	for (k = 0; k < MAX_REGIONS; k++) {
 		uint32_t w0 = dev_read32(e, regions + 8 * k), w1 = dev_read32(e, regions + 8 * k + 4);
 
+		if (e->pbw.on && !(w0 & 0x02000000) && !w1) {
+			emu_violation(e, V_REGION_ENTRY, "a region entry has neither a list address nor bit 25 "
+				      "(empty)");
+			break;
+		}
 		if (!(w0 & 0x02000000) && w1 && !list_whole(e, w1)) {
 			emu_violation(e, V_LIST, "a tile's list in memory is damaged (an empty entry before its "
 				      "end word, or no end word)");
@@ -1646,7 +1682,12 @@ void render_kick(struct mbxemu *e)
 		if (w0 & 0x80000000)
 			break;
 	}
-	rc.viol = e->viol;
+	if (rc.s && !rc.s->has_clear && rc.s->nprims) {
+		emu_violation(e, V_DEPTH_CLEAR, "the scene has no depth-only clear: the tile's depth starts as NaN and "
+			      "most depth tests fail");
+		rc.depth_nan = e->strict;
+	}
+	rc.viol = e->viol & ~V_SOFT;	/* the soft checks only count */
 	for (k = 0; k < MAX_REGIONS; k++) {
 		entry = dev_read32(e, regions + 8 * k);
 		tile(e, &rc, entry);
@@ -1655,6 +1696,7 @@ void render_kick(struct mbxemu *e)
 	}
 	free(rc.su);
 	pcache_end(e);
+	e->watch--;
 	e->isp_sig++;
 	if (!(entry & 0x80000000)) {
 		emu_log(e, "render: no end mark in the region array at %#x: the 3D core hangs", regions);

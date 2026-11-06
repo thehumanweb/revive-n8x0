@@ -38,6 +38,8 @@
 #define MBX_REG_TA_REGIONS	0x844
 #define MBX_REG_TA_WIDTH	0x84c
 #define MBX_REG_TA_HEIGHT	0x850
+#define MBX_REG_TA_854		0x854	/* 0x3727c5ac with every TA start (the stock stack) */
+#define MBX_REG_TA_858		0x858
 #define MBX_REG_TA_CONFIG	0x85c
 #define MBX_REG_TILES		0x860	/* a tile count of the scene: its encoding is being found out */
 

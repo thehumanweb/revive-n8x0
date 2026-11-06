@@ -51,6 +51,25 @@ void mbx_pb_destroy(struct mbx_device *m)
 	m->pb = NULL;
 }
 
+/* The parameter buffer's pages, filled with end words before the free list is built (found during device testing) */
+static void mbx_pb_fill(struct mbx_device *m)
+{
+	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(m->pb);
+	struct sg_table *sgt = drm_gem_shmem_get_pages_sgt(shmem);
+	u32 i, j, first = MBX_PB_TABLE_SIZE >> PAGE_SHIFT;
+
+	if (IS_ERR(sgt))
+		return;
+	for (i = 0; i < MBX_PB_PAGES; i++) {
+		u32 *p = kmap_local_page(shmem->pages[first + i]);
+
+		for (j = 0; j < PAGE_SIZE / 4; j++)
+			p[j] = 0xf0000000;
+		kunmap_local(p);
+	}
+	dma_sync_sgtable_for_device(m->dev, sgt, DMA_TO_DEVICE);
+}
+
 /* Build the free list (the table, the first and last page, then the build) and wait for EVM_DALLOC */
 int mbx_pb_build(struct mbx_device *m, unsigned long ms)
 {
@@ -61,6 +80,7 @@ int mbx_pb_build(struct mbx_device *m, unsigned long ms)
 	spin_lock_irqsave(&m->irq_lock, flags);
 	m->pending &= ~MBX_INT_EVM_DALLOC;
 	spin_unlock_irqrestore(&m->irq_lock, flags);
+	mbx_pb_fill(m);
 	/* the buffer's base page holds the background object: the list starts on the next */
 	mbx_write(m, MBX_REG_FL_TABLE, MBX_PB_TABLE_VA);
 	mbx_write(m, MBX_REG_FL_FIRST, MBX_PB_FIRST_PAGE + 1);

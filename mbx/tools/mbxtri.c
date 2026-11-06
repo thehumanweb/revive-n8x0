@@ -132,6 +132,7 @@ int main(int argc, char **argv)
 	/* the contract: the free list's registers (not built: this frame needs no parameter pages), the
 	 * contexts, the background object (the target itself), the region array, the tails */
 	mbx_contract_freelist(&IO, PB + 0x10000, PB, (PB >> 12) + 8);
+	mbx_contract_ta_setup(&IO);
 	mbx_contract_contexts(&IO, CTX);
 	mbx_contract_background(&IO, PB, SURF, W, W / 16, H / 16, 0);
 	mbx_contract_regions(&IO, REGIONS, W / 16, H / 16);
@@ -140,7 +141,7 @@ int main(int argc, char **argv)
 	/* 1. the TA: tile grid (16-pixel tiles), regions, size, then start */
 	wr(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE);
 	wr(R_INT_CLEAR, 0x7fff);
-	wr(R_TA_CONFIG, 0x80 | (uint32_t)(W / 16 - 1) << 20 | (uint32_t)(H / 16 - 1) << 10);
+	wr(R_TA_CONFIG, MBX_TA_BASE | (uint32_t)(W / 16 - 1) << 20 | (uint32_t)(H / 16 - 1) << 10);
 	wr(R_TA_WIDTH, (uint32_t)W << 16);
 	wr(R_TA_HEIGHT, (uint32_t)H << 16);
 	wr(R_TA_REGIONS, regions);

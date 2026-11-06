@@ -23,6 +23,8 @@ struct mbx_io {
 };
 
 #define MBX_TILE_PX		16
+/* 0x85c's base bits, with the tile grid in bits 10-29 (the stock stack's; not measured on the device) */
+#define MBX_TA_BASE		0xe1u
 #define MBX_BG_WORDS		26
 #define MBX_BG_RESERVED		0x210	/* bytes the chip reserves at the buffer's start (132 words) */
 
@@ -55,6 +57,22 @@ static inline void mbx_contract_freelist(const struct mbx_io *io, uint32_t table
 	io->reg(io->opaque, 0x83c, pb_va);
 	io->reg(io->opaque, 0x6d8, 0x09000000);
 	io->reg(io->opaque, 0xce0, 1);
+}
+
+/* The parameter buffer's pages, filled with end words before the free list is built (list blocks end in one) */
+static inline void mbx_contract_pb_fill(const struct mbx_io *io, uint32_t pb_va, uint32_t pages)
+{
+	uint32_t i;
+
+	for (i = 0; i < pages * 1024; i++)
+		io->wr32(io->opaque, pb_va + 4 * i, 0xf0000000u);
+}
+
+/* Two TA setup registers the stock stack writes (float 1e-5, the depth unit), before every TA start */
+static inline void mbx_contract_ta_setup(const struct mbx_io *io)
+{
+	io->reg(io->opaque, 0x854, 0x3727c5ac);
+	io->reg(io->opaque, 0x858, 0x3727c5ac);
 }
 
 /*

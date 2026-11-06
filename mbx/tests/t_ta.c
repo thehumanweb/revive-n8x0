@@ -139,7 +139,7 @@ int main(void)
 	CHECK(status & I_RENDER, "RENDER_COMPLETE (status %08x)", status);
 	CHECK(drawn() > 1000, "a triangle was drawn (%d pixels)", drawn());
 	mbxemu_stats(E, &st);
-	CHECK(st.prims == 1 && st.ta_hangs == 0, "one primitive, no hangs (%u, %u)", st.prims, st.ta_hangs);
+	CHECK(st.prims == 2 && st.ta_hangs == 0, "two primitives (the depth clear and the triangle), no hangs (%u, %u)", st.prims, st.ta_hangs);
 
 	/* 2. bit 17 clear: the TA takes nothing, the FIFO fills, nothing completes, the render does not */
 	clear_surface();
@@ -148,7 +148,8 @@ int main(void)
 	CHECK((status >> 16 & 0xff) > 1 && (status >> 16 & 0xff) <= TA_FIFO_WORDS,
 	      "the FIFO holds what was sent after the sections word (fill %u)", status >> 16 & 0xff);
 	mbxemu_stats(E, &st);
-	CHECK(st.ta_hangs == 1 && st.prims == 1, "one hang, and no new primitive (%u, %u)", st.ta_hangs, st.prims);
+	/* the depth clear (its sections word has bit 17) is taken, the triangle after it is not */
+	CHECK(st.ta_hangs == 1 && st.prims == 3, "one hang, and only the clear's primitive new (%u, %u)", st.ta_hangs, st.prims);
 	wr(R_INT_CLEAR, 0x7fff);
 	status = kick_render();
 	CHECK(!(status & I_RENDER), "the render does not complete while the TA is hung (status %08x)", status);
