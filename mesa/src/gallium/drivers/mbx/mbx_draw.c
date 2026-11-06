@@ -116,9 +116,10 @@ static uint32_t hw_cull_bits(struct mbx_context *ctx)
 
 	if (!r || r->cull_face == PIPE_FACE_NONE)
 		return 0;
-	/* a triangle that is counter-clockwise in NDC has negative area once the
-	 * viewport has flipped y (a negative y scale) */
-	front_neg = r->front_ccw == (ctx->viewport.scale[1] < 0);
+	/* front_ccw is the winding in surface pixels with y = 0 at the top (the state tracker has already
+	 * accounted for the viewport's flip and for render-to-texture); a triangle that looks counter-clockwise
+	 * there has a negative area in the numbers the TA computes */
+	front_neg = r->front_ccw;
 	if (r->cull_face == PIPE_FACE_BACK)
 		return front_neg ? PRIM_CULL_POS : PRIM_CULL_NEG;
 	return front_neg ? PRIM_CULL_NEG : PRIM_CULL_POS;
@@ -432,6 +433,8 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		mbx_dbg("draw %u: program", d);
 		emit_program(ctx, prog);
 		mbx_dbg("draw %u: %u vertices", d, draws[d].count);
+		mbx_dbg("cull: face %d front_ccw %d scale1 %g -> bits %08x", ctx->rast ? ctx->rast->cull_face : -1,
+			ctx->rast ? ctx->rast->front_ccw : -1, ctx->viewport.scale[1], hw_cull_bits(ctx));
 		mbx_emit(ctx, MBX_CH_TA, prim | hw_cull_bits(ctx));
 		if (prim >> 28 == 0x6 || prim >> 28 == 0xe) {
 			/* lines and points carry half their width or size (one for the object) */

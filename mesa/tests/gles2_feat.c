@@ -31,7 +31,7 @@ static const char *fs_src =
 	"varying vec4 v_color;\n"
 	"void main() { gl_FragColor = v_color; }\n";
 
-static GLuint prog, prog_tex, prog_mod, prog_uni, prog_vu, prog_tu;
+static GLuint prog, prog_tex, prog_mod, prog_uni, prog_vu, prog_tu, prog_z;
 static int failures;
 
 static const char *tvs_src =
@@ -72,6 +72,15 @@ static const char *fs_tex_uniform =
 	"uniform vec4 u_color;\n"
 	"varying vec2 v_uv;\n"
 	"void main() { gl_FragColor = texture2D(u_tex, v_uv) * u_color; }\n";
+
+static const char *zvs_src =
+	"attribute vec3 a_pos;\n"
+	"attribute vec4 a_color;\n"
+	"varying vec4 v_color;\n"
+	"void main() {\n"
+	"	gl_Position = vec4(a_pos, 1.0);\n"
+	"	v_color = a_color;\n"
+	"}\n";
 
 static GLuint compile(GLenum type, const char *src)
 {
@@ -555,7 +564,135 @@ static int t_tex_uniform(char *why)
 	return ok;
 }
 
+/* a triangle (x, y, z, r, g, b, a) per vertex */
+static void draw_z(GLenum mode, const float *v, int n)
+{
+	glUseProgram(prog_z);
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), v);
+	glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 7 * sizeof(float), v + 3);
+	glDrawArrays(mode, 0, n);
+	glUseProgram(prog);
+}
+
+static void tri_z(float z, float r, float g, float b, float a, int cw)
+{
+	/* a large triangle covering the centre; cw swaps two vertices */
+	float v[3][7] = {
+		{ -0.9f, -0.9f, z, r, g, b, a }, { 0.9f, -0.9f, z, r, g, b, a }, { 0.0f, 0.9f, z, r, g, b, a },
+	};
+	float t[7];
+
+	if (cw) {
+		memcpy(t, v[1], sizeof(t));
+		memcpy(v[1], v[2], sizeof(t));
+		memcpy(v[2], t, sizeof(t));
+	}
+	draw_z(GL_TRIANGLES, &v[0][0], 3);
+}
+
+static int t_blend_alpha(char *why)
+{
+	/* red over a green background at alpha 0.5: (128, 128, 0) */
+	begin();
+	glClearColor(0, 1, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	tri_z(0, 1, 0, 0, 0.5f, 0);
+	glDisable(GL_BLEND);
+	CHECK(32, 24, 128, 128, 0);
+	CHECK(2, 60, 0, 255, 0);
+	return 1;
+}
+
+static int t_blend_add(char *why)
+{
+	/* dark red plus dark green: (64, 64, 0) */
+	begin();
+	glClearColor(0.25f, 0, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_ONE, GL_ONE);
+	tri_z(0, 0, 0.25f, 0, 1, 0);
+	glDisable(GL_BLEND);
+	CHECK(32, 24, 64, 64, 0);
+	CHECK(2, 60, 64, 0, 0);
+	return 1;
+}
+
+static int t_cull(char *why)
+{
+	/* counter-clockwise is front; back faces are culled */
+	begin();
+	glEnable(GL_CULL_FACE);
+	glCullFace(GL_BACK);
+	glFrontFace(GL_CCW);
+	tri_z(0, 1, 0, 0, 1, 1);	/* clockwise: culled */
+	glDisable(GL_CULL_FACE);
+	CHECK(32, 24, 0, 0, 0);
+	glEnable(GL_CULL_FACE);
+	tri_z(0, 0, 1, 0, 1, 0);	/* counter-clockwise: drawn */
+	glDisable(GL_CULL_FACE);
+	CHECK(32, 24, 0, 255, 0);
+	begin();
+	glEnable(GL_CULL_FACE);
+	glCullFace(GL_FRONT);
+	tri_z(0, 0, 1, 0, 1, 0);	/* front culled now */
+	glDisable(GL_CULL_FACE);
+	CHECK(32, 24, 0, 0, 0);
+	return 1;
+}
+
+static int t_depth(char *why)
+{
+	/* the nearer triangle wins whichever is drawn first */
+	begin();
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+	tri_z(0.2f, 1, 0, 0, 1, 0);	/* near, red */
+	tri_z(0.6f, 0, 1, 0, 1, 0);	/* far, green: behind */
+	CHECK(32, 24, 255, 0, 0);
+	begin();
+	tri_z(0.6f, 0, 1, 0, 1, 0);
+	tri_z(0.2f, 1, 0, 0, 1, 0);
+	CHECK(32, 24, 255, 0, 0);
+	/* GL_GREATER: the far one wins */
+	begin();
+	glDepthFunc(GL_GREATER);
+	glClearDepthf(0);
+	glClear(GL_DEPTH_BUFFER_BIT);
+	tri_z(0.2f, 1, 0, 0, 1, 0);
+	tri_z(0.6f, 0, 1, 0, 1, 0);
+	CHECK(32, 24, 0, 255, 0);
+	glClearDepthf(1);
+	glDepthFunc(GL_LESS);
+	glDisable(GL_DEPTH_TEST);
+	return 1;
+}
+
+static int t_depth_mask(char *why)
+{
+	/* a red triangle with the depth write off leaves the depth alone: a farther green one still shows over it */
+	begin();
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+	glDepthMask(GL_FALSE);
+	tri_z(0.2f, 1, 0, 0, 1, 0);
+	glDepthMask(GL_TRUE);
+	tri_z(0.6f, 0, 1, 0, 1, 0);
+	CHECK(32, 24, 0, 255, 0);
+	glDisable(GL_DEPTH_TEST);
+	return 1;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "blend_alpha", t_blend_alpha },
+	{ "blend_add", t_blend_add },
+	{ "cull", t_cull },
+	{ "depth", t_depth },
+	{ "depth_mask", t_depth_mask },
 	{ "fs_uniform", t_fs_uniform },
 	{ "fs_var_uniform", t_fs_var_uniform },
 	{ "tex_uniform", t_tex_uniform },
@@ -621,6 +758,12 @@ int main(int argc, char **argv)
 	glLinkProgram(prog);
 	prog_tex = link_tex(tfs_replace);
 	prog_mod = link_tex(tfs_modulate);
+	prog_z = glCreateProgram();
+	glAttachShader(prog_z, compile(GL_VERTEX_SHADER, zvs_src));
+	glAttachShader(prog_z, compile(GL_FRAGMENT_SHADER, fs_src));
+	glBindAttribLocation(prog_z, 0, "a_pos");
+	glBindAttribLocation(prog_z, 1, "a_color");
+	glLinkProgram(prog_z);
 	prog_uni = link_tex(fs_uniform);
 	prog_vu = link_tex(fs_var_uniform);
 	prog_tu = link_tex(fs_tex_uniform);
