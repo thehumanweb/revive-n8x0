@@ -1,0 +1,27 @@
+omap_spi: receive-only words start on the TX write, not on channel enable
+
+In receive-only mode (TRM = 1) the model clocked a word whenever the
+channel was enabled. McSPI starts the first receive-only word with a
+(dummy) write to MCSPI_TX, which Linux's omap2-mcspi does after enabling
+the channel; later words start when MCSPI_RX is read with the channel
+enabled. Linux also re-enables the channel after the last read, so the
+model clocked an extra word there, dropping a response byte. With the
+N810 panel (MIPID on McSPI1) the display ID read back as 00 83 8f
+instead of 83 8f 03.
+
+diff --git a/hw/ssi/omap_spi.c b/hw/ssi/omap_spi.c
+index 8f85c3e39..dd2f25dce 100644
+--- a/hw/ssi/omap_spi.c
++++ b/hw/ssi/omap_spi.c
+@@ -315,7 +315,10 @@ static void omap_mcspi_write(void *opaque, hwaddr addr,
+     case 0x48: ch ++;
+         /* fall through */
+     case 0x34:	/* MCSPI_CHCTRL */
+-        if (value & ~s->ch[ch].control & 1) {		/* EN */
++        /* In receive-only mode the first word starts with a (dummy)
++         * write to MCSPI_TX, not with the channel enable.  */
++        if ((value & ~s->ch[ch].control & 1) &&		/* EN */
++                        ((s->ch[ch].config >> 12) & 3) != 1) {	/* TRM */
+             s->ch[ch].control |= 1;
+             omap_mcspi_transfer_run(s, ch);
+         } else

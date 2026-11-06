@@ -1,0 +1,120 @@
+omap_uart: model configuration mode B and TCR/TLR
+
+With LCR = 0xBF the OMAP UART maps EFR, XON1/2 and XOFF1/2 at offsets 2 and
+4-7; with EFR[4] and MCR[6] set, TCR and TLR appear at 6 and 7. QEMU passed
+these accesses to the 16550 core, so Linux's omap-serial writing XON1 = 0x11
+in mode B (set_termios) set MCR LOOP: the console then looped back to
+itself and nothing more reached the host after ~1.4 s. EFR writes landed in
+FCR. Put a region in front of the 16550 that keeps these registers
+separately and passes everything else through.
+
+QEMU 9.1.3: serial_mm_init() returns a SerialMM; the 16550 state is its .serial.
+
+diff --git a/hw/char/omap_uart.c b/hw/char/omap_uart.c
+index 1f7040e7d..6487aac0f 100644
+--- a/hw/char/omap_uart.c
++++ b/hw/char/omap_uart.c
+@@ -39,10 +39,27 @@ struct omap_uart_s {
+     uint8_t mdr[2];
+     uint8_t scr;
+     uint8_t clksel;
++
++    /* Registers the 16550 core doesn't have: configuration mode B (LCR =
++     * 0xBF) puts EFR, XON1/2 and XOFF1/2 at offsets 2 and 4-7, and with
++     * EFR[4] and MCR[6] set, TCR and TLR appear at 6 and 7. */
++    MemoryRegion regs16550;
++    uint8_t efr;
++    uint8_t xon[2];
++    uint8_t xoff[2];
++    uint8_t tcr;
++    uint8_t tlr;
++    uint8_t tcrtlr;     /* MCR[6], which the 16550 core masks off */
+ };
+ 
+ void omap_uart_reset(struct omap_uart_s *s)
+ {
++    s->efr = 0;
++    s->xon[0] = s->xon[1] = 0;
++    s->xoff[0] = s->xoff[1] = 0;
++    s->tcr = 0x0f;
++    s->tlr = 0;
++    s->tcrtlr = 0;
+     s->eblr = 0x00;
+     s->syscontrol = 0;
+     s->wkup = 0x3f;
+@@ -50,6 +67,62 @@ void omap_uart_reset(struct omap_uart_s *s)
+     s->clksel = 0;
+ }
+ 
++/* Which OMAP-only register, if any, a 16550-range access goes to */
++static uint8_t *omap_uart_shadow_reg(struct omap_uart_s *s, int reg)
++{
++    int mode_b = s->serial->serial.lcr == 0xbf;
++    int tcr_tlr = (s->efr & 0x10) && s->tcrtlr;
++
++    switch (reg) {
++    case 2:
++        return mode_b ? &s->efr : NULL;
++    case 4:
++        return mode_b ? &s->xon[0] : NULL;
++    case 5:
++        return mode_b ? &s->xon[1] : NULL;
++    case 6:
++        return tcr_tlr ? &s->tcr : mode_b ? &s->xoff[0] : NULL;
++    case 7:
++        return tcr_tlr ? &s->tlr : mode_b ? &s->xoff[1] : NULL;
++    }
++    return NULL;
++}
++
++static uint64_t omap_uart_16550_read(void *opaque, hwaddr addr,
++                                     unsigned size)
++{
++    struct omap_uart_s *s = (struct omap_uart_s *) opaque;
++    uint8_t *shadow = omap_uart_shadow_reg(s, addr >> 2);
++
++    if (shadow) {
++        return *shadow;
++    }
++    return serial_io_ops.read(&s->serial->serial, addr >> 2, 1);
++}
++
++static void omap_uart_16550_write(void *opaque, hwaddr addr,
++                                  uint64_t value, unsigned size)
++{
++    struct omap_uart_s *s = (struct omap_uart_s *) opaque;
++    uint8_t *shadow = omap_uart_shadow_reg(s, addr >> 2);
++
++    value &= 0xff;
++    if (shadow) {
++        *shadow = value;
++        return;
++    }
++    if ((addr >> 2) == 4) {     /* MCR */
++        s->tcrtlr = value & 0x40;
++    }
++    serial_io_ops.write(&s->serial->serial, addr >> 2, value, 1);
++}
++
++static const MemoryRegionOps omap_uart_16550_ops = {
++    .read = omap_uart_16550_read,
++    .write = omap_uart_16550_write,
++    .endianness = DEVICE_NATIVE_ENDIAN,
++};
++
+ struct omap_uart_s *omap_uart_init(hwaddr base,
+                 qemu_irq irq, omap_clk fclk, omap_clk iclk,
+                 qemu_irq txdma, qemu_irq rxdma,
+@@ -64,6 +137,12 @@ struct omap_uart_s *omap_uart_init(hwaddr base,
+                                omap_clk_getrate(fclk) / 16,
+                                chr ?: qemu_chr_new(label, "null", NULL),
+                                DEVICE_NATIVE_ENDIAN);
++    omap_uart_reset(s);
++    /* In front of the 16550 core's region at the same address */
++    memory_region_init_io(&s->regs16550, NULL, &omap_uart_16550_ops, s,
++                          "omap.uart.16550", 0x20);
++    memory_region_add_subregion_overlap(get_system_memory(), base,
++                                        &s->regs16550, 1);
+     return s;
+ }
+ 

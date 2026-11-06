@@ -1,0 +1,26 @@
+n810: the LM8323 keyboard is on the second I2C bus
+
+Nokia attached the N810 keyboard controller (0x45) to I2C2, with the
+AIC33 audio codec (OpenWrt's 3.1 board-n8x0.c, n810_i2c_board_info_2); the model had it on
+I2C1 with Menelaus. A kernel describing the hardware found no keyboard.
+
+QEMU 9.1.3: i2c_slave_create_simple().
+
+diff --git a/hw/arm/nseries.c b/hw/arm/nseries.c
+index 43bad0809..fb454794c 100644
+--- a/hw/arm/nseries.c
++++ b/hw/arm/nseries.c
+@@ -418,9 +418,10 @@ static void n810_kbd_setup(struct n800_s *s)
+ 
+     qemu_add_kbd_event_handler(n810_key_event, s);
+ 
+-    /* Attach the LM8322 keyboard to the I2C bus,
+-     * should happen in n8x0_i2c_setup and s->kbd be initialised here.  */
+-    s->kbd = DEVICE(i2c_slave_create_simple(omap_i2c_bus(s->mpu->i2c[0]),
++    /* Attach the LM8323 keyboard to the second I2C bus, as on the board
++     * (with the AIC33 codec), should happen in n8x0_i2c_setup and s->kbd
++     * be initialised here.  */
++    s->kbd = DEVICE(i2c_slave_create_simple(omap_i2c_bus(s->mpu->i2c[1]),
+                                             TYPE_LM8323, N810_LM8323_ADDR));
+     qdev_connect_gpio_out(s->kbd, 0, kbd_irq);
+ }

@@ -1,0 +1,26 @@
+lm832x: don't lose the first key event after configuration
+
+READ_FIFO advances past the FIFO's first byte, the last event already
+serviced (as the comment in the model shows the chip doing), and
+returns nothing while only that byte is left. Configuring the chip
+emptied the FIFO completely, so the first key event took the place of
+that byte and was never returned: the first key press after boot was
+lost and only its release reported. Start with an empty "last
+serviced" byte instead.
+
+diff --git a/hw/input/lm832x.c b/hw/input/lm832x.c
+index 59e5567af..18fbd2dcf 100644
+--- a/hw/input/lm832x.c
++++ b/hw/input/lm832x.c
+@@ -268,7 +268,10 @@ static void lm_kbd_write(LM823KbdState *s, int reg, int byte, uint8_t value)
+          * warnings.  */
+         s->status = 0;
+         lm_kbd_irq_update(s);
+-        s->kbd.len = 0;
++        /* READ_FIFO returns the events after the one at the start, which
++         * is the last event serviced: none yet */
++        s->kbd.fifo[0] = 0x00;
++        s->kbd.len = 1;
+         s->kbd.start = 0;
+         s->reg = LM832x_GENERAL_ERROR;
+         break;

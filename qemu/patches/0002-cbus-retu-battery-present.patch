@@ -1,0 +1,21 @@
+cbus: Retu reports a battery
+
+Retu's STATUS bit 8 (BATAVAIL) is "battery present". QEMU's model leaves it
+clear, so Maemo's BME identifies no battery (type -1) and the device powers
+off a few seconds after boot. The ADC defaults already describe a plausible
+battery (BSI 962, NTC 252, VBAT 592: ~1.2 Ah, ~30 C, ~3.79 V with BME's
+default calibration), so mark it present.
+
+diff --git a/hw/misc/cbus.c b/hw/misc/cbus.c
+index 653e8ddcd..5a231ec5e 100644
+--- a/hw/misc/cbus.c
++++ b/hw/misc/cbus.c
+@@ -393,7 +393,7 @@ void *retu_init(qemu_irq irq, int vilma)
+     s->irq = irq;
+     s->irqen = 0xffff;
+     s->irqst = 0x0000;
+-    s->status = 0x0020;
++    s->status = 0x0120;	/* BATAVAIL */
+     s->is_vilma = !!vilma;
+     s->rtc.cal = 0x01;
+     s->result[retu_adc_bsi] = 0x3c2;

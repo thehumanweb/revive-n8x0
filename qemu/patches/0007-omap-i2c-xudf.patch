@@ -1,0 +1,36 @@
+omap_i2c: set XUDF along with XRDY while transmitting
+
+QEMU sends bytes instantly, so whenever XRDY is raised mid-transfer the
+transmit buffer and shift register are empty: a transmit underflow. Linux's
+i2c-omap applies erratum i462 to revisions up to 0x3c (the 2420 included)
+and waits for XUDF before each data write; without it every wait timed out
+("timeout waiting on XUDF bit").
+
+diff --git a/hw/i2c/omap_i2c.c b/hw/i2c/omap_i2c.c
+index e5d205dda..ebbe4f892 100644
+--- a/hw/i2c/omap_i2c.c
++++ b/hw/i2c/omap_i2c.c
+@@ -86,6 +86,8 @@ static void omap_i2c_fifo_run(OMAPI2CState *s)
+                                         (s->fifo >> ((-- s->txlen) << 3)) &
+                                         0xff) >= 0);
+             s->stat |= 1 << 4;					/* XRDY */
++            /* sending is instant, so the buffer and shifter are empty */
++            s->stat |= 1 << 10;					/* XUDF */
+         } else {
+             while (s->rxlen < 4)
+                 s->fifo |= i2c_recv(s->bus) << ((s->rxlen ++) << 3);
+@@ -99,9 +101,12 @@ static void omap_i2c_fifo_run(OMAPI2CState *s)
+                                         0xff) >= 0);
+                 s->count_cur --;
+             }
+-            if (ack && s->count_cur)
++            if (ack && s->count_cur) {
+                 s->stat |= 1 << 4;				/* XRDY */
+-            else
++                /* sending is instant: buffer and shifter are empty with
++                 * bytes still to go, i.e. a transmit underflow */
++                s->stat |= 1 << 10;				/* XUDF */
++            } else
+                 s->stat &= ~(1 << 4);				/* XRDY */
+             if (!s->count_cur) {
+                 s->stat |= 1 << 2;				/* ARDY */

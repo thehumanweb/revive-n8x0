@@ -1,0 +1,86 @@
+omap2: model the RNG
+
+Nothing was mapped at 0x480a0000, so Linux's omap-rng read zeros from
+RNG_OUT and, as a hardware RNG of quality 900, credited them to the
+kernel's entropy pool ("random: crng init done" right after it): keys
+generated in the guest (e.g. dropbear's host keys) started from nothing.
+Model RNG_OUT with random words (glib, seeded from the host), RNG_STAT
+always ready, RNG_CONFIG, RNG_REV, SYSCONFIG and SYSSTATUS.
+
+diff --git a/hw/arm/omap2.c b/hw/arm/omap2.c
+index df179d15e..b33144c80 100644
+--- a/hw/arm/omap2.c
++++ b/hw/arm/omap2.c
+@@ -2033,6 +2033,64 @@ static const MemoryRegionOps omap2_sysc_stub_ops = {
+     .endianness = DEVICE_NATIVE_ENDIAN,
+ };
+ 
++/* RNG: random words in RNG_OUT, always ready (RNG_STAT 0 = not busy) */
++struct omap2_rng_s {
++    MemoryRegion iomem;
++    uint32_t config;
++    uint32_t sysconfig;
++};
++
++static uint64_t omap2_rng_read(void *opaque, hwaddr addr, unsigned size)
++{
++    struct omap2_rng_s *s = opaque;
++
++    switch (addr) {
++    case 0x00:  /* RNG_OUT */
++        return g_random_int();
++    case 0x04:  /* RNG_STAT */
++        return 0;
++    case 0x28:  /* RNG_CONFIG */
++        return s->config;
++    case 0x3c:  /* RNG_REV */
++        return 0x10;
++    case 0x40:  /* RNG_SYSCONFIG */
++        return s->sysconfig;
++    case 0x44:  /* RNG_SYSSTATUS */
++        return 1;           /* RESETDONE */
++    }
++    return 0;
++}
++
++static void omap2_rng_write(void *opaque, hwaddr addr, uint64_t value,
++                            unsigned size)
++{
++    struct omap2_rng_s *s = opaque;
++
++    switch (addr) {
++    case 0x28:
++        s->config = value;
++        break;
++    case 0x40:
++        s->sysconfig = value & ~2;  /* SOFTRESET completes at once */
++        break;
++    }
++}
++
++static const MemoryRegionOps omap2_rng_ops = {
++    .read = omap2_rng_read,
++    .write = omap2_rng_write,
++    .endianness = DEVICE_NATIVE_ENDIAN,
++};
++
++static void omap2_rng_init(MemoryRegion *sysmem, hwaddr base)
++{
++    struct omap2_rng_s *s = g_malloc0(sizeof(*s));
++
++    memory_region_init_io(&s->iomem, NULL, &omap2_rng_ops, s, "omap2.rng",
++                          0x1000);
++    memory_region_add_subregion(sysmem, base, &s->iomem);
++}
++
+ static void omap2_sysc_stub_init(MemoryRegion *sysmem, hwaddr base,
+                                  const char *name, hwaddr sysc, hwaddr syss)
+ {
+@@ -2629,6 +2687,7 @@ struct omap_mpu_state_s *omap2420_mpu_init(MemoryRegion *sdram,
+     omap_tap_init(omap_l4ta(s->l4, 2), s);
+ 
+     omap2_wdt_init(sysmem, 0x48022000);
++    omap2_rng_init(sysmem, 0x480a0000);
+     omap2_sysc_stub_init(sysmem, 0x480a4000, "omap2.sham", 0x60, 0x64);
+     omap2_sysc_stub_init(sysmem, 0x480a6000, "omap2.aes", 0x48, 0x4c);
+     omap2_sysc_stub_init(sysmem, 0x480b2000, "omap2.hdq1w", 0x14, 0x18);

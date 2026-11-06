@@ -1,0 +1,4 @@
+*
+!patches/
+!patches/**
+!src/qemu-9.1.3.tar.xz

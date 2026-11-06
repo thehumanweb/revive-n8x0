@@ -1,0 +1,27 @@
+# n810-qemu:9.1: QEMU 9.1.3 from source with patches/, for the
+# n800/n810 machines (9.1 is the last QEMU with them). It keeps the build
+# tools, so MBX trees (prepare-tree.sh --mbx) build with it too. The MBX
+# device isn't in this image; see README.md. After qemu/fetch-qemu.sh 9.1.3,
+# from the repository's top:
+#   docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) \
+#       -f qemu/docker/Dockerfile.9.1 -t n810-qemu:9.1 qemu
+FROM ubuntu:24.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential pkg-config python3 python3-venv ninja-build \
+      zlib1g-dev libglib2.0-dev libpixman-1-dev libfdt-dev libslirp-dev \
+      flex bison xz-utils patch ca-certificates gdb \
+    && rm -rf /var/lib/apt/lists/*
+COPY src/qemu-9.1.3.tar.xz /tmp/
+COPY patches /tmp/qemu-patches
+RUN cd /tmp && tar xf qemu-9.1.3.tar.xz && cd qemu-9.1.3 \
+    && for p in /tmp/qemu-patches/*.patch; do patch -p1 < $p; done \
+    && mkdir build && cd build \
+    && ../configure --target-list=arm-softmmu --disable-werror --disable-docs \
+         --disable-sdl --disable-gtk --disable-vnc --enable-slirp --disable-download \
+         --prefix=/usr/local \
+    && ninja qemu-system-arm && ninja install && cd / && rm -rf /tmp/qemu-9.1.3* /tmp/qemu-patches
+ARG UID=1000
+ARG GID=1000
+RUN (getent group $GID || groupadd -g $GID build) && useradd -m -u $UID -g $GID -o build
+USER build
+WORKDIR /work

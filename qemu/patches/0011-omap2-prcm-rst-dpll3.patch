@@ -1,0 +1,21 @@
+omap2: PRCM: RST_DPLL3 resets the machine too
+
+RM_RSTCTRL_WKUP has two reset bits: RST_GS (bit 1, global software
+reset) and RST_DPLL3 (bit 2, DPLL reset). Both reboot the 2420; the model
+only acted on RST_GS. Linux's OMAP2xxx restart uses RST_DPLL3
+(omap2xxx_prm_dpll_reset), so a reboot just hung.
+
+diff --git a/hw/arm/omap2.c b/hw/arm/omap2.c
+index 417e6050f..df179d15e 100644
+--- a/hw/arm/omap2.c
++++ b/hw/arm/omap2.c
+@@ -1614,8 +1614,7 @@ static void omap_prcm_write(void *opaque, hwaddr addr,
+         /* TODO update clocks */
+         break;
+     case 0x450:	/* RM_RSTCTRL_WKUP */
+-        /* TODO: reset */
+-        if (value & 2)
++        if (value & 6)				/* RST_GS, RST_DPLL3 */
+             qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+         break;
+     case 0x454:	/* RM_RSTTIME_WKUP */

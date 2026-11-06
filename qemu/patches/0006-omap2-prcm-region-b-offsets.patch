@@ -1,0 +1,47 @@
+omap2: decode PRCM region B at its real offsets
+
+The PRCM is two 2 KiB L4 regions, A at 0x48008000 and B at 0x48008800, both
+mapped with the same ops, so region B accesses arrive as 0x000-0x7ff while
+the switch expects 0x800-0xfff (CM_*_DSP, CM_CLKSEL_DSP, ...). Reads of
+CM_CLKSEL_DSP returned 0 ("omap_prcm_read: Bad register 0x000040"; Linux:
+dsp_fck/dsp_ick/iva1_ifck "Zero divisor"), and region B writes landed on
+region A registers. Give region B its own ops that add 0x800.
+
+diff --git a/hw/arm/omap2.c b/hw/arm/omap2.c
+index d9683276c..fad768b8a 100644
+--- a/hw/arm/omap2.c
++++ b/hw/arm/omap2.c
+@@ -1728,6 +1728,24 @@ static void omap_prcm_write(void *opaque, hwaddr addr,
+     }
+ }
+ 
++/* Region B (0x800-0xfff) is a separate 2 KiB region; decode it at +0x800 */
++static uint64_t omap_prcm_b_read(void *opaque, hwaddr addr, unsigned size)
++{
++    return omap_prcm_read(opaque, addr + 0x800, size);
++}
++
++static void omap_prcm_b_write(void *opaque, hwaddr addr, uint64_t value,
++                              unsigned size)
++{
++    omap_prcm_write(opaque, addr + 0x800, value, size);
++}
++
++static const MemoryRegionOps omap_prcm_b_ops = {
++    .read = omap_prcm_b_read,
++    .write = omap_prcm_b_write,
++    .endianness = DEVICE_NATIVE_ENDIAN,
++};
++
+ static const MemoryRegionOps omap_prcm_ops = {
+     .read = omap_prcm_read,
+     .write = omap_prcm_write,
+@@ -1828,7 +1846,7 @@ static struct omap_prcm_s *omap_prcm_init(struct omap_target_agent_s *ta,
+ 
+     memory_region_init_io(&s->iomem0, NULL, &omap_prcm_ops, s, "omap.pcrm0",
+                           omap_l4_region_size(ta, 0));
+-    memory_region_init_io(&s->iomem1, NULL, &omap_prcm_ops, s, "omap.pcrm1",
++    memory_region_init_io(&s->iomem1, NULL, &omap_prcm_b_ops, s, "omap.pcrm1",
+                           omap_l4_region_size(ta, 1));
+     omap_l4_attach(ta, 0, &s->iomem0);
+     omap_l4_attach(ta, 1, &s->iomem1);

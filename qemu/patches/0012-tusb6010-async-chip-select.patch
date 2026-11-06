@@ -1,0 +1,27 @@
+tusb6010: both chip selects reach the registers
+
+tusb6010_init() set up only its second MMIO region (the register ops),
+and n8x0 maps region 0 at the asynchronous GPMC chip select (CS1),
+region 1 at the synchronous one (CS4). Region 0 was an empty, never
+initialised MemoryRegion, so the PIO register window Linux uses (async)
+read as zero: "tusb: Unable to detect TUSB6010". On the chip both chip
+selects reach the same registers (async for PIO, sync for DMA bursts).
+
+diff --git a/hw/usb/tusb6010.c b/hw/usb/tusb6010.c
+index 1dd4071e6..d5a9669a0 100644
+--- a/hw/usb/tusb6010.c
++++ b/hw/usb/tusb6010.c
+@@ -818,8 +818,12 @@ static void tusb6010_realize(DeviceState *dev, Error **errp)
+ 
+     s->otg_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tusb_otg_tick, s);
+     s->pwr_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tusb_power_tick, s);
+-    memory_region_init_io(&s->iomem[1], OBJECT(s), &tusb_async_ops, s,
++    /* Both chip selects reach the same registers: the asynchronous one
++     * (region 0) for PIO, the synchronous one (region 1) for DMA bursts */
++    memory_region_init_io(&s->iomem[0], OBJECT(s), &tusb_async_ops, s,
+                           "tusb-async", UINT32_MAX);
++    memory_region_init_io(&s->iomem[1], OBJECT(s), &tusb_async_ops, s,
++                          "tusb-sync", UINT32_MAX);
+     sysbus_init_mmio(sbd, &s->iomem[0]);
+     sysbus_init_mmio(sbd, &s->iomem[1]);
+     sysbus_init_irq(sbd, &s->irq);

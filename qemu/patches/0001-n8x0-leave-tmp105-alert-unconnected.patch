@@ -1,0 +1,34 @@
+n8x0: leave the TMP105 alert line unconnected
+
+Maemo's 2.6.21 tmp105 driver requests its GPIO IRQ before INIT_WORK, and
+QEMU's model raises the alert line as soon as the driver programs it, so
+the stock RX-44 kernel hits BUG() in queue_work() during boot. Nothing we
+run needs the alert; DSME reads the temperature through hwmon.
+
+QEMU 9.1.3: i2c_slave_create_simple() and TYPE_TMP105 instead of i2c_create_slave().
+
+diff --git a/hw/arm/nseries.c b/hw/arm/nseries.c
+index 35364312c..dff01c4ca 100644
+--- a/hw/arm/nseries.c
++++ b/hw/arm/nseries.c
+@@ -214,7 +214,6 @@ static Notifier n8x0_system_powerdown_notifier = {
+ static void n8x0_i2c_setup(struct n800_s *s)
+ {
+     DeviceState *dev;
+-    qemu_irq tmp_irq = qdev_get_gpio_in(s->mpu->gpio, N8X0_TMP105_GPIO);
+     I2CBus *i2c = omap_i2c_bus(s->mpu->i2c[0]);
+ 
+     /* Attach a menelaus PM chip */
+@@ -226,9 +225,9 @@ static void n8x0_i2c_setup(struct n800_s *s)
+     n8x0_system_powerdown = qdev_get_gpio_in(dev, 3);
+     qemu_register_powerdown_notifier(&n8x0_system_powerdown_notifier);
+ 
+-    /* Attach a TMP105 PM chip (A0 wired to ground) */
+-    dev = DEVICE(i2c_slave_create_simple(i2c, TYPE_TMP105, N8X0_TMP105_ADDR));
+-    qdev_connect_gpio_out(dev, 0, tmp_irq);
++    /* Attach a TMP105 PM chip (A0 wired to ground). Alert left
++     * unconnected: see 0001-n8x0-leave-tmp105-alert-unconnected.patch */
++    i2c_slave_create_simple(i2c, TYPE_TMP105, N8X0_TMP105_ADDR);
+ }
+ 
+ /* Touchscreen and keypad controller */

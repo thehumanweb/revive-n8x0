@@ -1,0 +1,348 @@
+n810: LP5521 LED driver and TSL2563 light sensor models
+
+The N810 has both on the LM8323's I2C bus (Maemo: i2c_omap.2/i2c-0/0-0032
+and 0-0029); nseries.c listed them as not emulated, so Linux's drivers
+for them failed to probe. Minimal models:
+
+- lp5521: the register file with the reset defaults (R/G/B current
+  0xaf, which leds-lp5521 checks after reset), enable read-back, program
+  memory. The engines don't run.
+- tsl2563: command-byte register access with auto-increment, ID 0x70
+  (model 7, rev. 0, as the N810's), and ADC channels from the "ch0" and
+  "ch1" properties (default about 300 lux) while powered up. The
+  interrupt pin isn't modelled.
+
+QEMU 9.1.3: Built from hw/misc/meson.build under CONFIG_NSERIES; realize instead of
+the I2C init hook, event returns int, recv returns uint8_t.
+
+diff --git a/hw/arm/nseries.c b/hw/arm/nseries.c
+index fb454794c..5fabc9aed 100644
+--- a/hw/arm/nseries.c
++++ b/hw/arm/nseries.c
+@@ -424,6 +424,11 @@ static void n810_kbd_setup(struct n800_s *s)
+     s->kbd = DEVICE(i2c_slave_create_simple(omap_i2c_bus(s->mpu->i2c[1]),
+                                             TYPE_LM8323, N810_LM8323_ADDR));
+     qdev_connect_gpio_out(s->kbd, 0, kbd_irq);
++
++    /* On the same bus: the LP5521 LED driver and the TSL2563 light
++     * sensor (Maemo: i2c_omap.2/i2c-0/0-0032, 0-0029) */
++    i2c_slave_create_simple(omap_i2c_bus(s->mpu->i2c[1]), "lp5521", 0x32);
++    i2c_slave_create_simple(omap_i2c_bus(s->mpu->i2c[1]), "tsl2563", 0x29);
+ }
+ 
+ /* LCD MIPI DBI-C controller (URAL) */
+diff --git a/hw/misc/lp5521.c b/hw/misc/lp5521.c
+new file mode 100644
+index 000000000..396d5146e
+--- /dev/null
++++ b/hw/misc/lp5521.c
+@@ -0,0 +1,121 @@
++/*
++ * National Semiconductor LP5521 three-channel LED driver (I2C).
++ *
++ * Registers only: the engines don't run, the outputs aren't shown.
++ * Enough for Linux's leds-lp5521: reset, the enable read-back, the
++ * R current default, direct PWM, program memory.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 or
++ * (at your option) version 3 of the License.
++ */
++
++#include "qemu/osdep.h"
++#include "hw/i2c/i2c.h"
++#include "hw/qdev-properties.h"
++#include "migration/vmstate.h"
++#include "qemu/module.h"
++
++#define LP5521_RESET	0x0d
++#define LP5521_REGS	0x70
++
++#define TYPE_LP5521 "lp5521"
++#define LP5521(obj) OBJECT_CHECK(LP5521State, (obj), TYPE_LP5521)
++
++typedef struct LP5521State {
++    I2CSlave i2c;
++    uint8_t reg[LP5521_REGS];
++    uint8_t ptr;
++    int cycle;
++} LP5521State;
++
++static void lp5521_reset(LP5521State *s)
++{
++    memset(s->reg, 0, sizeof(s->reg));
++    s->reg[0x05] = 0xaf;	/* R, G, B current: 17.5 mA */
++    s->reg[0x06] = 0xaf;
++    s->reg[0x07] = 0xaf;
++}
++
++static int lp5521_event(I2CSlave *i2c, enum i2c_event event)
++{
++    LP5521State *s = LP5521(i2c);
++
++    if (event == I2C_START_SEND)
++        s->cycle = 0;
++    return 0;
++}
++
++static uint8_t lp5521_rx(I2CSlave *i2c)
++{
++    LP5521State *s = LP5521(i2c);
++    uint8_t val = s->ptr < LP5521_REGS ? s->reg[s->ptr] : 0;
++
++    if (s->ptr == 0x0c)		/* STATUS: engine interrupts, cleared */
++        s->reg[0x0c] = 0;
++    s->ptr++;
++    return val;
++}
++
++static int lp5521_tx(I2CSlave *i2c, uint8_t data)
++{
++    LP5521State *s = LP5521(i2c);
++
++    if (!s->cycle++) {
++        s->ptr = data;
++        return 0;
++    }
++    if (s->ptr == LP5521_RESET) {
++        if (data == 0xff)
++            lp5521_reset(s);
++    } else if (s->ptr < LP5521_REGS && s->ptr != 0x0c) {
++        s->reg[s->ptr] = data;
++    }
++    s->ptr++;
++    return 0;
++}
++
++static const VMStateDescription vmstate_lp5521 = {
++    .name = TYPE_LP5521,
++    .version_id = 0,
++    .minimum_version_id = 0,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT8_ARRAY(reg, LP5521State, LP5521_REGS),
++        VMSTATE_UINT8(ptr, LP5521State),
++        VMSTATE_INT32(cycle, LP5521State),
++        VMSTATE_I2C_SLAVE(i2c, LP5521State),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static void lp5521_realize(DeviceState *dev, Error **errp)
++{
++    lp5521_reset(LP5521(dev));
++}
++
++static void lp5521_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
++
++    dc->realize = lp5521_realize;
++    k->event = lp5521_event;
++    k->recv = lp5521_rx;
++    k->send = lp5521_tx;
++    dc->vmsd = &vmstate_lp5521;
++}
++
++static const TypeInfo lp5521_info = {
++    .name          = TYPE_LP5521,
++    .parent        = TYPE_I2C_SLAVE,
++    .instance_size = sizeof(LP5521State),
++    .class_init    = lp5521_class_init,
++};
++
++static void lp5521_register_types(void)
++{
++    type_register_static(&lp5521_info);
++}
++
++type_init(lp5521_register_types)
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 2ca8717be..45ad17003 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -51,7 +51,7 @@ system_ss.add(when: 'CONFIG_ALLWINNER_R40', if_true: files('allwinner-r40-ccu.c'
+ system_ss.add(when: 'CONFIG_ALLWINNER_R40', if_true: files('allwinner-r40-dramc.c'))
+ system_ss.add(when: 'CONFIG_AXP2XX_PMU', if_true: files('axp2xx.c'))
+ system_ss.add(when: 'CONFIG_REALVIEW', if_true: files('arm_sysctl.c'))
+-system_ss.add(when: 'CONFIG_NSERIES', if_true: files('cbus.c'))
++system_ss.add(when: 'CONFIG_NSERIES', if_true: files('cbus.c', 'lp5521.c', 'tsl2563.c'))
+ system_ss.add(when: 'CONFIG_ECCMEMCTL', if_true: files('eccmemctl.c'))
+ system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_pmu.c', 'exynos4210_clk.c', 'exynos4210_rng.c'))
+ system_ss.add(when: 'CONFIG_IMX', if_true: files(
+diff --git a/hw/misc/tsl2563.c b/hw/misc/tsl2563.c
+new file mode 100644
+index 000000000..0054209ac
+--- /dev/null
++++ b/hw/misc/tsl2563.c
+@@ -0,0 +1,169 @@
++/*
++ * TAOS TSL2563 ambient light sensor (I2C).
++ *
++ * The command byte (bit 7 set) selects a register, which then
++ * auto-increments for SMBus word and block transfers. The two ADC
++ * channels read the "ch0" (visible + IR) and "ch1" (IR) properties
++ * while the chip is powered up; the interrupt pin is not modelled.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 or
++ * (at your option) version 3 of the License.
++ */
++
++#include "qemu/osdep.h"
++#include "hw/i2c/i2c.h"
++#include "hw/qdev-properties.h"
++#include "migration/vmstate.h"
++#include "qemu/module.h"
++
++#define TSL2563_CMD	0x80
++#define TSL2563_CLEARINT 0x40
++
++#define TYPE_TSL2563 "tsl2563"
++#define TSL2563(obj) OBJECT_CHECK(TSL2563State, (obj), TYPE_TSL2563)
++
++typedef struct TSL2563State {
++    I2CSlave i2c;
++    uint8_t ctrl;
++    uint8_t timing;
++    uint8_t thresh[4];
++    uint8_t intr;
++    uint8_t ptr;
++    int cycle;
++    uint16_t ch0;
++    uint16_t ch1;
++} TSL2563State;
++
++static uint8_t tsl2563_read(TSL2563State *s, uint8_t reg)
++{
++    int on = (s->ctrl & 3) == 3;
++
++    switch (reg) {
++    case 0x0:
++        return s->ctrl;
++    case 0x1:
++        return s->timing;
++    case 0x2 ... 0x5:
++        return s->thresh[reg - 2];
++    case 0x6:
++        return s->intr;
++    case 0xa:	/* ID: model 7 (as on the N810), rev. 0 */
++        return 0x70;
++    case 0xc:
++        return on ? s->ch0 : 0;
++    case 0xd:
++        return on ? s->ch0 >> 8 : 0;
++    case 0xe:
++        return on ? s->ch1 : 0;
++    case 0xf:
++        return on ? s->ch1 >> 8 : 0;
++    default:
++        return 0;
++    }
++}
++
++static void tsl2563_write(TSL2563State *s, uint8_t reg, uint8_t val)
++{
++    switch (reg) {
++    case 0x0:
++        s->ctrl = val & 3;
++        break;
++    case 0x1:
++        s->timing = val & 0x1b;
++        break;
++    case 0x2 ... 0x5:
++        s->thresh[reg - 2] = val;
++        break;
++    case 0x6:
++        s->intr = val & 0x3f;
++        break;
++    }
++}
++
++static int tsl2563_event(I2CSlave *i2c, enum i2c_event event)
++{
++    TSL2563State *s = TSL2563(i2c);
++
++    if (event == I2C_START_SEND)
++        s->cycle = 0;
++    return 0;
++}
++
++static uint8_t tsl2563_rx(I2CSlave *i2c)
++{
++    TSL2563State *s = TSL2563(i2c);
++
++    return tsl2563_read(s, s->ptr++ & 0xf);
++}
++
++static int tsl2563_tx(I2CSlave *i2c, uint8_t data)
++{
++    TSL2563State *s = TSL2563(i2c);
++
++    if (!s->cycle++) {
++        if (data & TSL2563_CMD)		/* CLEARINT: nothing pending */
++            s->ptr = data & 0xf;
++        return 0;
++    }
++    tsl2563_write(s, s->ptr++ & 0xf, data);
++    return 0;
++}
++
++static const VMStateDescription vmstate_tsl2563 = {
++    .name = TYPE_TSL2563,
++    .version_id = 0,
++    .minimum_version_id = 0,
++    .fields = (const VMStateField[]) {
++        VMSTATE_UINT8(ctrl, TSL2563State),
++        VMSTATE_UINT8(timing, TSL2563State),
++        VMSTATE_UINT8_ARRAY(thresh, TSL2563State, 4),
++        VMSTATE_UINT8(intr, TSL2563State),
++        VMSTATE_UINT8(ptr, TSL2563State),
++        VMSTATE_INT32(cycle, TSL2563State),
++        VMSTATE_I2C_SLAVE(i2c, TSL2563State),
++        VMSTATE_END_OF_LIST()
++    }
++};
++
++static void tsl2563_realize(DeviceState *dev, Error **errp)
++{
++    TSL2563State *s = TSL2563(dev);
++
++    s->timing = 0x02;		/* 402 ms, gain 1 */
++}
++
++static Property tsl2563_properties[] = {
++    /* About 300 lux at the power-on timing (fluorescent office light) */
++    DEFINE_PROP_UINT16("ch0", TSL2563State, ch0, 2800),
++    DEFINE_PROP_UINT16("ch1", TSL2563State, ch1, 400),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
++static void tsl2563_class_init(ObjectClass *klass, void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
++
++    dc->realize = tsl2563_realize;
++    k->event = tsl2563_event;
++    k->recv = tsl2563_rx;
++    k->send = tsl2563_tx;
++    dc->vmsd = &vmstate_tsl2563;
++    device_class_set_props(dc, tsl2563_properties);
++}
++
++static const TypeInfo tsl2563_info = {
++    .name          = TYPE_TSL2563,
++    .parent        = TYPE_I2C_SLAVE,
++    .instance_size = sizeof(TSL2563State),
++    .class_init    = tsl2563_class_init,
++};
++
++static void tsl2563_register_types(void)
++{
++    type_register_static(&tsl2563_info);
++}
++
++type_init(tsl2563_register_types)

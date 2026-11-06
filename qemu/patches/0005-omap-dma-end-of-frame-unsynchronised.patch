@@ -1,0 +1,22 @@
+omap_dma: raise END_FRAME for unsynchronised transfers too
+
+The end-of-frame interrupt (CICR FRAME_IE) fires at the end of every frame;
+QEMU only raised it for frame-synchronised transfers (sync && fs). Linux's
+omap-dma engine does memcpy as one unsynchronised frame with FRAME_IE as the
+completion interrupt, so every such transfer finished silently. On the N810
+6.18's omap2-onenand driver waited out each one ("timeout waiting for DMA")
+and fell back to PIO.
+
+diff --git a/hw/dma/omap_dma.c b/hw/dma/omap_dma.c
+index 77797a67b..9b1ea8c01 100644
+--- a/hw/dma/omap_dma.c
++++ b/hw/dma/omap_dma.c
+@@ -558,7 +558,7 @@ static void omap_dma_transfer_setup(struct soc_dma_ch_s *dma)
+                     (a->element >= (a->elements >> 1) ? a->elements : 0) -
+                     a->element)
+     INTR_CHECK(
+-                    ch->sync && ch->fs && (ch->interrupts & END_FRAME_INTR),
++                    ch->interrupts & END_FRAME_INTR,
+                     omap_dma_intr_frame,
+                     a->elements - a->element)
+     INTR_CHECK(

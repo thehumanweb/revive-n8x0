@@ -1,0 +1,948 @@
+musb, tusb6010, n8x0: peripheral mode with a built-in USB host
+
+The MUSB model only did host mode, so a guest USB gadget (the N810 as a
+USB device, e.g. g_ether) had nobody to talk to. Add peripheral mode
+with a "gadget host" playing the PC at the other end of the cable:
+
+- When the gadget connects (POWER.SOFTCONN) it raises VBUS and session
+  as a B-device (ID pin floating, mini-B plug), resets the bus after
+  100 ms and enumerates at full speed: device descriptor, SET_ADDRESS,
+  every configuration, then SET_CONFIGURATION for the first one with a
+  CDC ECM function and SET_INTERFACE alt 1 on its data interface.
+- EP0 follows the peripheral CSR0 handshake (SVDRXPKTRDY, TXPKTRDY and
+  DATAEND, SENDSTALL/SENTSTALL); bulk IN packets are collected into
+  Ethernet frames (a short packet ends one), OUT frames are split into
+  max-packet chunks with a zero-length packet after a whole number.
+- The frames go to a QEMU NIC on the TUSB6010. On n810/n800,
+  "-usb -net nic,model=tusb6010 -net user,..." enables it; without it
+  nothing changes (ID grounded, host mode as before).
+
+IN packets are as long as the TUSB6010 is told (XFR_SIZE); the FIFO is
+written in 32-bit words. Writing EP0's FIFO no longer sets bit 1 of
+CSR0 (FIFONOTEMPTY on TX endpoints is TXPKTRDY on EP0).
+
+Also: VBUS_SENSE follows VBUS_VALID; EP0 has its FIFO at offset 0;
+FIFO addresses cover the whole 32 KiB FIFO RAM; FIFO accesses to an
+endpoint without a FIFO are ignored instead of dereferencing NULL.
+
+QEMU 9.1.3: The gadget-host prototypes go in hw/usb/hcd-musb.h; NET_CLIENT_DRIVER_NIC,
+qemu_new_nic() with the reentrancy guard, device_class_set_props(); 9.1
+has no nd_table, so n8x0_usb_setup() asks qemu_configure_nic_device()
+("-net nic,model=tusb6010" or "-nic user,model=tusb6010").
+
+diff --git a/hw/arm/nseries.c b/hw/arm/nseries.c
+index 2f10d9eb7..43bad0809 100644
+--- a/hw/arm/nseries.c
++++ b/hw/arm/nseries.c
+@@ -34,6 +34,7 @@
+ #include "ui/console.h"
+ #include "hw/boards.h"
+ #include "hw/i2c/i2c.h"
++#include "net/net.h"
+ #include "hw/display/blizzard.h"
+ #include "hw/input/lm832x.h"
+ #include "hw/input/tsc2xxx.h"
+@@ -820,6 +821,11 @@ static void n8x0_usb_setup(struct n800_s *s)
+ {
+     SysBusDevice *dev;
+     s->usb = qdev_new("tusb6010");
++    /* "-nic user,model=tusb6010": a USB host on the cable, networking with
++     * the guest's CDC ECM gadget (e.g. g_ether) */
++    if (qemu_configure_nic_device(s->usb, false, NULL)) {
++        qdev_prop_set_bit(s->usb, "gadget-host", true);
++    }
+     dev = SYS_BUS_DEVICE(s->usb);
+     sysbus_realize_and_unref(dev, &error_fatal);
+     sysbus_connect_irq(dev, 0,
+diff --git a/hw/usb/hcd-musb.c b/hw/usb/hcd-musb.c
+index 6dca373cb..3198c278b 100644
+--- a/hw/usb/hcd-musb.c
++++ b/hw/usb/hcd-musb.c
+@@ -18,7 +18,8 @@
+  * You should have received a copy of the GNU General Public License along
+  * with this program; if not, see <http://www.gnu.org/licenses/>.
+  *
+- * Only host-mode and non-DMA accesses are currently supported.
++ * Host mode, and peripheral mode towards a built-in USB host (the "gadget
++ * host", see below); non-DMA accesses only.
+  */
+ #include "qemu/osdep.h"
+ #include "qemu/timer.h"
+@@ -314,6 +315,62 @@ struct MUSBEndPoint {
+     QEMUTimer *intv_timer[2];
+ };
+ 
++/*
++ * The gadget host: in peripheral mode the controller is a B-device, and
++ * this plays the USB host at the other end of the cable. When the guest
++ * connects (POWER.SOFTCONN), it raises VBUS, resets the bus, enumerates
++ * the gadget, selects a CDC ECM configuration (e.g. Linux g_ether) and
++ * then moves Ethernet frames between its bulk endpoints and a QEMU NIC
++ * (the send/ready callbacks). Full speed: 64-byte packets.
++ */
++#define GH_FRAMES       32
++#define GH_FRAME_MAX    2048
++#define GH_POLL_NS      20000           /* while there is work */
++#define GH_TIMEOUT_NS   2000000000LL    /* for one control transfer */
++
++enum { GH_UNPLUGGED, GH_ATTACHED, GH_ENUM, GH_RUNNING, GH_FAILED };
++enum { CTL_START, CTL_SETUP, CTL_DATA_IN, CTL_STATUS, CTL_DONE, CTL_STALL };
++
++typedef struct MUSBGadgetHost {
++    int enabled;
++    void (*send)(void *opaque, const uint8_t *buf, int len);
++    void (*ready)(void *opaque);
++    void *opaque;
++    QEMUTimer *timer;
++
++    int state;
++    int step;
++    int64_t wait_until;
++
++    /* Control transfer on EP0 */
++    int ctl;
++    int64_t ctl_deadline;
++    uint8_t setup[8];
++    uint8_t data[1024];
++    int data_len;
++    int want;
++    int dataend;
++    int stall;
++
++    /* Enumeration results */
++    int num_configs;
++    int cfg_idx;
++    int cfg_value;
++    int data_iface;
++    int ep_in;
++    int ep_out;
++
++    /* Bulk: one frame being assembled from IN, a queue of OUT frames */
++    uint8_t in_frame[GH_FRAME_MAX];
++    int in_len;
++    uint8_t out_frame[GH_FRAMES][GH_FRAME_MAX];
++    int out_frame_len[GH_FRAMES];
++    int out_head;
++    int out_count;
++    int out_pos;
++    int out_zlp;
++} MUSBGadgetHost;
++
+ struct MUSBState {
+     qemu_irq irqs[musb_irq_max];
+     USBBus bus;
+@@ -339,8 +396,15 @@ struct MUSBState {
+         /* Duplicating the world since 2008!...  probably we should have 32
+          * logical, single endpoints instead.  */
+     MUSBEndPoint ep[16];
++
++    MUSBGadgetHost gh;
+ };
+ 
++static void musb_gh_reset(MUSBState *s);
++static void musb_gh_kick(MUSBState *s);
++static void musb_gh_power(MUSBState *s, uint8_t old_power);
++static void musb_gh_csr0_write(MUSBState *s, uint16_t value);
++
+ void musb_reset(MUSBState *s)
+ {
+     int i;
+@@ -360,6 +424,12 @@ void musb_reset(MUSBState *s)
+     s->session = 0;
+     memset(s->buf, 0, sizeof(s->buf));
+ 
++    /* EP0 has its fixed 64 bytes at the start of the FIFO RAM */
++    s->ep[0].buf[0] = s->buf;
++    s->ep[0].buf[1] = s->buf;
++
++    musb_gh_reset(s);
++
+     /* TODO: _DW */
+     s->ep[0].config = MGC_M_CONFIGDATA_SOFTCONE | MGC_M_CONFIGDATA_DYNFIFO;
+     for (i = 0; i < 16; i ++) {
+@@ -457,6 +527,10 @@ void musb_core_intr_clear(MUSBState *s, uint32_t mask)
+         if (!s->tx_intr)
+             qemu_irq_lower(s->irqs[musb_irq_tx]);
+     }
++
++    if (s->gh.enabled) {
++        musb_gh_kick(s);
++    }
+ }
+ 
+ void musb_set_size(MUSBState *s, int epnum, int size, int is_tx)
+@@ -939,6 +1013,9 @@ static void musb_rx_req(MUSBState *s, int epnum)
+ static uint8_t musb_read_fifo(MUSBEndPoint *ep)
+ {
+     uint8_t value;
++    if (!ep->buf[1]) {
++        return 0x00;
++    }
+     if (ep->fifolen[1] >= 64) {
+         /* We have a FIFO underrun */
+         TRACE("EP%d FIFO is now empty, stop reading", ep->epnum);
+@@ -956,6 +1033,9 @@ static uint8_t musb_read_fifo(MUSBEndPoint *ep)
+ static void musb_write_fifo(MUSBEndPoint *ep, uint8_t value)
+ {
+     TRACE("EP%d = %02x", ep->epnum, value);
++    if (!ep->buf[0]) {
++        return;
++    }
+     if (ep->fifolen[0] >= 64) {
+         /* We have a FIFO overrun */
+         TRACE("EP%d FIFO exceeded 64 bytes, stop feeding data", ep->epnum);
+@@ -963,7 +1043,10 @@ static void musb_write_fifo(MUSBEndPoint *ep, uint8_t value)
+      }
+ 
+      ep->buf[0][ep->fifostart[0] + ep->fifolen[0] ++] = value;
+-     ep->csr[0] |= MGC_M_TXCSR_FIFONOTEMPTY;
++     /* On EP0 that bit is TXPKTRDY, which only the CPU sets */
++     if (ep->epnum) {
++         ep->csr[0] |= MGC_M_TXCSR_FIFONOTEMPTY;
++     }
+ }
+ 
+ static void musb_ep_frame_cancel(MUSBEndPoint *ep, int dir)
+@@ -1155,6 +1238,26 @@ static void musb_ep_writeh(void *opaque, int ep, int addr, uint16_t value)
+         s->ep[ep].maxp[0] = value;
+         break;
+     case MUSB_HDRC_TXCSR:
++        if (s->gh.enabled) {
++            if (!ep) {
++                musb_gh_csr0_write(s, value);
++                break;
++            }
++            /* Peripheral TXCSR: the host takes the packet (musb_gh_tick) */
++            s->ep[ep].csr[0] &= value & 0xa6;
++            s->ep[ep].csr[0] |= value & 0xff59;
++            if (value & MGC_M_TXCSR_FLUSHFIFO) {
++                s->ep[ep].fifolen[0] = 0;
++                s->ep[ep].fifostart[0] = 0;
++                s->ep[ep].csr[0] &=
++                        ~(MGC_M_TXCSR_FIFONOTEMPTY | MGC_M_TXCSR_TXPKTRDY);
++            }
++            if (value & MGC_M_TXCSR_P_SENDSTALL) {
++                s->ep[ep].csr[0] |= MGC_M_TXCSR_P_SENTSTALL;
++            }
++            musb_gh_kick(s);
++            break;
++        }
+         if (ep) {
+             s->ep[ep].csr[0] &= value & 0xa6;
+             s->ep[ep].csr[0] |= value & 0xff59;
+@@ -1207,6 +1310,22 @@ static void musb_ep_writeh(void *opaque, int ep, int addr, uint16_t value)
+         s->ep[ep].maxp[1] = value;
+         break;
+     case MUSB_HDRC_RXCSR:
++        if (s->gh.enabled) {
++            /* Peripheral RXCSR: clearing RXPKTRDY frees the FIFO */
++            s->ep[ep].csr[1] &= 0x102 | (value & 0x4d);
++            s->ep[ep].csr[1] |= value & 0xbe90;
++            if (value & MGC_M_RXCSR_FLUSHFIFO) {
++                s->ep[ep].fifolen[1] = 0;
++                s->ep[ep].fifostart[1] = 0;
++                s->ep[ep].csr[1] &=
++                        ~(MGC_M_RXCSR_FIFOFULL | MGC_M_RXCSR_RXPKTRDY);
++            }
++            if (value & MGC_M_RXCSR_P_SENDSTALL) {
++                s->ep[ep].csr[1] |= MGC_M_RXCSR_P_SENTSTALL;
++            }
++            musb_gh_kick(s);
++            break;
++        }
+         /* (DMA mode only) */
+         if (
+                 (value & MGC_M_RXCSR_H_AUTOREQ) &&
+@@ -1316,6 +1435,13 @@ static void musb_writeb(void *opaque, hwaddr addr, uint32_t value)
+         s->faddr = value & 0x7f;
+         break;
+     case MUSB_HDRC_POWER:
++        if (s->gh.enabled) {
++            uint8_t old = s->power;
++
++            s->power = (value & 0xe7) | (s->power & 0x10);
++            musb_gh_power(s, old);
++            break;
++        }
+         s->power = (value & 0xef) | (s->power & 0x10);
+         /* MGC_M_POWER_RESET is also read-only in Peripheral Mode */
+         if ((value & MGC_M_POWER_RESET) && s->port.dev) {
+@@ -1352,6 +1478,9 @@ static void musb_writeb(void *opaque, hwaddr addr, uint32_t value)
+         break;
+ 
+     case MUSB_HDRC_DEVCTL:
++        if (s->gh.enabled) {
++            break;
++        }
+         s->session = !!(value & MGC_M_DEVCTL_SESSION);
+         musb_session_update(s,
+                         !!s->port.dev,
+@@ -1469,12 +1598,12 @@ static void musb_writeh(void *opaque, hwaddr addr, uint32_t value)
+     case MUSB_HDRC_TXFIFOADDR:
+         s->ep[s->idx].fifoaddr[0] = value;
+         s->ep[s->idx].buf[0] =
+-                s->buf + ((value << 3) & 0x7ff );
++                s->buf + ((value << 3) & (sizeof(s->buf) - 1));
+         break;
+     case MUSB_HDRC_RXFIFOADDR:
+         s->ep[s->idx].fifoaddr[1] = value;
+         s->ep[s->idx].buf[1] =
+-                s->buf + ((value << 3) & 0x7ff);
++                s->buf + ((value << 3) & (sizeof(s->buf) - 1));
+         break;
+ 
+     case MUSB_HDRC_EP_IDX ... (MUSB_HDRC_EP_IDX + 0xf):
+@@ -1540,6 +1669,503 @@ static void musb_writew(void *opaque, hwaddr addr, uint32_t value)
+     };
+ }
+ 
++/* ------------------------------------------------------------------ */
++/* Gadget host */
++
++#define GH_LOG(fmt, ...) fprintf(stderr, "usb-gadget-host: " fmt "\n", \
++                                 ## __VA_ARGS__)
++
++static int64_t gh_now(void)
++{
++    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++}
++
++static void musb_gh_schedule(MUSBState *s, int64_t when)
++{
++    if (!timer_pending(s->gh.timer) ||
++        timer_expire_time_ns(s->gh.timer) > when) {
++        timer_mod(s->gh.timer, when);
++    }
++}
++
++static void musb_gh_kick(MUSBState *s)
++{
++    if (s->gh.enabled && s->gh.state != GH_UNPLUGGED) {
++        musb_gh_schedule(s, gh_now() + GH_POLL_NS);
++    }
++}
++
++static void musb_gh_reset(MUSBState *s)
++{
++    MUSBGadgetHost *gh = &s->gh;
++
++    if (!gh->enabled) {
++        return;
++    }
++    timer_del(gh->timer);
++    gh->state = GH_UNPLUGGED;
++    gh->ctl = CTL_START;
++    gh->in_len = 0;
++    gh->out_head = gh->out_count = gh->out_pos = gh->out_zlp = 0;
++}
++
++static void musb_gh_unplug(MUSBState *s)
++{
++    int was_running = s->gh.state == GH_RUNNING;
++
++    musb_gh_reset(s);
++    s->devctl = 0;
++    qemu_set_irq(s->irqs[musb_set_session], 0);
++    musb_vbus_set(s, 0);
++    if (was_running) {
++        GH_LOG("disconnected");
++    }
++}
++
++/* The gadget turned its D+ pull-up on or off */
++static void musb_gh_power(MUSBState *s, uint8_t old_power)
++{
++    MUSBGadgetHost *gh = &s->gh;
++    int on = s->power & MGC_M_POWER_SOFTCONN;
++
++    if (on && !(old_power & MGC_M_POWER_SOFTCONN) &&
++        gh->state == GH_UNPLUGGED) {
++        /* Cable in: VBUS, then a bus reset after 100 ms */
++        s->devctl = MGC_M_DEVCTL_BDEVICE | MGC_M_DEVCTL_VBUS |
++                    MGC_M_DEVCTL_SESSION;
++        musb_vbus_set(s, 1);
++        qemu_set_irq(s->irqs[musb_set_session], 1);
++        gh->state = GH_ATTACHED;
++        gh->wait_until = gh_now() + 100000000;
++        musb_gh_schedule(s, gh->wait_until);
++    } else if (!on && (old_power & MGC_M_POWER_SOFTCONN) &&
++               gh->state != GH_UNPLUGGED) {
++        musb_gh_unplug(s);
++    }
++}
++
++static void musb_gh_csr0_write(MUSBState *s, uint16_t value)
++{
++    MUSBEndPoint *ep = &s->ep[0];
++    uint16_t csr = ep->csr[0];
++
++    if (value & MGC_M_CSR0_P_SVDRXPKTRDY) {
++        csr &= ~MGC_M_CSR0_RXPKTRDY;
++    }
++    if (value & MGC_M_CSR0_P_SVDSETUPEND) {
++        csr &= ~MGC_M_CSR0_P_SETUPEND;
++    }
++    if (!(value & MGC_M_CSR0_P_SENTSTALL)) {
++        csr &= ~MGC_M_CSR0_P_SENTSTALL;
++    }
++    if (value & MGC_M_CSR0_FLUSHFIFO) {
++        ep->fifolen[0] = ep->fifostart[0] = 0;
++        csr &= ~MGC_M_CSR0_TXPKTRDY;
++    }
++    if (value & MGC_M_CSR0_P_SENDSTALL) {
++        csr |= MGC_M_CSR0_P_SENTSTALL;
++        s->gh.stall = 1;
++    }
++    if (value & MGC_M_CSR0_TXPKTRDY) {
++        csr |= MGC_M_CSR0_TXPKTRDY;
++    }
++    if (value & MGC_M_CSR0_P_DATAEND) {
++        s->gh.dataend = 1;
++    }
++    ep->csr[0] = csr;
++    musb_gh_kick(s);
++}
++
++/* Take the packet the gadget queued on a TX (IN) endpoint */
++static int musb_gh_take_in(MUSBState *s, int epnum, uint8_t *buf, int max)
++{
++    MUSBEndPoint *ep = &s->ep[epnum];
++    int len = ep->fifolen[0];
++
++    /* The TUSB6010 is told the real length (XFR_SIZE); the FIFO is
++     * written in whole 32-bit words */
++    if (ep->ext_size[0]) {
++        len = MIN(len, ep->ext_size[0]);
++        ep->ext_size[0] = 0;
++    }
++    len = MIN(len, max);
++    if (ep->buf[0] && len > 0) {
++        memcpy(buf, ep->buf[0] + ep->fifostart[0], len);
++    }
++    ep->fifostart[0] = ep->fifolen[0] = 0;
++    return len;
++}
++
++static void musb_gh_ctl_start(MUSBState *s, int type, int req, int value,
++                              int index, int length)
++{
++    MUSBGadgetHost *gh = &s->gh;
++    MUSBEndPoint *ep = &s->ep[0];
++
++    gh->setup[0] = type;
++    gh->setup[1] = req;
++    gh->setup[2] = value;
++    gh->setup[3] = value >> 8;
++    gh->setup[4] = index;
++    gh->setup[5] = index >> 8;
++    gh->setup[6] = length;
++    gh->setup[7] = length >> 8;
++    gh->want = length;
++    gh->data_len = 0;
++    gh->dataend = 0;
++    gh->stall = 0;
++
++    memcpy(ep->buf[1], gh->setup, 8);
++    ep->fifostart[1] = ep->fifolen[1] = 0;
++    ep->rxcount = 8;
++    ep->csr[0] |= MGC_M_CSR0_RXPKTRDY;
++    gh->ctl = CTL_SETUP;
++    gh->ctl_deadline = gh_now() + GH_TIMEOUT_NS;
++    musb_tx_intr_set(s, 0, 1);
++}
++
++/* Advance the control transfer in progress */
++static void musb_gh_ctl_run(MUSBState *s)
++{
++    MUSBGadgetHost *gh = &s->gh;
++    MUSBEndPoint *ep = &s->ep[0];
++    int len;
++
++    if (gh->stall && gh->ctl != CTL_STALL && gh->ctl != CTL_DONE) {
++        gh->ctl = CTL_STALL;
++        musb_tx_intr_set(s, 0, 1);
++        return;
++    }
++
++    switch (gh->ctl) {
++    case CTL_SETUP:
++        if (ep->csr[0] & MGC_M_CSR0_RXPKTRDY) {
++            return;
++        }
++        gh->ctl = gh->want ? CTL_DATA_IN : CTL_STATUS;
++        /* fall through */
++    case CTL_DATA_IN:
++    case CTL_STATUS:
++        if (gh->ctl == CTL_DATA_IN && (ep->csr[0] & MGC_M_CSR0_TXPKTRDY)) {
++            len = musb_gh_take_in(s, 0, gh->data + gh->data_len,
++                                  sizeof(gh->data) - gh->data_len);
++            gh->data_len += len;
++            ep->csr[0] &= ~MGC_M_CSR0_TXPKTRDY;
++            if (gh->dataend || len < 64 || gh->data_len >= gh->want) {
++                /* Last data packet; the status stage completes with it */
++                gh->dataend = 0;
++                gh->ctl = CTL_DONE;
++            }
++            musb_tx_intr_set(s, 0, 1);
++        } else if (gh->ctl == CTL_STATUS && gh->dataend) {
++            gh->dataend = 0;
++            gh->ctl = CTL_DONE;
++            musb_tx_intr_set(s, 0, 1);
++        }
++        break;
++    }
++}
++
++/* Find a CDC ECM function in a configuration descriptor */
++static int musb_gh_find_ecm(MUSBGadgetHost *gh)
++{
++    const uint8_t *d = gh->data;
++    int len = gh->data_len, i;
++    int ecm = 0, iface = -1, alt = 0, in = 0, out = 0;
++
++    for (i = 0; i + 2 <= len && d[i] >= 2 && i + d[i] <= len; i += d[i]) {
++        switch (d[i + 1]) {
++        case USB_DT_INTERFACE:
++            iface = d[i + 2];
++            alt = d[i + 3];
++            if (d[i + 5] == 0x02 && d[i + 6] == 0x06) {
++                ecm = 1;        /* Communications, Ethernet Networking */
++            }
++            break;
++        case USB_DT_ENDPOINT:
++            if (ecm && alt == 1 && (d[i + 3] & 3) == USB_ENDPOINT_XFER_BULK) {
++                if (d[i + 2] & USB_DIR_IN) {
++                    in = d[i + 2] & 0xf;
++                } else {
++                    out = d[i + 2] & 0xf;
++                }
++            }
++            break;
++        }
++        if (ecm && in && out) {
++            gh->cfg_value = d[5];
++            gh->data_iface = iface;
++            gh->ep_in = in;
++            gh->ep_out = out;
++            return 1;
++        }
++    }
++    return 0;
++}
++
++/* Enumeration, one control transfer per step */
++static void musb_gh_enum(MUSBState *s)
++{
++    MUSBGadgetHost *gh = &s->gh;
++    int total;
++
++    if (gh->ctl == CTL_START) {
++        /* Let the gadget finish with the last EP0 interrupt first */
++        if ((s->tx_intr & 1) || gh_now() < gh->wait_until) {
++            return;
++        }
++        switch (gh->step) {
++        case 0:
++            musb_gh_ctl_start(s, 0x80, USB_REQ_GET_DESCRIPTOR,
++                              USB_DT_DEVICE << 8, 0, 64);
++            break;
++        case 1:
++            musb_gh_ctl_start(s, 0x00, USB_REQ_SET_ADDRESS, 1, 0, 0);
++            break;
++        case 2:
++            musb_gh_ctl_start(s, 0x80, USB_REQ_GET_DESCRIPTOR,
++                              USB_DT_DEVICE << 8, 0, 18);
++            break;
++        case 3:
++            musb_gh_ctl_start(s, 0x80, USB_REQ_GET_DESCRIPTOR,
++                              (USB_DT_CONFIG << 8) | gh->cfg_idx, 0, 9);
++            break;
++        case 4:
++            total = MIN(gh->want, (int) sizeof(gh->data));
++            musb_gh_ctl_start(s, 0x80, USB_REQ_GET_DESCRIPTOR,
++                              (USB_DT_CONFIG << 8) | gh->cfg_idx, 0, total);
++            break;
++        case 5:
++            musb_gh_ctl_start(s, 0x00, USB_REQ_SET_CONFIGURATION,
++                              gh->cfg_value, 0, 0);
++            break;
++        case 6:
++            musb_gh_ctl_start(s, 0x01, USB_REQ_SET_INTERFACE,
++                              1, gh->data_iface, 0);
++            break;
++        }
++        return;
++    }
++
++    musb_gh_ctl_run(s);
++
++    if (gh->ctl == CTL_STALL) {
++        GH_LOG("request %02x %02x stalled, giving up",
++               gh->setup[0], gh->setup[1]);
++        gh->state = GH_FAILED;
++        return;
++    }
++    if (gh->ctl != CTL_DONE) {
++        if (gh_now() > gh->ctl_deadline) {
++            GH_LOG("request %02x %02x timed out, giving up",
++                   gh->setup[0], gh->setup[1]);
++            gh->state = GH_FAILED;
++        }
++        return;
++    }
++
++    /* The transfer is done: look at its data and pick the next one */
++    gh->ctl = CTL_START;
++    gh->wait_until = gh_now() + 2000000;
++    switch (gh->step) {
++    case 2:
++        if (gh->data_len < 18) {
++            GH_LOG("short device descriptor");
++            gh->state = GH_FAILED;
++            return;
++        }
++        gh->num_configs = gh->data[17];
++        gh->cfg_idx = 0;
++        GH_LOG("device %02x%02x:%02x%02x, %d configuration(s)",
++               gh->data[9], gh->data[8], gh->data[11], gh->data[10],
++               gh->num_configs);
++        gh->step = 3;
++        return;
++    case 3:
++        if (gh->data_len < 9) {
++            gh->state = GH_FAILED;
++            return;
++        }
++        gh->want = gh->data[2] | (gh->data[3] << 8);
++        gh->step = 4;
++        return;
++    case 4:
++        if (musb_gh_find_ecm(gh)) {
++            GH_LOG("CDC ECM in configuration %d: interface %d, "
++                   "bulk in ep%d, out ep%d", gh->cfg_value, gh->data_iface,
++                   gh->ep_in, gh->ep_out);
++            gh->step = 5;
++        } else if (++gh->cfg_idx < gh->num_configs) {
++            gh->step = 3;
++        } else {
++            GH_LOG("no CDC ECM configuration, giving up");
++            gh->state = GH_FAILED;
++        }
++        return;
++    case 6:
++        GH_LOG("configured, link up");
++        gh->state = GH_RUNNING;
++        gh->in_len = 0;
++        if (gh->ready) {
++            gh->ready(gh->opaque);
++        }
++        return;
++    default:
++        gh->step++;
++        return;
++    }
++}
++
++/* Move packets between the bulk endpoints and the NIC */
++static int musb_gh_bulk(MUSBState *s)
++{
++    MUSBGadgetHost *gh = &s->gh;
++    MUSBEndPoint *ep;
++    int epnum, len, maxp, busy = 0;
++
++    /* IN: every packet a TX endpoint has ready */
++    for (epnum = 1; epnum < 16; epnum++) {
++        ep = &s->ep[epnum];
++        if (!(ep->csr[0] & MGC_M_TXCSR_TXPKTRDY)) {
++            continue;
++        }
++        if (epnum == gh->ep_in) {
++            maxp = (ep->maxp[0] & 0x7ff) ?: 64;
++            len = musb_gh_take_in(s, epnum, gh->in_frame + gh->in_len,
++                                  sizeof(gh->in_frame) - gh->in_len);
++            gh->in_len += len;
++            if (len < maxp) {
++                /* A short packet ends the frame */
++                if (gh->in_len && gh->send) {
++                    gh->send(gh->opaque, gh->in_frame, gh->in_len);
++                }
++                gh->in_len = 0;
++            }
++        } else {
++            /* e.g. CDC notifications: taken and dropped */
++            musb_gh_take_in(s, epnum, NULL, 0);
++        }
++        ep->csr[0] &= ~(MGC_M_TXCSR_TXPKTRDY | MGC_M_TXCSR_FIFONOTEMPTY);
++        musb_tx_intr_set(s, epnum, 1);
++        busy = 1;
++    }
++
++    /* OUT: the next packet of the frame at the head of the queue */
++    ep = &s->ep[gh->ep_out];
++    if (gh->out_count && ep->buf[1] &&
++        !(ep->csr[1] & MGC_M_RXCSR_RXPKTRDY) &&
++        !(s->rx_intr & (1 << gh->ep_out))) {
++        int flen = gh->out_frame_len[gh->out_head];
++
++        maxp = (ep->maxp[1] & 0x7ff) ?: 64;
++        len = MIN(maxp, flen - gh->out_pos);
++        if (gh->out_zlp) {
++            len = 0;
++        }
++        memcpy(ep->buf[1], gh->out_frame[gh->out_head] + gh->out_pos, len);
++        ep->fifostart[1] = ep->fifolen[1] = 0;
++        ep->rxcount = len;
++        ep->csr[1] |= MGC_M_RXCSR_RXPKTRDY | MGC_M_RXCSR_FIFOFULL;
++        musb_rx_intr_set(s, gh->ep_out, 1);
++
++        if (gh->out_zlp) {
++            gh->out_zlp = 0;
++            gh->out_pos = flen;
++        } else {
++            gh->out_pos += len;
++            /* A frame of whole packets needs a zero-length one to end */
++            if (gh->out_pos == flen && len == maxp) {
++                gh->out_zlp = 1;
++            }
++        }
++        if (gh->out_pos >= flen && !gh->out_zlp) {
++            gh->out_head = (gh->out_head + 1) % GH_FRAMES;
++            gh->out_count--;
++            gh->out_pos = 0;
++            if (gh->out_count == GH_FRAMES - 1 && gh->ready) {
++                gh->ready(gh->opaque);
++            }
++        }
++        busy = 1;
++    }
++    return busy || gh->out_count;
++}
++
++static void musb_gh_tick(void *opaque)
++{
++    MUSBState *s = opaque;
++    MUSBGadgetHost *gh = &s->gh;
++
++    switch (gh->state) {
++    case GH_ATTACHED:
++        if (gh_now() < gh->wait_until) {
++            musb_gh_schedule(s, gh->wait_until);
++            return;
++        }
++        /* Bus reset; full speed */
++        s->faddr = 0;
++        s->power &= ~MGC_M_POWER_HSMODE;
++        musb_intr_set(s, musb_irq_rst_babble, 1);
++        gh->state = GH_ENUM;
++        gh->step = 0;
++        gh->ctl = CTL_START;
++        gh->wait_until = gh_now() + 20000000;
++        /* fall through */
++    case GH_ENUM:
++        musb_gh_enum(s);
++        if (gh->state == GH_ENUM) {
++            musb_gh_schedule(s, gh_now() + (gh->ctl == CTL_START &&
++                             gh_now() < gh->wait_until ?
++                             gh->wait_until - gh_now() : GH_POLL_NS * 10));
++        }
++        break;
++    case GH_RUNNING:
++        if (musb_gh_bulk(s)) {
++            musb_gh_schedule(s, gh_now() + GH_POLL_NS);
++        }
++        break;
++    }
++}
++
++void musb_gadget_host_attach(MUSBState *s,
++                void (*send)(void *opaque, const uint8_t *buf, int len),
++                void (*ready)(void *opaque), void *opaque)
++{
++    MUSBGadgetHost *gh = &s->gh;
++
++    gh->send = send;
++    gh->ready = ready;
++    gh->opaque = opaque;
++    gh->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, musb_gh_tick, s);
++    gh->enabled = 1;
++    musb_gh_reset(s);
++}
++
++int musb_gadget_host_can_receive(MUSBState *s)
++{
++    return s->gh.enabled && s->gh.state == GH_RUNNING &&
++           s->gh.out_count < GH_FRAMES;
++}
++
++int musb_gadget_host_receive(MUSBState *s, const uint8_t *buf, int len)
++{
++    MUSBGadgetHost *gh = &s->gh;
++    int slot;
++
++    if (!musb_gadget_host_can_receive(s)) {
++        return 0;
++    }
++    if (len > GH_FRAME_MAX) {
++        return len;             /* dropped */
++    }
++    slot = (gh->out_head + gh->out_count) % GH_FRAMES;
++    memcpy(gh->out_frame[slot], buf, len);
++    gh->out_frame_len[slot] = len;
++    gh->out_count++;
++    musb_gh_kick(s);
++    return len;
++}
++
+ MUSBReadFunc * const musb_read[] = {
+     musb_readb,
+     musb_readh,
+diff --git a/hw/usb/tusb6010.c b/hw/usb/tusb6010.c
+index d5a9669a0..f6e376af8 100644
+--- a/hw/usb/tusb6010.c
++++ b/hw/usb/tusb6010.c
+@@ -25,6 +25,7 @@
+ #include "hw/usb.h"
+ #include "hw/usb/hcd-musb.h"
+ #include "hw/arm/omap.h"
++#include "net/net.h"
+ #include "hw/hw.h"
+ #include "hw/irq.h"
+ #include "hw/sysbus.h"
+@@ -65,6 +66,12 @@ struct TUSBState {
+     uint32_t ep0_config;
+     uint32_t rx_config[15];
+     uint32_t tx_config[15];
++
++    /* Peripheral mode towards a built-in host (see hcd-musb.c), whose
++     * CDC ECM link is this NIC */
++    bool gadget_host;
++    NICState *nic;
++    NICConf conf;
+     uint32_t wkup_mask;
+     uint32_t pullup[2];
+     uint32_t control_config;
+@@ -711,9 +718,11 @@ static void tusb_musb_core_intr(void *opaque, int source, int level)
+     switch (source) {
+     case musb_set_vbus:
+         if (level)
+-            otg_status |= TUSB_DEV_OTG_STAT_VBUS_VALID;
++            otg_status |= TUSB_DEV_OTG_STAT_VBUS_VALID |
++                    TUSB_DEV_OTG_STAT_VBUS_SENSE;
+         else
+-            otg_status &= ~TUSB_DEV_OTG_STAT_VBUS_VALID;
++            otg_status &= ~(TUSB_DEV_OTG_STAT_VBUS_VALID |
++                    TUSB_DEV_OTG_STAT_VBUS_SENSE);
+ 
+         /* XXX: only if TUSB_PHY_OTG_CTRL_OTG_VBUS_DET_EN set?  */
+         /* XXX: only if TUSB_PRCM_MNGMT_OTG_VBUS_DET_EN set?  */
+@@ -783,7 +792,9 @@ static void tusb6010_reset(DeviceState *dev)
+     s->test_reset = TUSB_PROD_TEST_RESET_VAL;
+     s->host_mode = 0;
+     s->dev_config = 0;
+-    s->otg_status = 0;	/* !TUSB_DEV_OTG_STAT_ID_STATUS means host mode */
++    /* !TUSB_DEV_OTG_STAT_ID_STATUS means host mode; with the gadget host
++     * a mini-B plug leaves ID floating */
++    s->otg_status = s->gadget_host ? TUSB_DEV_OTG_STAT_ID_STATUS : 0;
+     s->power = 0;
+     s->mask = 0xffffffff;
+     s->intr = 0x00000000;
+@@ -811,6 +822,54 @@ static void tusb6010_reset(DeviceState *dev)
+     musb_reset(s->musb);
+ }
+ 
++static bool tusb_gh_can_receive(NetClientState *nc)
++{
++    TUSBState *s = qemu_get_nic_opaque(nc);
++
++    return musb_gadget_host_can_receive(s->musb);
++}
++
++static ssize_t tusb_gh_receive(NetClientState *nc, const uint8_t *buf,
++                               size_t size)
++{
++    TUSBState *s = qemu_get_nic_opaque(nc);
++
++    return musb_gadget_host_receive(s->musb, buf, size);
++}
++
++static void tusb_gh_cleanup(NetClientState *nc)
++{
++    TUSBState *s = qemu_get_nic_opaque(nc);
++
++    s->nic = NULL;
++}
++
++static NetClientInfo net_tusb_info = {
++    .type = NET_CLIENT_DRIVER_NIC,
++    .size = sizeof(NICState),
++    .can_receive = tusb_gh_can_receive,
++    .receive = tusb_gh_receive,
++    .cleanup = tusb_gh_cleanup,
++};
++
++static void tusb_gh_send(void *opaque, const uint8_t *buf, int len)
++{
++    TUSBState *s = opaque;
++
++    if (s->nic) {
++        qemu_send_packet(qemu_get_queue(s->nic), buf, len);
++    }
++}
++
++static void tusb_gh_ready(void *opaque)
++{
++    TUSBState *s = opaque;
++
++    if (s->nic) {
++        qemu_flush_queued_packets(qemu_get_queue(s->nic));
++    }
++}
++
+ static void tusb6010_realize(DeviceState *dev, Error **errp)
+ {
+     TUSBState *s = TUSB6010(dev);
+@@ -829,14 +888,29 @@ static void tusb6010_realize(DeviceState *dev, Error **errp)
+     sysbus_init_irq(sbd, &s->irq);
+     qdev_init_gpio_in(dev, tusb6010_irq, musb_irq_max + 1);
+     s->musb = musb_init(dev, 1);
++    if (s->gadget_host) {
++        qemu_macaddr_default_if_unset(&s->conf.macaddr);
++        s->nic = qemu_new_nic(&net_tusb_info, &s->conf,
++                              object_get_typename(OBJECT(dev)), dev->id,
++                              &dev->mem_reentrancy_guard, s);
++        qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
++        musb_gadget_host_attach(s->musb, tusb_gh_send, tusb_gh_ready, s);
++    }
+ }
+ 
++static Property tusb6010_properties[] = {
++    DEFINE_PROP_BOOL("gadget-host", TUSBState, gadget_host, false),
++    DEFINE_NIC_PROPERTIES(TUSBState, conf),
++    DEFINE_PROP_END_OF_LIST(),
++};
++
+ static void tusb6010_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+ 
+     dc->realize = tusb6010_realize;
+     dc->reset = tusb6010_reset;
++    device_class_set_props(dc, tusb6010_properties);
+ }
+ 
+ static const TypeInfo tusb6010_info = {
+diff --git a/include/hw/usb/hcd-musb.h b/include/hw/usb/hcd-musb.h
+index 4d4b1ec0f..c21d72c29 100644
+--- a/include/hw/usb/hcd-musb.h
++++ b/include/hw/usb/hcd-musb.h
+@@ -45,5 +45,10 @@ void musb_reset(MUSBState *s);
+ uint32_t musb_core_intr_get(MUSBState *s);
+ void musb_core_intr_clear(MUSBState *s, uint32_t mask);
+ void musb_set_size(MUSBState *s, int epnum, int size, int is_tx);
++void musb_gadget_host_attach(MUSBState *s,
++                void (*send)(void *opaque, const uint8_t *buf, int len),
++                void (*ready)(void *opaque), void *opaque);
++int musb_gadget_host_can_receive(MUSBState *s);
++int musb_gadget_host_receive(MUSBState *s, const uint8_t *buf, int len);
+ 
+ #endif

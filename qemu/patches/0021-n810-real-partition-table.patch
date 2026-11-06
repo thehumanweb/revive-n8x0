@@ -1,0 +1,30 @@
+n810: NOLO partition table as on the device
+
+QEMU's N810 NOLO tags announced a 0x220000 kernel partition, initfs at
+0x2a0000 and rootfs at 0x6a0000. A real RX-44 (NOLO 1.1.16, Diablo
+5.2008.43-7) announces the N800's: kernel 0x80000 + 0x200000, initfs
+0x280000, rootfs 0x680000 (its OMAP_TAG_PARTITION tags, and where it
+flashes and erases). A kernel built for QEMU's table mounted the initfs
+one erase block late on the device.
+
+diff --git a/hw/arm/nseries.c b/hw/arm/nseries.c
+index 7246190a0..1cc1e8e30 100644
+--- a/hw/arm/nseries.c
++++ b/hw/arm/nseries.c
+@@ -1183,12 +1183,12 @@ static const struct omap_partition_info_s {
+     { 0x00280000, 0x00200000, 0x3, "initfs" },
+     { 0x00480000, 0x0fb80000, 0x3, "rootfs" },
+     { /* end of list */ }
+-}, n810_part_info[] = {
++}, n810_part_info[] = {	/* as a real RX-44's NOLO 1.1.16 reports */
+     { 0x00000000, 0x00020000, 0x3, "bootloader" },
+     { 0x00020000, 0x00060000, 0x0, "config" },
+-    { 0x00080000, 0x00220000, 0x0, "kernel" },
+-    { 0x002a0000, 0x00400000, 0x0, "initfs" },
+-    { 0x006a0000, 0x0f960000, 0x0, "rootfs" },
++    { 0x00080000, 0x00200000, 0x0, "kernel" },
++    { 0x00280000, 0x00400000, 0x0, "initfs" },
++    { 0x00680000, 0x0f980000, 0x0, "rootfs" },
+     { /* end of list */ }
+ };
+ 

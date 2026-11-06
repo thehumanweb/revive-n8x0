@@ -1,0 +1,104 @@
+omap_dss: RFBI sends the graphics layer in its format, RGB24 as RGB565
+
+The RFBI transfer always read 2 bytes per pixel from DISPC's graphics
+layer (/* TODO bpp */). With an XRGB8888 framebuffer, as Linux 6.18's
+omapdrm gives wifi-ui on the N810, each 32-bit pixel reached the
+S1D13745 as two RGB565 pixels: vertical stripes in wrong colours, and
+only the left half of the frame on the panel. On the 16-bit RFBI port
+DISPC sends RGB565. RGB24 (GFXFORMAT 0x8 unpacked xRGB, 0x9 packed) is
+now cut down to that row by row, honouring ROWINC; RGB16 is sent as
+before. The bounce buffer's size is now also remembered.
+
+diff --git a/hw/display/omap_dss.c b/hw/display/omap_dss.c
+index f33fc7606..c4078357a 100644
+--- a/hw/display/omap_dss.c
++++ b/hw/display/omap_dss.c
+@@ -610,7 +610,7 @@ static void omap_rfbi_transfer_start(struct omap_dss_s *s)
+     void *data;
+     hwaddr len;
+     hwaddr data_addr;
+-    int pitch;
++    int pitch, bypp;
+     static void *bounce_buffer;
+     static hwaddr bounce_len;
+ 
+@@ -630,29 +630,69 @@ static void omap_rfbi_transfer_start(struct omap_dss_s *s)
+ 
+     s->rfbi.busy = 1;
+ 
+-    len = s->rfbi.pixels * 2;
++    /* The graphics layer as DISPC sends it on the 16-bit RFBI port: RGB16
++     * as it is in memory, RGB24 (unpacked xRGB or packed) cut down to
++     * RGB565. Sending 32-bit pixels as they were made every pixel two. */
++    switch ((s->dispc.l[0].attr >> 1) & 0xf) {     /* GFXFORMAT */
++    case 0x8:                                       /* RGB24 unpacked */
++        bypp = 4;
++        break;
++    case 0x9:                                       /* RGB24 packed */
++        bypp = 3;
++        break;
++    default:
++        bypp = 2;
++        break;
++    }
+ 
++    len = s->rfbi.pixels * 2;
+     data_addr = s->dispc.l[0].addr[0];
+-    data = cpu_physical_memory_map(data_addr, &len, false);
+-    if (data && len != s->rfbi.pixels * 2) {
+-        cpu_physical_memory_unmap(data, len, 0, 0);
+-        data = NULL;
+-        len = s->rfbi.pixels * 2;
++    data = NULL;
++    if (bypp == 2) {
++        data = cpu_physical_memory_map(data_addr, &len, false);
++        if (data && len != s->rfbi.pixels * 2) {
++            cpu_physical_memory_unmap(data, len, 0, 0);
++            data = NULL;
++            len = s->rfbi.pixels * 2;
++        }
+     }
+     if (!data) {
+         if (len > bounce_len) {
+             bounce_buffer = g_realloc(bounce_buffer, len);
++            bounce_len = len;
+         }
+         data = bounce_buffer;
+-        cpu_physical_memory_read(data_addr, data, len);
+     }
+ 
+-    /* TODO bpp */
+-    s->rfbi.pixels = 0;
+-
+     /* TODO: negative values */
+     pitch = s->dispc.l[0].nx + (s->dispc.l[0].rowinc - 1) / 2;
+ 
++    if (bypp == 2) {
++        if (data == bounce_buffer) {
++            cpu_physical_memory_read(data_addr, data, len);
++        }
++    } else {
++        int nx = s->dispc.l[0].nx;
++        hwaddr stride = (hwaddr) nx * bypp + s->dispc.l[0].rowinc - 1;
++        uint8_t *line = g_malloc(nx * bypp);
++        uint16_t *out = data;
++        int x, y, n = 0;
++
++        for (y = 0; n < s->rfbi.pixels; y++) {
++            cpu_physical_memory_read(data_addr + y * stride, line, nx * bypp);
++            for (x = 0; x < nx && n < s->rfbi.pixels; x++, n++) {
++                const uint8_t *px = line + x * bypp;   /* B, G, R(, x) */
++
++                out[n] = cpu_to_le16(((px[2] >> 3) << 11) |
++                                     ((px[1] >> 2) << 5) | (px[0] >> 3));
++            }
++        }
++        g_free(line);
++        pitch = nx;
++    }
++
++    s->rfbi.pixels = 0;
++
+     if ((s->rfbi.control & (1 << 2)) && s->rfbi.chip[0])
+         s->rfbi.chip[0]->block(s->rfbi.chip[0]->opaque, 1, data, len, pitch);
+     if ((s->rfbi.control & (1 << 3)) && s->rfbi.chip[1])
