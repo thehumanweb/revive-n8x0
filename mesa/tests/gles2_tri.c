@@ -64,11 +64,12 @@ int main(int argc, char **argv)
 {
 	const char *out = "gles2_tri.ppm";
 	float deg = 0;
-	int o, i, x, y, lit = 0;
+	int o, i, x, y, lit = 0, blend = 0;
 
-	while ((o = getopt(argc, argv, "a:o:")) != -1) {
+	while ((o = getopt(argc, argv, "a:o:b:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'o') out = optarg;
+		else if (o == 'b') blend = atoi(optarg);
 		else return 2;
 	}
 
@@ -158,6 +159,13 @@ int main(int argc, char **argv)
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LESS);
+	if (blend == 1) {			/* additive: dst + src */
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_ONE, GL_ONE);
+	} else if (blend == 2) {		/* modulate: src * dst */
+		glEnable(GL_BLEND);
+		glBlendFunc(GL_DST_COLOR, GL_ZERO);
+	}
 	glEnableVertexAttribArray(0);
 	glEnableVertexAttribArray(1);
 	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), &verts[0][0]);

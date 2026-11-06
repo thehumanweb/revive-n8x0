@@ -21,9 +21,71 @@
 #define ST_BLEND	(1u << 13)
 #define ST_ALPHATEST	(1u << 14)
 #define ST_GOURAUD	(1u << 22)
+#define ST_SATURATE	(1u << 5)
+#define ST_ALPHANEVER	(1u << 8)
 
 #define PRIM_CULL_POS	(1u << 18)	/* culls triangles of positive area in surface pixels (y down) */
 #define PRIM_CULL_NEG	(1u << 19)	/* and negative */
+
+/*
+ * A blend factor as the state word's 3-bit code (mbx/render.c, factor8): 0
+ * zero, 1 one, 2 the other side's colour, 3 one minus it, 4 source alpha, 5
+ * one minus, 6 destination alpha, 7 one minus. "The other side" means the
+ * source factor takes the destination colour and the destination factor the
+ * source colour, so SRC_COLOR as a source factor (and DST_COLOR as a
+ * destination factor) has no code. Returns -1 for what the chip can't do.
+ */
+static int hw_factor(unsigned f, bool dst_side, bool *saturate)
+{
+	switch (f) {
+	case PIPE_BLENDFACTOR_ZERO: return 0;
+	case PIPE_BLENDFACTOR_ONE: return 1;
+	case PIPE_BLENDFACTOR_DST_COLOR: return dst_side ? -1 : 2;
+	case PIPE_BLENDFACTOR_SRC_COLOR: return dst_side ? 2 : -1;
+	case PIPE_BLENDFACTOR_INV_DST_COLOR: return dst_side ? -1 : 3;
+	case PIPE_BLENDFACTOR_INV_SRC_COLOR: return dst_side ? 3 : -1;
+	case PIPE_BLENDFACTOR_SRC_ALPHA: return 4;
+	case PIPE_BLENDFACTOR_INV_SRC_ALPHA: return 5;
+	case PIPE_BLENDFACTOR_DST_ALPHA: return 6;
+	case PIPE_BLENDFACTOR_INV_DST_ALPHA: return 7;
+	case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
+		if (dst_side)
+			return -1;
+		*saturate = true;
+		return 0;
+	default: return -1;
+	}
+}
+
+/* The blend and colour-mask bits of the state word, from the bound blend state */
+static uint32_t hw_blend_bits(struct mbx_context *ctx)
+{
+	const struct pipe_rt_blend_state *rt = ctx->blend ? &ctx->blend->rt[0] : NULL;
+	uint32_t st = 0;
+	bool sat = false;
+	int sf, df;
+
+	if (!rt)
+		return 0;
+	if (!rt->colormask)
+		return ST_ALPHANEVER;	/* no colour written: the depth still is */
+	if (rt->colormask != 0xf)
+		mesa_logw_once("mbx: a partial colour mask is not supported yet");
+	if (!rt->blend_enable)
+		return 0;
+	sf = hw_factor(rt->rgb_src_factor, false, &sat);
+	df = hw_factor(rt->rgb_dst_factor, true, &sat);
+	if (rt->rgb_func != PIPE_BLEND_ADD || rt->alpha_func != PIPE_BLEND_ADD ||
+	    rt->rgb_src_factor != rt->alpha_src_factor || rt->rgb_dst_factor != rt->alpha_dst_factor ||
+	    sf < 0 || df < 0) {
+		mesa_logw_once("mbx: this blend state is not supported yet (separate or non-add blending, or a constant colour)");
+		return 0;
+	}
+	st = ST_BLEND | (uint32_t)sf << 29 | (uint32_t)df << 26;
+	if (sat)
+		st |= ST_SATURATE;
+	return st;
+}
 
 static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_program *prog)
 {
@@ -41,6 +103,7 @@ static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_prog
 		st |= ST_NODEPTHWRITE;
 	}
 	st |= func << 9;
+	st |= hw_blend_bits(ctx);
 	return st;
 }
 
