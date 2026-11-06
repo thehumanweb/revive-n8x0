@@ -101,6 +101,22 @@ void pb_render(struct mbxemu *e)
 	}
 }
 
+/*
+ * A render whose 0x860 does not match the TA's grid: the deallocation frees the wrong pages, and the free
+ * list leaks until the TA runs dry (found during device testing: it ends in a hang). The model loses the
+ * pages: they are not given back.
+ */
+void pb_render_leak(struct mbxemu *e)
+{
+	struct pbw *w = &e->pbw;
+	uint32_t m;
+
+	if (!w->on || !w->fl_ok)
+		return;
+	for (m = 0; m < w->nmx * w->nmy; m++)
+		w->mt_npages[m] = 0;
+}
+
 /* After a free-list build (0x838): built 0 when the pages were past the
  * table (the model's tests without the MMU, whose buffer has physical
  * page numbers): no list, the writer is off */

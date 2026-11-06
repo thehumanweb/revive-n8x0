@@ -482,8 +482,12 @@ void mbxemu_reg_write(struct mbxemu *e, uint32_t reg, uint32_t v)
 		break;
 	case R_KICK:
 		if (v & 1) {
+			e->tiles_bad = 0;
 			render_kick(e);
-			pb_render(e);
+			if (e->tiles_bad && e->strict)
+				pb_render_leak(e);
+			else
+				pb_render(e);
 		}
 		break;
 	case R_TA_START:

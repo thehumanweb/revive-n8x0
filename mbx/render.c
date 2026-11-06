@@ -1608,6 +1608,18 @@ void render_kick(struct mbxemu *e)
 
 	e->watch++;		/* the render's writes are watched (emu_check_write) */
 	{
+		/* 0x860: (tiles_y - 1) << 16 | (tiles_x - 1), 16-pixel tiles, with the macro tile's width in bits 4-6
+		 * of X, 0 up to 32 tiles; it must agree with the TA's grid (0x85c). Known for grids up to 16 tiles
+		 * a side (found during device testing); larger ones are not checked. */
+		uint32_t cfg = R[R_TA_CONFIG / 4], tx = (cfg >> 20 & 0x3ff) + 1, ty = (cfg >> 10 & 0x3ff) + 1;
+
+		if (tx <= 16 && ty <= 16 && R[R_TILES / 4] != ((ty - 1) << 16 | (tx - 1))) {
+			emu_violation(e, V_TILES, "0x860 does not match the tile grid in 0x85c: the deallocation frees "
+				      "the wrong pages and the free list leaks");
+			e->tiles_bad = 1;
+		}
+	}
+	{
 		/* soft: every render register the stock stack writes, since the last kick (README assumption 31) */
 		static const uint16_t need[] = { 0x608, 0x60c, 0x610, 0x614, 0x618, 0x61c, 0x63c, 0x644, 0x648, 0x64c, 0x650,
 						 0x654, 0x658, 0x65c, 0x660, 0x674, 0x6d0, 0x6dc, 0x860, 0x680 };

@@ -126,11 +126,6 @@ static const struct dma_fence_ops mbx_fence_ops = {
 	.get_timeline_name = mbx_fence_timeline_name,
 };
 
-/* While 0x860's encoding is found out: 0 leaves it alone, 1..7 are encodings (mbx_tiles_value) */
-static int tiles_mode;
-module_param(tiles_mode, int, 0644);
-MODULE_PARM_DESC(tiles_mode, "debug: how 0x860 is programmed (0 not at all)");
-
 /* The frame, on the hardware: with the job lock held, in the job's address space */
 static int mbx_job_run(struct mbx_job *job)
 {
@@ -159,8 +154,6 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_TA_854, 0x3727c5ac);
 	mbx_write(m, MBX_REG_TA_858, 0x3727c5ac);
 	mbx_write(m, MBX_REG_TA_CONFIG, a->ta_config | 0xe1);	/* the stock stack's base bits */
-	if (tiles_mode)
-		mbx_write(m, MBX_REG_TILES, mbx_tiles_value(a, tiles_mode));
 	mbx_write(m, MBX_REG_TA_WIDTH, a->ta_width);
 	mbx_write(m, MBX_REG_TA_HEIGHT, a->ta_height);
 	mbx_write(m, MBX_REG_TA_REGIONS, a->ta_regions);
@@ -179,6 +172,20 @@ static int mbx_job_run(struct mbx_job *job)
 	ret = mbx_job_region_bit30(job->vm, a);
 	if (ret)
 		goto reset;
+	{
+		u32 tx, ty;
+
+		mbx_grid(a, &tx, &ty);
+		/* the render registers whose meaning is not known (README assumption 31), as the stock stack writes them */
+		mbx_write(m, 0x60c, 0);
+		mbx_write(m, 0x614, 0x1e3ce508);
+		mbx_write(m, 0x618, 0x1e3ce508);
+		mbx_write(m, 0x644, 0);
+		mbx_write(m, 0x648, 1);
+		mbx_write(m, 0x64c, 0);
+		mbx_write(m, 0x6d0, 1);
+		mbx_write(m, MBX_REG_TILES, (ty - 1) << 16 | (tx - 1));	/* the tile grid again, as the TA has it */
+	}
 	mbx_write(m, MBX_REG_R_REGIONS, a->r_regions);
 	mbx_write(m, MBX_REG_R_CTL, a->r_ctl);
 	mbx_write(m, MBX_REG_R_SAMPLING, a->r_sampling);

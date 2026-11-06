@@ -218,6 +218,9 @@ static int frame(uint32_t skip, int strict, uint32_t *mask)
 	wr(R_HEIGHT, (uint32_t)(TRI_H - 1) << 16);
 	wr(R_ADDR, SURF);
 	wr(R_STRIDE, TRI_W);
+	mbx_contract_render_regs(&IO, TRI_W / 16, TRI_H / 16);
+	if (skip & V_TILES)
+		wr(0x860, 0x00030002);
 	if (!(skip & V_PB_BASE))
 		wr(R_PB_BASE, PB_VA);
 	if (!(skip & V_REGION_B30))
@@ -300,6 +303,9 @@ int main(void)
 	CHECK(mask & V_REGION_ENTRY && n != 1144, "a region entry with neither a list nor bit 25: counted, garbage (mask %#x, %d)", mask, n);
 	variant = X_ALIGN4K; frame(0, 1, &mask);
 	CHECK(mask & V_ALIGN_SOFT, "the contexts not 16 KB aligned (soft): counted (mask %#x)", mask);
+	variant = X_NONE;
+	n = frame(V_TILES, 1, &mask);
+	CHECK(mask & V_TILES && n == 1144, "0x860 not matching 0x85c: counted (soft), the picture is fine (mask %#x, %d)", mask, n);
 	variant = X_NO_CLEAR; n = frame(0, 1, &mask);
 	CHECK(mask & V_DEPTH_CLEAR && n != 1144, "no depth-only clear: counted, the depth starts as NaN and the triangle fails its test (mask %#x, %d)", mask, n);
 	variant = X_NO_CLEAR; n = frame(0, 0, &mask);

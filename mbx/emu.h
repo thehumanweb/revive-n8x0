@@ -264,15 +264,17 @@ struct pbw {
 #define V_TA_BASE	(1u << 17)	/* 0x85c lacks the base bits 0xe1 */
 #define V_REGS		(1u << 18)	/* a render or TA register of the set was not written since the last kick/start */
 #define V_WRITE_OUT	(1u << 19)	/* the chip wrote outside the target, the buffer, the tails, the regions, the contexts */
+#define V_TILES		(1u << 22)	/* 0x860 does not match the tile grid in 0x85c: the deallocation frees the wrong pages */
 #define V_PB_FILL	(1u << 21)	/* the parameter buffer was not filled with 0xf0000000 end words before the build */
 #define V_DEPTH_CLEAR	(1u << 20)	/* the scene has no depth-only clear: the tile's depth starts as NaN */
-#define V_SOFT		(V_PB_FILL | V_DEPTH_CLEAR | V_ALIGN_SOFT | V_GRID | V_FMT | V_FL_CHAIN | V_TA_BASE | V_REGS | V_WRITE_OUT)
+#define V_SOFT		(V_TILES | V_PB_FILL | V_DEPTH_CLEAR | V_ALIGN_SOFT | V_GRID | V_FMT | V_FL_CHAIN | V_TA_BASE | V_REGS | V_WRITE_OUT)
 
 struct mbxemu {
 	struct mbxemu_host host;
 	int strict;			/* violations have the chip's consequences (default) */
 	uint32_t viol;			/* this scene's violations */
 	int fl_stale;			/* a partial render has run since the free list was built */
+	int tiles_bad;			/* the last kick had 0x860 not matching 0x85c: its pages are not given back */
 	uint32_t written[0x4000 / 4 / 32];	/* registers written since they were last checked (render: the kick; TA: the start) */
 	int watch;			/* the TA or the render is running: bus writes are checked */
 	uint32_t viol_ever;
@@ -364,6 +366,7 @@ int pb_resume(struct mbxemu *e);
 void pb_close(struct mbxemu *e);
 void pb_closed(struct mbxemu *e);
 void pb_render(struct mbxemu *e);
+void pb_render_leak(struct mbxemu *e);	/* the pages a render would give back are lost */
 void so_render(struct mbxemu *e);
 void vgp_exec(const struct vgp *g, struct vgp_regs *r, int first, int last, int window);
 

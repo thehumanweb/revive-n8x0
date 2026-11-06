@@ -135,7 +135,7 @@ void mbx_ctx_load(struct mbx_device *m);	/* with the job's space active */
 int mbx_pb_build(struct mbx_device *m, unsigned long ms);	/* with the job's space active */
 void mbx_pb_set_background(struct mbx_device *m, const struct drm_mbx_submit *a);
 u32 mbx_region_bytes(const struct drm_mbx_submit *a);
-u32 mbx_tiles_value(const struct drm_mbx_submit *a, int mode);	/* 0x860, by trial mode */
+void mbx_grid(const struct drm_mbx_submit *a, u32 *tx, u32 *ty);	/* the tile grid from TA_CONFIG */
 int mbx_job_prepare_buffers(struct mbx_vm *vm, const struct drm_mbx_submit *a);	/* the region array and the tails */
 int mbx_job_region_bit30(struct mbx_vm *vm, const struct drm_mbx_submit *a);
 int mbx_ioctl_pb_dump(struct drm_device *dev, void *data, struct drm_file *file);

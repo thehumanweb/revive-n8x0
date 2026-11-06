@@ -160,6 +160,7 @@ static uint32_t kick_render(void)
 	wr(R_ADDR, SURF);
 	wr(R_STRIDE, TRI_W);
 	wr(R_PB_BASE, PB_VA);
+	mbx_contract_render_regs(&IO, TRI_W / 16, TRI_H / 16);
 	mbx_contract_prerender(&IO, REGIONS, TRI_W / 16, TRI_H / 16);
 	wr(R_HW_CONTEXT, 0);
 	wr(R_KICK, 1);

@@ -433,6 +433,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	{
 		uint32_t tx = (a->ta_config >> 20 & 0x3ff) + 1, ty = (a->ta_config >> 10 & 0x3ff) + 1;
 
+		mbx_contract_render_regs(&SIM_IO, tx, ty);
 		mbx_contract_prerender(&SIM_IO, a->ta_regions, tx, ty);	/* bit 30 on every region entry */
 	}
 	rw(R_6DC, a->r_6dc);

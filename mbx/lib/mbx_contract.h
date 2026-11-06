@@ -149,6 +149,23 @@ static inline void mbx_contract_regions(const struct mbx_io *io, uint32_t region
 			}
 }
 
+/*
+ * The render registers the model did not know the values of (found during device testing; most of
+ * them are not understood, "what GLES writes"), queued with the rest before the kick: 0x860 is the tile
+ * grid, (tiles_y - 1) << 16 | (tiles_x - 1), with the macro tile's width in bits 4-6 of X (0 up to 32 tiles).
+ */
+static inline void mbx_contract_render_regs(const struct mbx_io *io, uint32_t tx, uint32_t ty)
+{
+	io->reg(io->opaque, 0x60c, 0);
+	io->reg(io->opaque, 0x614, 0x1e3ce508);
+	io->reg(io->opaque, 0x618, 0x1e3ce508);
+	io->reg(io->opaque, 0x644, 0);
+	io->reg(io->opaque, 0x648, 1);
+	io->reg(io->opaque, 0x64c, 0);
+	io->reg(io->opaque, 0x6d0, 1);
+	io->reg(io->opaque, 0x860, (ty - 1) << 16 | (tx - 1));
+}
+
 /* The tail pointers, zeroed before each scene (the address in 0x840 must be 64 KB aligned) */
 static inline void mbx_contract_tails(const struct mbx_io *io, uint32_t tails_va, uint32_t bytes)
 {

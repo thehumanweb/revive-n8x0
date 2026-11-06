@@ -272,25 +272,9 @@ u32 mbx_region_bytes(const struct drm_mbx_submit *a)
 	return DIV_ROUND_UP(tx, mx) * mx * DIV_ROUND_UP(ty, my) * my * 8;
 }
 
-/* 0x860, tried in several encodings (module parameter tiles_mode) while the chip's is not known */
-u32 mbx_tiles_value(const struct drm_mbx_submit *a, int mode)
+void mbx_grid(const struct drm_mbx_submit *a, u32 *tx, u32 *ty)
 {
-	u32 tx, ty, mx, my, pad;
-
-	grid(a, &tx, &ty);
-	mx = mt_size(tx);
-	my = mt_size(ty);
-	pad = DIV_ROUND_UP(tx, mx) * mx * DIV_ROUND_UP(ty, my) * my;
-	switch (mode) {
-	case 1: return tx * ty;
-	case 2: return pad;
-	case 3: return tx * ty - 1;
-	case 4: return a->ta_config & 0x3ffffc00;
-	case 5: return pad - 1;
-	case 6: return tx | ty << 16;
-	case 7: return (tx - 1) | (ty - 1) << 16;
-	}
-	return 0;
+	grid(a, tx, ty);
 }
 
 /* The region array initialised and the tails zeroed: before the TA */

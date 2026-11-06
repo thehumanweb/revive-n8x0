@@ -179,7 +179,10 @@ int main(int argc, char **argv)
 	wr(R_HEIGHT, (uint32_t)(H - 1) << 16);
 	wr(R_ADDR, surf);
 	wr(R_STRIDE, W);		/* in 32-bit words */
+	wr(0x674, 0);			/* no external Z buffer */
+	wr(0x6dc, 0x3f800001);		/* clear depth 1.0, as GLES writes it */
 	wr(R_PB_BASE, pb);		/* the buffer: its first words are the background object */
+	mbx_contract_render_regs(&IO, W / 16, H / 16);
 	mbx_contract_prerender(&IO, REGIONS, W / 16, H / 16);
 	wr(R_HW_CONTEXT, 0);
 	wr(R_KICK, 1);

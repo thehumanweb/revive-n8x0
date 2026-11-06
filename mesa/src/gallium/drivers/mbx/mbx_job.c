@@ -69,11 +69,13 @@ static bool target_bos(struct mbx_context *ctx, unsigned w, unsigned h)
 	struct mbx_target_bos *t = &ctx->tbos;
 	unsigned tx, ty, mx, my, nx, ny;
 
-	if (t->regions && t->width == w && t->height == h)
+	if (t->regions[0] && t->width == w && t->height == h)
 		return true;
-	mbx_bo_unref(t->regions);
+	mbx_bo_unref(t->regions[0]);
+	mbx_bo_unref(t->regions[1]);
 	mbx_bo_unref(t->tails);
-	t->regions = t->tails = NULL;
+	t->regions[0] = t->regions[1] = t->tails = NULL;
+	t->which = 0;
 	tx = DIV_ROUND_UP(w, MBX_TILE);
 	ty = DIV_ROUND_UP(h, MBX_TILE);
 	mx = mt_size(tx);
@@ -83,12 +85,13 @@ static bool target_bos(struct mbx_context *ctx, unsigned w, unsigned h)
 	t->tiles_x = tx;
 	t->tiles_y = ty;
 	/* the region array is one entry (two words) for each tile of the macro-tile grid */
-	t->regions = mbx_bo_create(ctx->screen, align64((uint64_t)nx * mx * ny * my * 8, 4096));
+	t->regions[0] = mbx_bo_create(ctx->screen, align64((uint64_t)nx * mx * ny * my * 8, 4096));
+	t->regions[1] = mbx_bo_create(ctx->screen, align64((uint64_t)nx * mx * ny * my * 8, 4096));
 	/* the tail pointers: 64 KB aligned and 64 KB (the TA rounds the address down and the driver zeroes it) */
 	t->tails = mbx_bo_create_align64k(ctx->screen, 65536);
 	t->width = w;
 	t->height = h;
-	return t->regions && t->tails;
+	return t->regions[0] && t->regions[1] && t->tails;
 }
 
 /*
@@ -160,9 +163,9 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.ta_config = 0x80 | (uint32_t)(t->tiles_x - 1) << 20 | (uint32_t)(t->tiles_y - 1) << 10;
 	s.ta_width = (uint32_t)ctx->fb.width << 16;
 	s.ta_height = (uint32_t)ctx->fb.height << 16;
-	s.ta_regions = t->regions->va;
+	s.ta_regions = t->regions[t->which]->va;
 	s.ta_tails = t->tails->va;
-	s.r_regions = t->regions->va;
+	s.r_regions = t->regions[t->which]->va;	/* the one the TA used */
 	s.r_ctl = 0x30000;			/* depth on chip */
 	s.r_sampling = 0x00020007;
 	s.r_format = color->base.format == PIPE_FORMAT_B5G6R5_UNORM ? 0x9 : 0xe;
@@ -185,13 +188,15 @@ void mbx_job_flush(struct mbx_context *ctx)
 	} else {
 		color->last_fence = s.fence;
 		ctx->last_fence = s.fence;
+		t->which ^= 1;		/* the next scene uses the other region array */
 	}
 	mbx_job_reset(ctx);
 }
 
 void mbx_job_fini(struct mbx_context *ctx)
 {
-	mbx_bo_unref(ctx->tbos.regions);
+	mbx_bo_unref(ctx->tbos.regions[0]);
+	mbx_bo_unref(ctx->tbos.regions[1]);
 	mbx_bo_unref(ctx->tbos.tails);
 	free(ctx->job.stream);
 }
