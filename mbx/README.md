@@ -564,20 +564,15 @@ circuit.
     colour the target was filled with), channel by channel, which reads as a bitwise logic operation against the
     old pixel; the others are partly exact, partly ANDed. Which register or state word selects it is not known.
 
-36. **What the unit does with the triangle** (found during device testing, parameter buffer at device 0). The
-    footprint is the model's (1054 of 1144 pixels). The colour written to the target is the model's colour
-    **ANDed bit by bit with what the target held**: with the target filled with ones the triangle's colours are
-    exact (913-940 of 1144 pixels; the rest are within a few levels or edge pixels), with `0x20` grey the colours
-    become `colour & 0x20` (973-1000 pixels), with black everything stays black, with `0x80` grey `colour & 0x80`;
-    pixels outside the triangle keep the fill in every case. The AND does not depend on what the background
-    pass reads: the background pass maps 1:1 (a texture moved by 32 pixels gives the shifted gradient in the
-    left half of the target), and a texture taken from a separate copy of the target gives the same AND. It does not
-    depend on the state word's factor fields either: all 64 source and destination codes, with the blend flag
-    clear (1054 pixels drawn) and set (1034), give one result each; bit 25 (`0x02000000`) of the state word
-    makes the triangle disappear (it looks like a texture-stage enable: the object then samples the previous
-    texture, the target itself), bit 21 and the source factor ONE change nothing. No logic operation exists in the
-    model's 3D path (only the 2D core has ROPs, `twod.c`). Without a depth-only clear object nothing is drawn
-    (the NaN depth); the clear does not cause the AND. Registers: every bit of `0x648`, `0x64c` and `0x6d0` flipped
-    one at a time changes nothing; bits 0 and 1 of `0x644` and bits 12-25 of `0x60c` change which pixels are
-    drawn (not the AND); the render format `0x650` values other than `0xe` (and `0xd`) change the result into
-    garbage over half or all of the target. The cause of the AND is not found.
+36. **The state word and the alpha word** (found during device testing, parameter buffer at device 0). The
+    triangle's colour is exact (1144 of 1144 pixels, the model's picture, no pixel differing) with the state
+    word `0x22400200` (bit 25 set, source factor ONE, destination ZERO, Gouraud, depth LESS) **and the alpha-test
+    word `0xe0000000`** (function ALWAYS) after it. The alpha word's function is in bits 29-31 and a zero word is
+    function NEVER: with bit 25 of the state word set the unit honours it and rejects every pixel (nothing drawn),
+    with bit 25 clear it is half applied: the footprint stays but the colour is the model's colour **ANDed with
+    what the target held** (1000 of 1144 pixels; with ALWAYS and bit 25 clear 178). Source factor ZERO writes
+    black. The model applies the alpha function when bit 25 is set even with bit 14 clear. The clear object
+    takes the same alpha word (`0xe0000000`; its state word's base bits make no difference). Registers: every
+    bit of `0x648`, `0x64c` and `0x6d0` flipped one at a time changes nothing; bits 0 and 1 of `0x644` and bits
+    12-25 of `0x60c` change which pixels are drawn; the render format `0x650` values other than `0xe` (and
+    `0xd`) give garbage. Without a depth-only clear object nothing is drawn (the NaN depth).

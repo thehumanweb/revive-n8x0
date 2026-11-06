@@ -1372,7 +1372,9 @@ static void draw(struct mbxemu *e, const struct rctx *rc, const struct setup *su
 				}
 				continue;
 			}
-			if ((s & ST_ALPHATEST) &&
+			/* the alpha function counts with bit 25 of the state word set even without bit 14 (found during device testing:
+			 * NEVER, a zero alpha word, drew nothing on the N810) */
+			if ((s & (ST_ALPHATEST | 1u << 25)) &&
 			    !alpha_pass(st->at >> 29, (int)q(c[3], 255), (int)(st->at >> 21 & 0xff)))
 				continue;
 			if (!(s & ST_NODEPTHWRITE))

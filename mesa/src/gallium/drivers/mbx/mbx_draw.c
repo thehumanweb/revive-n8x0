@@ -18,6 +18,7 @@
 
 /* The ISP/TSP state word (mbx/emu.h, render.c): the bits the model reads */
 #define ST_NODEPTHWRITE	(1u << 7)
+#define ST_SRC_ONE	(1u << 29)
 #define ST_BLEND	(1u << 13)
 #define ST_ALPHATEST	(1u << 14)
 #define ST_GOURAUD	(1u << 22)
@@ -66,20 +67,20 @@ static uint32_t hw_blend_bits(struct mbx_context *ctx)
 	int sf, df;
 
 	if (!rt)
-		return 0;
+		return ST_SRC_ONE;
 	if (!rt->colormask)
 		return ST_ALPHANEVER;	/* no colour written: the depth still is */
 	if (rt->colormask != 0xf)
 		mesa_logw_once("mbx: a partial colour mask is not supported yet");
 	if (!rt->blend_enable)
-		return 0;
+		return ST_SRC_ONE;	/* (ONE, ZERO) is no blend; the zero code would write black */
 	sf = hw_factor(rt->rgb_src_factor, false, &sat);
 	df = hw_factor(rt->rgb_dst_factor, true, &sat);
 	if (rt->rgb_func != PIPE_BLEND_ADD || rt->alpha_func != PIPE_BLEND_ADD ||
 	    rt->rgb_src_factor != rt->alpha_src_factor || rt->rgb_dst_factor != rt->alpha_dst_factor ||
 	    sf < 0 || df < 0) {
 		mesa_logw_once("mbx: this blend state is not supported yet (separate or non-add blending, or a constant colour)");
-		return 0;
+		return ST_SRC_ONE;
 	}
 	st = ST_BLEND | (uint32_t)sf << 29 | (uint32_t)df << 26;
 	if (sat)
@@ -93,6 +94,7 @@ static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_prog
 	const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
 	unsigned func = 7;	/* always */
 
+	st |= 1u << 25;		/* with the alpha word ALWAYS (0xe0000000): the colour is exact; without bit 25 it is ANDed with the target */
 	if (prog->gouraud)
 		st |= ST_GOURAUD;
 	if (dsa && dsa->depth_enabled) {
@@ -152,7 +154,7 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 
 	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | 0x20 | 0x80 | 0x100);
 	mbx_emit(ctx, MBX_CH_TA, hw_state_word(ctx, prog));
-	mbx_emit(ctx, MBX_CH_TA, 0);			/* alpha test: off */
+	mbx_emit(ctx, MBX_CH_TA, 0xe0000000);		/* alpha function ALWAYS (0 is NEVER, which rejects every pixel with bit 25 set) */
 	mbx_emit(ctx, MBX_CH_TA, layout);
 	mbx_emit_f(ctx, MBX_CH_TA, vp->scale[0]);	/* x scale, x offset, y offset, y scale */
 	mbx_emit_f(ctx, MBX_CH_TA, vp->translate[0]);

@@ -4,7 +4,7 @@
  * DRM_IOCTL_MBX_BO_CREATE/INFO, the same stream (tri_frame.h) in one
  * DRM_IOCTL_MBX_SUBMIT, the picture read back through the buffer's mmap.
  *
- *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-G] [-X mode] [-W raw.bin] [-F fill] [-Z] [-K clear_state] [-R prefix] [-C r_ctl] [-M r_sampling] [-S state_word]
+ *   mbxtri-drm [-a degrees] [-d /dev/dri/renderD129] [-o out.ppm] [-D] [-P file] [-E] [-G] [-X mode] [-W raw.bin] [-F fill] [-Z] [-K clear_state] [-A alpha] [-B clear_alpha] [-R prefix] [-C r_ctl] [-M r_sampling] [-S state_word]
  *
  * -D dumps what the job left in the region array, the tail pointers and the
  * background-object buffer (nonzero words), to see where the TA binned the triangle.
@@ -110,7 +110,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -119,6 +119,8 @@ int main(int argc, char **argv)
 		else if (o == 'E') empty = 1;
 		else if (o == 'G') gradient = 1;
 		else if (o == 'W') rawfile = optarg;
+		else if (o == 'A') tri_alpha_word = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'B') tri_clear_alpha = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'K') tri_clear_state = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'Z') dbl = 1;	/* -Z: a target twice the size, both halves filled: the background texture can come from the second half (driver bg_shift 16384) */
 		else if (o == 'F') fill = (uint32_t)strtoul(optarg, NULL, 0);	/* -F: what the CPU fills the target with */

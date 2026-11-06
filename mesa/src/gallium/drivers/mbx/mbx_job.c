@@ -112,7 +112,7 @@ static void emit_frame_start(struct mbx_context *ctx, float depth)
 	mbx_emit(ctx, MBX_CH_TA, 0x03c00000);
 	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | 0x20);	/* state, alpha test, layout */
 	mbx_emit(ctx, MBX_CH_TA, 0xe00 | 0x100);	/* depth always, written; no colour */
-	mbx_emit(ctx, MBX_CH_TA, 0);
+	mbx_emit(ctx, MBX_CH_TA, 0xe0000000);	/* alpha function ALWAYS */
 	mbx_emit(ctx, MBX_CH_TA, 0x3);		/* vertices: three floats */
 	mbx_emit(ctx, MBX_CH_TA, 0x70000000);	/* a triangle list */
 	mbx_emit(ctx, MBX_CH_TA, 0xb00b0800);	/* screen space */
