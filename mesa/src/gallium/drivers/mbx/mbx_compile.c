@@ -617,6 +617,22 @@ bool mbx_compile_vs(nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp
 	struct cc c = { .nir = vs, .fs = fs, .prog = prog, .max_uniform = -1 };
 	bool ok = pass_one(&c) && pass_two(&c);
 
+	if (ok) {
+		struct vsrc ps = c.outs[VARYING_SLOT_PSIZ][0];
+
+		prog->psize_kind = MBX_PSIZE_STATE;	/* not written: the rasterizer state's size */
+		if (ps.kind == V_IMM) {
+			prog->psize_kind = MBX_PSIZE_IMM;
+			prog->psize = ps.imm;
+		} else if (ps.kind == V_CONST) {
+			prog->psize_kind = MBX_PSIZE_UNIFORM;
+			prog->psize_slot = ps.idx;
+			prog->psize_lane = ps.lane;
+		} else if (ps.kind != V_NONE) {
+			mesa_logw_once("mbx: gl_PointSize that varies per vertex is not supported (one size per draw)");
+		}
+	}
+
 	if (!ok)
 		mesa_loge("mbx: vertex shader not compiled: %s", c.why ? c.why : "unknown");
 	free(c.ops);

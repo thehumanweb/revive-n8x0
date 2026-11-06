@@ -250,6 +250,9 @@ static uint32_t hw_prim_word(unsigned mode)
 	case MESA_PRIM_TRIANGLES: return 0x70000000;
 	case MESA_PRIM_TRIANGLE_STRIP: return 0x40000000;
 	case MESA_PRIM_TRIANGLE_FAN: return 0x50000000;
+	case MESA_PRIM_LINES:			/* a line strip restarted after each segment (control word 0) */
+	case MESA_PRIM_LINE_STRIP: return 0x60000000;
+	case MESA_PRIM_POINTS: return 0xe0000000;
 	default: return 0;
 	}
 }
@@ -348,6 +351,25 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		emit_program(ctx, prog);
 		mbx_dbg("draw %u: %u vertices", d, draws[d].count);
 		mbx_emit(ctx, MBX_CH_TA, prim | hw_cull_bits(ctx));
+		if (prim >> 28 == 0x6 || prim >> 28 == 0xe) {
+			/* lines and points carry half their width or size (one for the object) */
+			float w = ctx->rast ? (prim >> 28 == 0xe ? ctx->rast->point_size : ctx->rast->line_width) : 1.0f;
+
+			if (prim >> 28 == 0xe && prog->psize_kind == MBX_PSIZE_IMM) {
+				w = prog->psize;
+			} else if (prim >> 28 == 0xe && prog->psize_kind == MBX_PSIZE_UNIFORM) {
+				const float *u = NULL;
+
+				if (ctx->cb[0].user_buffer)
+					u = (const float *)((const uint8_t *)ctx->cb[0].user_buffer + ctx->cb[0].buffer_offset);
+				else if (ctx->cb[0].buffer)
+					u = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[0].buffer)->bo) +
+							    ctx->cb[0].buffer_offset);
+				if (u)
+					w = u[prog->psize_slot * 4 + prog->psize_lane];
+			}
+			mbx_emit_f(ctx, MBX_CH_TA, CLAMP(w, 1.0f, 32.0f) * 0.5f);
+		}
 		mbx_emit(ctx, MBX_CH_TA, prog->sections);
 		for (i = 0; i < draws[d].count; i++) {
 			unsigned idx = draws[d].start + i;
@@ -361,6 +383,8 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 			if (info->index_size)
 				idx += draws[d].index_bias;	/* undefined for a draw without indices */
 			emit_vertex(ctx, comps, idx, info->start_instance, vb_ptr);
+			if (info->mode == MESA_PRIM_LINES && (i & 1) && i + 1 < draws[d].count)
+				mbx_emit(ctx, MBX_CH_CTL, 0);	/* the next segment starts a new strip */
 		}
 		mbx_emit(ctx, MBX_CH_CTL, 1);		/* the object ends */
 		mbx_dbg("draw %u: done, stream %u words", d, ctx->job.n);

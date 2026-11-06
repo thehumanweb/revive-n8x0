@@ -22,7 +22,7 @@ the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 | GLES2 feature | MBX mechanism | Driver |
 |---|---|---|
 | Triangles, strips, fans | TA primitive types | done |
-| Points, lines (width, `gl_PointSize`) | TA primitive types, quads from the VGP | not done (points rejected) |
+| Points, lines (width, `gl_PointSize`) | TA primitive types (`0xe`, `0x6`), one size or width per object | done: points (size from a constant or uniform `gl_PointSize`), lines, strips, restarts; `gles2_feat` probes them |
 | Vertex shaders (VGP, 256 instructions) | VGP programs | done for the NIR subset in `mbx_compile.c` |
 | Depth test and write, all 8 functions | ISP, state word bits 9-11, 7 | done |
 | Culling, polygon offset | TA cull bits, state bit 23 | cull done, offset not |

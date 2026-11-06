@@ -43,6 +43,10 @@ struct mbx_vgp_program {
 	bool gouraud;			/* the varying colour is interpolated */
 	uint32_t st_extra;		/* ISP/TSP state bits the shader wants */
 	uint32_t sections;		/* the sections word this program's draws send */
+	/* gl_PointSize: the TA takes one size for the object, so only a constant or a uniform works */
+	enum { MBX_PSIZE_STATE, MBX_PSIZE_IMM, MBX_PSIZE_UNIFORM } psize_kind;
+	float psize;			/* MBX_PSIZE_IMM */
+	unsigned psize_slot, psize_lane;	/* MBX_PSIZE_UNIFORM: the constant buffer's vec4 and lane */
 	struct mbx_vgp_program *next;
 };
 
