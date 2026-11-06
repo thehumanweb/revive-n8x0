@@ -86,6 +86,10 @@ static void mbx_feed(struct mbx_device *m, const u32 *w, u32 n)
 
 /* debug: 1 resets the cores sixteen times, interrupts off, 0x85c = 0x80, as the stock daemon's bring-up does */
 static int reset16;
+bool pb_every;
+module_param(pb_every, bool, 0644);
+bool ctx_every = true;	/* the stock daemon zeroes the EVM context before every scene (found during device testing) */
+module_param(ctx_every, bool, 0644);
 unsigned int tails_zero = 0x10000;
 module_param(tails_zero, uint, 0644);
 module_param(reset16, int, 0644);

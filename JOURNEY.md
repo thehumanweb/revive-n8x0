@@ -661,3 +661,13 @@ What the unit shows (`mbxtri-drm -D` now dumps the region array even after a fai
 - Not yet tried: the EVM context's slots (macro-tile index), one parameter-buffer page per macro tile, a second region array.
 
 - Sources: user (found during device testing) for the daemon's formulas; the unit's runs (`mbxtri-drm -D`, sizes via `-DTRI_W/-DTRI_H`, `trace=1` interrupt statuses); `build/dev256.ppm` against `build/mhost256x256.ppm`.
+
+### 2026-11-06: the contexts before every job; the large scenes then draw what the model draws
+
+The user's answers from the device daemon: its background object scales with the padded grid (the driver already did that: corners `2 x padded`, texture coordinates `padded / 1024`), its `0x85c` carries bit 18 (tried: no change here), the EVM context is zeroed before every scene (520 bytes, 64 slots, slot = macro row x 8 + macro column), the parameter buffer is about 1024 pages. The driver loaded and zeroed the contexts once per module (`ctx_loaded`), so the next scene started with the slot state the chip had left. That is the cause of the size sweep's chaos, and the earlier size boundary was an artefact of it: with identical arguments even 128x128 gave 4552, 4928, 7439 or 5795 pixels, and a failed job leaves state behind that a module reload does not clear.
+
+The driver now zeroes and loads the contexts before every job (`ctx_every`, default on; the module parameter switches it off). With it, on the unit: 256x256 draws 18360 pixels, 400x240 26880 and 800x480 107520, the model's counts exactly, in 7 of 8 runs (without it 3 of 6 runs of each failed at first). The host `mbxtri` now lays its buffers out after the target (it overlapped at 800x480), so the model's 800x480 picture exists (107520 pixels); `mbxtri-drm -D` prints a tile map. Rebuilding the free list before every job (`pb_every`) makes it worse (more failures and wrong counts), so it stays off.
+
+Not solved: about one run in eight still draws nothing or hangs (the bad run was the second of a fresh module instance in one series and the third in another, and 800x480 settled only after three failed starts), and `gbm_tri` on the panel still fails most jobs (job 5 of 6 passed, `-110` for the others). The interrupt statuses of a bad job look like a good one's (`0x11` then `0x4d`), so the render ran and produced nothing; the second run lacked the free-list build (`EVM_DALLOC`) that the first run has.
+
+- Sources: user (found during device testing) for the daemon's behaviour (EVM context zeroed before every scene, the background object's padded values, bit 18, the page count); the unit's runs (`mbxtri-drm` sizes, `ctx_every`, `pb_every`, `trace=1`), the host model at the same sizes.

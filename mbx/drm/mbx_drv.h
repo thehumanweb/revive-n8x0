@@ -112,6 +112,8 @@ static inline u32 mbx_read(struct mbx_device *m, u32 reg)
 	return readl(m->regs + reg);
 }
 
+extern bool pb_every;	/* debug: fill the parameter buffer and build the free list before every job */
+extern bool ctx_every;	/* debug: zero and load the contexts before every job (the stock daemon zeroes the EVM context before every scene) */
 extern unsigned int tails_zero;	/* debug: bytes of the tail area zeroed per scene (default 64 KB) */
 extern bool mbx_trace;	/* debug: log every register write and TA word (KERN_DEBUG, in dmesg) */
 

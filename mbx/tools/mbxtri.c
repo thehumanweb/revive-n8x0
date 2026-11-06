@@ -19,7 +19,7 @@
 #include "../mbxemu.h"
 
 #define RAM_BASE	0x80000000u
-#define RAM_SIZE	(8u << 20)
+#define RAM_SIZE	(24u << 20)
 #include "tri_frame.h"
 
 #define W		TRI_W
@@ -82,11 +82,12 @@ static uint32_t rd(uint32_t reg) { return mbxemu_reg_read(E, reg); }
 
 /* device addresses (the MMU maps them one to one on RAM_BASE) and the page tables' place in RAM */
 #define SURF		0x10000u
-#define REGIONS		0x20000u
-#define TAILS		0x30000u		/* 64 KB aligned */
-#define CTX		0x50000u		/* the TA and EVM contexts: 32 KB, 16 KB aligned */
+/* after the target: the region array (up to 64 KB), the tails (64 KB aligned), the contexts */
+#define REGIONS		((SURF + W * H * 4 + 0xffffu) & ~0xffffu)
+#define TAILS		(REGIONS + 0x10000u)	/* 64 KB aligned */
+#define CTX		(TAILS + 0x10000u)	/* the TA and EVM contexts: 32 KB, 16 KB aligned */
 #define PB		0x0u			/* the parameter buffer, at device address 0: its first words are the background object */
-#define PT_OFF		0x180000u
+#define PT_OFF		0x1000000u
 
 static void c_wr32(void *o, uint32_t va, uint32_t v) { (void)o; memcpy(ram + va, &v, 4); }
 static uint32_t c_rd32(void *o, uint32_t va) { uint32_t v; (void)o; memcpy(&v, ram + va, 4); return v; }
@@ -119,7 +120,7 @@ int main(int argc, char **argv)
 		mbxemu_set_trace(E, 1);
 
 	/* the MMU: pages 0x10..0x7f one to one on RAM (the buffers below), the rest of the space nothing */
-	for (i = 0x10; i < 0x80; i++)
+	for (i = 0x10; i < PT_OFF / 4096; i++)
 		((uint32_t *)(ram + PT_OFF))[i] = RAM_BASE + (uint32_t)i * 4096;
 	((uint32_t *)(ram + PT_OFF))[0] = RAM_BASE;	/* device page 0 (the parameter buffer's first, the background object's) */
 	for (i = 0; i < 8; i++)
@@ -137,7 +138,7 @@ int main(int argc, char **argv)
 	mbx_contract_contexts(&IO, CTX);
 	mbx_contract_background(&IO, PB, SURF, W, W / 16, H / 16, 0);
 	mbx_contract_regions(&IO, REGIONS, W / 16, H / 16);
-	mbx_contract_tails(&IO, TAILS, 4096);
+	mbx_contract_tails(&IO, TAILS, 65536);
 
 	/* 1. the TA: tile grid (16-pixel tiles), regions, size, then start */
 	wr(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE);

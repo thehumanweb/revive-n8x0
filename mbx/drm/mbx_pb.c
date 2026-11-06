@@ -87,7 +87,7 @@ int mbx_pb_build(struct mbx_device *m, unsigned long ms)
 {
 	unsigned long flags;
 
-	if (m->pb_built)
+	if (m->pb_built && !pb_every)
 		return 0;
 	spin_lock_irqsave(&m->irq_lock, flags);
 	m->pending &= ~MBX_INT_EVM_DALLOC;
@@ -194,7 +194,7 @@ void mbx_ctx_load(struct mbx_device *m)
 	struct sg_table *sgt;
 	u32 i;
 
-	if (m->ctx_loaded)
+	if (m->ctx_loaded && !ctx_every)
 		return;
 	sgt = drm_gem_shmem_get_pages_sgt(shmem);
 	if (IS_ERR(sgt))

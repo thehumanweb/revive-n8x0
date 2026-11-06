@@ -242,6 +242,24 @@ int main(int argc, char **argv)
 			fprintf(stderr, "%s (%d nonzero words)\n", n > 64 ? " ..." : "", n);
 		}
 	}
+	if (dump) {	/* -D: a map of the tiles, '.' nothing drawn, 'o' some pixels, '#' more than half the tile */
+		int tx, ty;
+
+		for (ty = 0; ty < (TRI_H + 15) / 16; ty++) {
+			char line[256];
+
+			for (tx = 0; tx < (TRI_W + 15) / 16 && tx < 255; tx++) {
+				int n = 0;
+
+				for (y = ty * 16; y < ty * 16 + 16 && y < TRI_H; y++)
+					for (x = tx * 16; x < tx * 16 + 16 && x < TRI_W; x++)
+						n += px[y * TRI_W + x] != TRI_CLEAR;
+				line[tx] = !n ? '.' : n > 128 ? '#' : 'o';
+			}
+			line[tx] = 0;
+			fprintf(stderr, "map %2d %s\n", ty, line);
+		}
+	}
 	if (rawfile && (f = fopen(rawfile, "wb"))) {	/* -W: the target's 32-bit words as the CPU reads them, alpha included */
 		fwrite(px, 4, TRI_W * TRI_H, f);
 		fclose(f);
