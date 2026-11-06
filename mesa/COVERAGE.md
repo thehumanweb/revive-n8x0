@@ -1,8 +1,9 @@
 # GLES2 coverage on the MBX1: what the hardware offers, what the driver uses
 
 Measured with piglit's GLES2 tests on the host sim (`mesa/scripts/run-piglit.sh`, 141 tests; the list is
-`mesa/tests/piglit-gles2.txt`, the last result `mesa/tests/piglit-baseline.txt`): 103 pass, 6 fail, 1 crash,
-31 skip. Most passes are compile-only GLSL ES tests; almost no test that draws and reads back passes yet, because
+`mesa/tests/piglit-gles2.txt`, the last result `mesa/tests/piglit-baseline.txt`): at the start 103 pass, 6 fail, 1 crash,
+31 skip. The driver's own feature tests (`mesa/tests/gles2_feat.c`, 22 probes: primitives, scissor, textures, fragment
+uniforms, blending, culling, depth) pass on the host sim **and on the N810** (Mesa on the real chip, 2026-11-07). Most passes are compile-only GLSL ES tests; almost no test that draws and reads back passes yet, because
 the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 
 ## Baseline failures and skips (2026-11-06)

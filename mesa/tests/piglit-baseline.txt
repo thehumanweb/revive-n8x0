@@ -119,7 +119,7 @@ pass spec@glsl-es-1.00@compiler@structure-and-array-operations@sampler-array-ind
 pass spec@glsl-es-1.00@compiler@version-macro.frag
 pass spec@glsl-es-1.00@execution@array-of-float-using-default-precision
 fail spec@glsl-es-1.00@execution@glsl-no-vertex-attribs
-fail spec@glsl-es-1.00@execution@sanity
+pass spec@glsl-es-1.00@execution@sanity
 fail spec@glsl-es-1.00@execution@unroll-do-while-false-loop-only-once
 pass spec@glsl-es-1.00@linker@glsl-default-precision-qualifier-redeclaration
 pass spec@glsl-es-1.00@linker@glsl-fcoord-invariant
