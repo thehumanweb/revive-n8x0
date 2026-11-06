@@ -64,10 +64,11 @@ int main(int argc, char **argv)
 {
 	const char *out = "gles2_tri.ppm";
 	float deg = 0;
-	int o, i, x, y, lit = 0, blend = 0;
+	int o, i, x, y, lit = 0, blend = 0, reps = 1, rep;
 
-	while ((o = getopt(argc, argv, "a:o:b:")) != -1) {
+	while ((o = getopt(argc, argv, "a:o:b:n:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
+		else if (o == 'n') reps = atoi(optarg);
 		else if (o == 'o') out = optarg;
 		else if (o == 'b') blend = atoi(optarg);
 		else return 2;
@@ -154,6 +155,9 @@ int main(int argc, char **argv)
 	};
 
 	glViewport(0, 0, W, H);
+	unsigned char *px = malloc(W * H * 4);
+
+	for (rep = 0; rep < reps; rep++) {	/* -n: the same frame again, one job each */
 	glClearColor(32 / 255.0f, 32 / 255.0f, 32 / 255.0f, 1.0f);
 	glClearDepthf(1.0f);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -173,10 +177,16 @@ int main(int argc, char **argv)
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 	CHECK_GL("draw");
 
-	unsigned char *px = malloc(W * H * 4);
-
 	glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
 	CHECK_GL("readpixels");
+	if (reps > 1) {
+		int n = 0;
+
+		for (i = 0; i < W * H; i++)
+			n += (px[4 * i] != 32 || px[4 * i + 1] != 32 || px[4 * i + 2] != 32);
+		fprintf(stderr, "gles2_tri: frame %d: %d pixels drawn\n", rep, n);
+	}
+	}
 
 	FILE *f = fopen(out, "wb");
 

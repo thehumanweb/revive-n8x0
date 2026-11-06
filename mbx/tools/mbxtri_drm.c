@@ -136,7 +136,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	/* the tails: 64 KB aligned and 64 KB (the TA rounds the address down); the driver zeroes them */
-	if ((ret = bo_new(fd, &surf, TRI_W * TRI_H * 4 * (dbl ? 2 : 1), 1, 0)) || (ret = bo_new(fd, &regions, 4096, dump, 0)) ||
+	if ((ret = bo_new(fd, &surf, TRI_W * TRI_H * 4 * (dbl ? 2 : 1), 1, 0)) || (ret = bo_new(fd, &regions, TRI_W * TRI_H > 4096 ? 65536 : 4096, dump, 0)) ||
 	    (ret = bo_new(fd, &tails, 65536, dump, MBX_BO_INFO_ALIGN_64K))) {
 		fprintf(stderr, "mbxtri-drm: buffers: %s\n", strerror(-ret));
 		return 1;

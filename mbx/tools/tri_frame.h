@@ -12,8 +12,12 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifndef TRI_W
 #define TRI_W		64
+#endif
+#ifndef TRI_H
 #define TRI_H		64
+#endif
 #define TRI_CLEAR	0xff202020u
 
 #define CH_TA		0
