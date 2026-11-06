@@ -126,6 +126,11 @@ static const struct dma_fence_ops mbx_fence_ops = {
 	.get_timeline_name = mbx_fence_timeline_name,
 };
 
+/* debug: bits ORed into 0x85c (the stock stack sets bit 18, 0x40000, when the target has no external Z) */
+static unsigned int ta_extra;
+module_param(ta_extra, uint, 0644);
+MODULE_PARM_DESC(ta_extra, "debug: bits ORed into TA_CONFIG (0x85c)");
+
 /* The frame, on the hardware: with the job lock held, in the job's address space */
 static int mbx_job_run(struct mbx_job *job)
 {
@@ -153,7 +158,7 @@ static int mbx_job_run(struct mbx_job *job)
 		goto reset;
 	mbx_write(m, MBX_REG_TA_854, 0x3727c5ac);
 	mbx_write(m, MBX_REG_TA_858, 0x3727c5ac);
-	mbx_write(m, MBX_REG_TA_CONFIG, a->ta_config | 0xe1);	/* the stock stack's base bits */
+	mbx_write(m, MBX_REG_TA_CONFIG, a->ta_config | 0xe1 | ta_extra);	/* the stock stack's base bits */
 	mbx_write(m, MBX_REG_TA_WIDTH, a->ta_width);
 	mbx_write(m, MBX_REG_TA_HEIGHT, a->ta_height);
 	mbx_write(m, MBX_REG_TA_REGIONS, a->ta_regions);
@@ -199,6 +204,10 @@ static int mbx_job_run(struct mbx_job *job)
 	mbx_write(m, MBX_REG_PB_BASE, MBX_PB_VA);
 	mbx_write(m, MBX_REG_R_6DC, a->r_6dc);
 	mbx_write(m, MBX_REG_R_HW_CONTEXT, a->ta_context);
+	if (unlikely(mbx_trace))
+		printk(KERN_DEBUG "mbx: R before the kick: 0860 %08x 0614 %08x 0618 %08x 0854 %08x 085c %08x 0610 %08x\n",
+		       mbx_read(m, MBX_REG_TILES), mbx_read(m, 0x614), mbx_read(m, 0x618), mbx_read(m, MBX_REG_TA_854),
+		       mbx_read(m, MBX_REG_TA_CONFIG), mbx_read(m, MBX_REG_R_CTL));
 	mbx_write(m, MBX_REG_R_KICK, 1);
 	if (unlikely(mbx_trace))
 		printk(KERN_DEBUG "mbx: S after the kick %08x\n", mbx_read(m, MBX_REG_INT_STATUS));

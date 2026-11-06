@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
 #include <linux/highmem.h>
+#include <linux/delay.h>
 #include <linux/jiffies.h>
 #include <linux/log2.h>
 #include <linux/minmax.h>
@@ -188,7 +189,17 @@ void mbx_ctx_load(struct mbx_device *m)
 	mbx_write(m, MBX_REG_TA_CTX, MBX_CTX_VA);
 	mbx_write(m, MBX_REG_EVM_CTX, MBX_CTX_VA + 0x4000);
 	mbx_write(m, MBX_REG_TA_CONTEXT_ID, 0);
+	/* as the stock daemon does: clear TA_CONTEXT, store, poll for it up to 50 ms, clear it again */
+	mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_TA_CONTEXT);
 	mbx_write(m, MBX_REG_TA_STORE, 1);
+	for (i = 0; i < 500; i++) {
+		if (mbx_read(m, MBX_REG_INT_STATUS) & MBX_INT_TA_CONTEXT)
+			break;
+		usleep_range(100, 200);
+	}
+	mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_TA_CONTEXT);
+	if (unlikely(mbx_trace))
+		printk(KERN_DEBUG "mbx: S after the context store (%u polls) %08x\n", i, mbx_read(m, MBX_REG_INT_STATUS));
 	m->ctx_loaded = true;
 }
 

@@ -165,6 +165,15 @@ int main(int argc, char **argv)
 		fprintf(stderr, "mbxtri-drm: submit: %s\n", strerror(errno));
 		return 1;
 	}
+	{
+		/* SUBMIT only queues the job: wait for its fence before the CPU looks at what it drew */
+		struct drm_mbx_wait_fence w = { .fence = s.fence, .timeout_ns = 10ull * 1000000000ull };
+
+		if (ioctl(fd, DRM_IOCTL_MBX_WAIT_FENCE, &w)) {
+			fprintf(stderr, "mbxtri-drm: wait for the job: %s\n", strerror(errno));
+			return 1;
+		}
+	}
 	if (regprefix)
 		reg_dump(fd, regprefix, "after");
 	if (pbfile) {

@@ -21,6 +21,8 @@ def writes(text):
         if m: r.append(('W', int(m.group(2), 16), int(m.group(3), 16))); continue
         m = re.search(r'mbx: ([TC]) ([0-9a-f]{8})', line)
         if m: r.append((m.group(1), int(m.group(2), 16))); continue
+        m = re.search(r'mbx: R before the kick: (.*)$', line)
+        if m: r.append(('R', m.group(1))); continue
         m = re.search(r'mbx: S (.*) ([0-9a-f]{8})$', line)
         if m: r.append(('S', m.group(1), int(m.group(2), 16))); continue
         m = re.search(r'mbx: I status ([0-9a-f]{8}) enable ([0-9a-f]{8}) handled ([0-9a-f]{8})', line)
@@ -53,6 +55,8 @@ for job in ('1', '2'):
             p("  W %04x <- %08x" % (e[1], e[2]))
         elif e[0] == 'S':
             p("  ---- INT_STATUS %s: %08x" % (e[1], e[2]))
+        elif e[0] == 'R':
+            p("  ---- read back before the kick: " + e[1])
         elif e[0] == 'I':
             p("  ---- interrupt: INT_STATUS %08x, INT_ENABLE %08x, handled %08x" % (e[1], e[2], e[3]))
         else:
@@ -88,7 +92,8 @@ for job in ('1', '2'):
         for r, x in rows[:40]:
             p("    +%04x  " % (r * 4) + " ".join("%08x" % v for v in x))
         if len(rows) > 40: p("    ...")
-    p("  free-list table, first 8 entries: " + " ".join("%04x" % (v & 0xffff) for v in tab[:4]))
+    ents = [x for v in tab for x in (v & 0xffff, v >> 16)]
+    p("  free-list table, 16-bit entries 0..31 (entry p holds the page after p; entry 0 the first page): " + " ".join("%04x" % x for x in ents))
     p()
     img = open(os.path.join(d, 'j%s.ppm' % job), 'rb').read().split(b'\n', 3)[3]
     c = Counter(img[i:i + 3] for i in range(0, len(img), 3))
