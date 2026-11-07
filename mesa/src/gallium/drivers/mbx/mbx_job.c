@@ -165,6 +165,38 @@ bool mbx_job_begin(struct mbx_context *ctx)
 	return true;
 }
 
+/*
+ * What a job drew into a scanout buffer, for the KMS driver's next update of it (omapdrm, kernel patch 0065): the rectangle of the rendered
+ * tiles when only some were (a partial render: README assumption 50, the rest of the buffer is the previous frame by the buffer-age rule),
+ * FULL when the whole target was rendered. Mirrors include/uapi/drm/omap_drm.h of that patch.
+ */
+struct mbx_omap_gem_damage {
+	uint32_t handle, flags, x1, y1, x2, y2;
+};
+#define MBX_OMAP_GEM_DAMAGE_FULL 0x1
+#define MBX_DRM_IOCTL_OMAP_GEM_DAMAGE DRM_IOW(DRM_COMMAND_BASE + 0x07, struct mbx_omap_gem_damage)
+
+static void report_scanout_damage(struct mbx_context *ctx, struct mbx_resource *color, uint32_t damage)
+{
+	struct mbx_screen *screen = ctx->screen;
+	struct mbx_omap_gem_damage d = { .handle = color->scanout->handle };
+
+	if (screen->no_omap_damage || !screen->ro || getenv("MBX_NO_OMAP_DAMAGE"))
+		return;
+	if (!damage) {
+		d.flags = MBX_OMAP_GEM_DAMAGE_FULL;
+	} else {
+		d.x1 = (damage & 0xff) * 16;
+		d.y1 = (damage >> 8 & 0xff) * 16;
+		d.x2 = MIN2((damage >> 16 & 0xff) * 16, ctx->fb.width);
+		d.y2 = MIN2((damage >> 24 & 0xff) * 16, ctx->fb.height);
+	}
+	if (drmIoctl(screen->ro->kms_fd, MBX_DRM_IOCTL_OMAP_GEM_DAMAGE, &d)) {
+		mbx_dbg("no omapdrm damage ioctl (%d): not reporting damage of scanout buffers", errno);
+		screen->no_omap_damage = true;
+	}
+}
+
 void mbx_job_flush(struct mbx_context *ctx)
 {
 	struct mbx_job *job = &ctx->job;
@@ -256,6 +288,8 @@ void mbx_job_flush(struct mbx_context *ctx)
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
+		if (color->scanout)
+			report_scanout_damage(ctx, color, s.damage);
 		if (zstored) {
 			job->zr->last_fence = s.fence;
 			job->zr->zvalid = true;

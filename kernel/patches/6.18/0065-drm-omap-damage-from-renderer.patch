@@ -1,0 +1,248 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] drm/omap: send the damage a renderer reports for a scanout buffer
+
+A renderer that knows what it drew into a scanout buffer (the MBX driver's Mesa: a partial render only touches the damaged tiles, and the
+buffer-age rule says the rest equals the previous frame) can tell omapdrm with DRM_IOCTL_OMAP_GEM_DAMAGE: the rectangle that changed, or
+FULL when it does not know. The reports since the last update are added up (frames rendered and not flipped count), and the next flip of
+the buffer sends only that rectangle to a manually updated display when the commit has no FB_DAMAGE_CLIPS of its own (the clips of a commit
+win). Without a report for the buffer the whole frame goes, as before. The module parameter omapdrm.renderer_damage=0 turns it off.
+
+---
+--- a/include/uapi/drm/omap_drm.h
++++ b/include/uapi/drm/omap_drm.h
+@@ -90,6 +90,19 @@
+ 	__u32 __pad;
+ };
+ 
++/*
++ * What a renderer drew into a scanout buffer: the rectangle (pixels in the buffer, x2 and y2 exclusive) that differs from the previous
++ * frame, or OMAP_GEM_DAMAGE_FULL when that is not known. A manually updated display (RFBI) sends only this on the next flip of the
++ * buffer when the commit carries no FB_DAMAGE_CLIPS of its own; damage of frames that were rendered and not flipped adds up.
++ */
++#define OMAP_GEM_DAMAGE_FULL		0x1
++
++struct drm_omap_gem_damage {
++	__u32 handle;			/* buffer handle (in) */
++	__u32 flags;			/* OMAP_GEM_DAMAGE_* (in) */
++	__u32 x1, y1, x2, y2;		/* the rectangle (in) */
++};
++
+ struct drm_omap_gem_info {
+ 	__u32 handle;			/* buffer handle (in) */
+ 	__u32 pad;
+@@ -110,7 +123,8 @@
+ #define DRM_OMAP_GEM_CPU_PREP		0x04	/* Deprecated, to be removed */
+ #define DRM_OMAP_GEM_CPU_FINI		0x05	/* Deprecated, to be removed */
+ #define DRM_OMAP_GEM_INFO		0x06
+-#define DRM_OMAP_NUM_IOCTLS		0x07
++#define DRM_OMAP_GEM_DAMAGE		0x07
++#define DRM_OMAP_NUM_IOCTLS		0x08
+ 
+ #define DRM_IOCTL_OMAP_GET_PARAM	DRM_IOWR(DRM_COMMAND_BASE + DRM_OMAP_GET_PARAM, struct drm_omap_param)
+ #define DRM_IOCTL_OMAP_SET_PARAM	DRM_IOW (DRM_COMMAND_BASE + DRM_OMAP_SET_PARAM, struct drm_omap_param)
+@@ -118,6 +132,7 @@
+ #define DRM_IOCTL_OMAP_GEM_CPU_PREP	DRM_IOW (DRM_COMMAND_BASE + DRM_OMAP_GEM_CPU_PREP, struct drm_omap_gem_cpu_prep)
+ #define DRM_IOCTL_OMAP_GEM_CPU_FINI	DRM_IOW (DRM_COMMAND_BASE + DRM_OMAP_GEM_CPU_FINI, struct drm_omap_gem_cpu_fini)
+ #define DRM_IOCTL_OMAP_GEM_INFO		DRM_IOWR(DRM_COMMAND_BASE + DRM_OMAP_GEM_INFO, struct drm_omap_gem_info)
++#define DRM_IOCTL_OMAP_GEM_DAMAGE	DRM_IOW (DRM_COMMAND_BASE + DRM_OMAP_GEM_DAMAGE, struct drm_omap_gem_damage)
+ 
+ #if defined(__cplusplus)
+ }
+--- a/drivers/gpu/drm/omapdrm/omap_drv.c
++++ b/drivers/gpu/drm/omapdrm/omap_drv.c
+@@ -602,6 +602,42 @@
+ 	return ret;
+ }
+ 
++/*
++ * A renderer (the MBX driver's Mesa) says what it drew into a scanout buffer: the rectangle that changed since the previous frame. It is
++ * added to what has been reported since the last update, and the next flip of this buffer sends only that when the commit has no damage
++ * clips of its own (omap_plane_crop_to_damage()). Not knowing (FULL) sends the whole frame.
++ */
++static int ioctl_gem_damage(struct drm_device *dev, void *data, struct drm_file *file)
++{
++	struct omap_drm_private *priv = dev->dev_private;
++	struct drm_omap_gem_damage *args = data;
++	struct drm_gem_object *obj;
++	unsigned long flags;
++
++	obj = drm_gem_object_lookup(file, args->handle);
++	if (!obj)
++		return -ENOENT;
++	spin_lock_irqsave(&priv->rdamage_lock, flags);
++	if (args->flags & OMAP_GEM_DAMAGE_FULL || args->x2 <= args->x1 || args->y2 <= args->y1) {
++		if (args->flags & OMAP_GEM_DAMAGE_FULL)
++			priv->rdamage_full = true;
++	} else if (!priv->rdamage_any) {
++		priv->rdamage = DRM_RECT_INIT(args->x1, args->y1, args->x2 - args->x1, args->y2 - args->y1);
++		priv->rdamage_any = true;
++	} else {
++		struct drm_rect r = DRM_RECT_INIT(args->x1, args->y1, args->x2 - args->x1, args->y2 - args->y1);
++
++		priv->rdamage.x1 = min(priv->rdamage.x1, r.x1);
++		priv->rdamage.y1 = min(priv->rdamage.y1, r.y1);
++		priv->rdamage.x2 = max(priv->rdamage.x2, r.x2);
++		priv->rdamage.y2 = max(priv->rdamage.y2, r.y2);
++	}
++	omap_gem_set_rdamage(obj, true);
++	spin_unlock_irqrestore(&priv->rdamage_lock, flags);
++	drm_gem_object_put(obj);
++	return 0;
++}
++
+ static const struct drm_ioctl_desc ioctls[DRM_COMMAND_END - DRM_COMMAND_BASE] = {
+ 	DRM_IOCTL_DEF_DRV(OMAP_GET_PARAM, ioctl_get_param,
+ 			  DRM_RENDER_ALLOW),
+@@ -616,6 +652,8 @@
+ 	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_FINI, drm_noop,
+ 			  DRM_RENDER_ALLOW),
+ 	DRM_IOCTL_DEF_DRV(OMAP_GEM_INFO, ioctl_gem_info,
++			  DRM_RENDER_ALLOW),
++	DRM_IOCTL_DEF_DRV(OMAP_GEM_DAMAGE, ioctl_gem_damage,
+ 			  DRM_RENDER_ALLOW),
+ };
+ 
+@@ -801,6 +839,7 @@
+ 	if (!priv)
+ 		return -ENOMEM;
+ 
++	spin_lock_init(&priv->rdamage_lock);
+ 	platform_set_drvdata(pdev, priv);
+ 
+ 	ret = omapdrm_init(priv, &pdev->dev);
+--- a/drivers/gpu/drm/omapdrm/omap_drv.h
++++ b/drivers/gpu/drm/omapdrm/omap_drv.h
+@@ -69,6 +69,11 @@
+ 	struct omap_drm_pipeline pipes[8];
+ 	struct omap_drm_pipeline *channels[8];
+ 
++	/* damage renderers reported for their scanout buffers since the last update (DRM_IOCTL_OMAP_GEM_DAMAGE) */
++	spinlock_t rdamage_lock;
++	struct drm_rect rdamage;
++	bool rdamage_any, rdamage_full;
++
+ 	unsigned int num_planes;
+ 	struct drm_plane *planes[8];
+ 
+--- a/drivers/gpu/drm/omapdrm/omap_gem.c
++++ b/drivers/gpu/drm/omapdrm/omap_gem.c
+@@ -31,6 +31,9 @@
+ 	struct list_head mm_list;
+ 
+ 	u32 flags;
++
++	/** a renderer reported damage for the next flip of this buffer (DRM_IOCTL_OMAP_GEM_DAMAGE) */
++	bool rdamage_valid;
+ 
+ 	/** width/height for tiled formats (rounded up to slot boundaries) */
+ 	u16 width, height;
+@@ -1521,3 +1524,19 @@
+ 	 */
+ 	kfree(priv->usergart);
+ }
++
++/* The renderer's damage for this buffer's next flip (omap_drv.c's ioctl sets it, the plane's update takes it) */
++void omap_gem_set_rdamage(struct drm_gem_object *obj, bool valid)
++{
++	to_omap_bo(obj)->rdamage_valid = valid;
++}
++
++bool omap_gem_take_rdamage(struct drm_gem_object *obj)
++{
++	struct omap_gem_object *omap_obj = to_omap_bo(obj);
++	bool valid = omap_obj->rdamage_valid;
++
++	omap_obj->rdamage_valid = false;
++	return valid;
++}
++
+--- a/drivers/gpu/drm/omapdrm/omap_gem.h
++++ b/drivers/gpu/drm/omapdrm/omap_gem.h
+@@ -76,6 +76,8 @@
+ int omap_gem_put_pages(struct drm_gem_object *obj);
+ 
+ u32 omap_gem_flags(struct drm_gem_object *obj);
++void omap_gem_set_rdamage(struct drm_gem_object *obj, bool valid);
++bool omap_gem_take_rdamage(struct drm_gem_object *obj);
+ int omap_gem_rotated_dma_addr(struct drm_gem_object *obj, u32 orient,
+ 		int x, int y, dma_addr_t *dma_addr);
+ int omap_gem_tiled_stride(struct drm_gem_object *obj, u32 orient);
+--- a/drivers/gpu/drm/omapdrm/omap_plane.c
++++ b/drivers/gpu/drm/omapdrm/omap_plane.c
+@@ -14,6 +14,11 @@
+ 
+ #include "omap_dmm_tiler.h"
+ #include "omap_drv.h"
++#include "omap_gem.h"
++
++static bool renderer_damage = true;
++module_param(renderer_damage, bool, 0644);
++MODULE_PARM_DESC(renderer_damage, "send only the damage a renderer reported for a scanout buffer (DRM_IOCTL_OMAP_GEM_DAMAGE) when a commit has no damage clips");
+ 
+ /*
+  * plane funcs
+@@ -67,9 +72,36 @@
+  * unrotated, fetches just the merged damage (whole 8-pixel columns), and
+  * the CRTC sends that rectangle (omap_crtc_set_update_rect()).
+  */
++/*
++ * The damage a renderer reported for the framebuffer's buffer and for the frames since the last update, in the framebuffer's pixels, when
++ * the commit carries no damage clips of its own: taken (the next flip starts from nothing). False: not known, the whole frame goes.
++ */
++static bool omap_plane_take_renderer_damage(struct drm_plane_state *new_state, struct drm_rect *r)
++{
++	struct omap_drm_private *priv = new_state->plane->dev->dev_private;
++	struct drm_gem_object *obj = new_state->fb->obj[0];
++	unsigned long flags;
++	bool valid, ok;
++
++	if (!renderer_damage || new_state->fb_damage_clips || !obj)
++		return false;
++	spin_lock_irqsave(&priv->rdamage_lock, flags);
++	valid = omap_gem_take_rdamage(obj);
++	ok = valid && priv->rdamage_any && !priv->rdamage_full;
++	if (ok)
++		*r = priv->rdamage;
++	if (valid) {
++		priv->rdamage_any = false;
++		priv->rdamage_full = false;
++	}
++	spin_unlock_irqrestore(&priv->rdamage_lock, flags);
++	return ok;
++}
++
+ static void omap_plane_crop_to_damage(struct drm_plane_state *old_state,
+ 				      struct drm_plane_state *new_state,
+-				      struct omap_overlay_info *info)
++				      struct omap_overlay_info *info,
++				      const struct drm_rect *rd)
+ {
+ 	struct drm_crtc_state *cs = new_state->crtc->state;
+ 	const struct drm_format_info *f = new_state->fb->format;
+@@ -84,8 +116,10 @@
+ 	    new_state->crtc_h != cs->mode.vdisplay ||
+ 	    (new_state->src_w >> 16) != new_state->crtc_w ||
+ 	    (new_state->src_h >> 16) != new_state->crtc_h ||
+-	    !drm_atomic_helper_damage_merged(old_state, new_state, &r))
++	    (!rd && !drm_atomic_helper_damage_merged(old_state, new_state, &r)))
+ 		return;
++	if (rd)
++		r = *rd;
+ 
+ 	/* damage is in the framebuffer, the plane's source starts at sx, sy */
+ 	drm_rect_translate(&r, -sx, -sy);
+@@ -158,8 +192,12 @@
+ 	/* update scanout: */
+ 	omap_framebuffer_update_scanout(new_state->fb, new_state, &info,
+ 					dual_ovl ? &r_info : NULL);
+-	if (!dual_ovl && plane->type == DRM_PLANE_TYPE_PRIMARY)
+-		omap_plane_crop_to_damage(old_state, new_state, &info);
++	if (!dual_ovl && plane->type == DRM_PLANE_TYPE_PRIMARY) {
++		struct drm_rect rd;
++		bool have_rd = omap_plane_take_renderer_damage(new_state, &rd);
++
++		omap_plane_crop_to_damage(old_state, new_state, &info, have_rd ? &rd : NULL);
++	}
+ 
+ 	DBG("%s: %dx%d -> %dx%d (%d)",
+ 			new_omap_state->overlay->name, info.width, info.height,

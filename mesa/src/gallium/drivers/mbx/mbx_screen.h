@@ -24,6 +24,7 @@ struct sw_winsys;
 
 struct mbx_screen {
 	struct pipe_screen base;
+	bool no_omap_damage;		/* the KMS device has no DRM_IOCTL_OMAP_GEM_DAMAGE (or it was turned off) */
 	struct pipe_screen *sp_screen;	/* the CPU fallback's softpipe, made at the first use (mbx_fallback.c) */
 	struct sw_winsys *sp_ws;
 	uint64_t fence_done;	/* the highest fence known to be done */
