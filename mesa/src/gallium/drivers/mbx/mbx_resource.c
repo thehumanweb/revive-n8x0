@@ -211,7 +211,6 @@ static struct pipe_resource *mbx_resource_from_handle(struct pipe_screen *pscree
 		templ->height0, util_format_name(templ->format), templ->bind, templ->last_level + 1, handle->stride,
 		(unsigned long long)rsc->bo->size);
 	if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) && templ->last_level == 0 &&
-	    (templ->bind & PIPE_BIND_SAMPLER_VIEW) &&
 	    (mbx_chip_tex_format(templ->format) >= 0 || templ->format == PIPE_FORMAT_B8G8R8X8_UNORM) &&
 	    handle->stride % (8 * util_format_get_blocksize(templ->format)) == 0 &&
 	    (uint64_t)handle->stride * templ->height0 <= rsc->bo->size) {
