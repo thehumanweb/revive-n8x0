@@ -212,9 +212,9 @@ static uint64_t prof_now_us(void)
 	return (uint64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
 }
 
-static void prof_job(struct mbx_context *ctx, uint64_t fence, uint64_t t_before, uint64_t t_after, unsigned ndraws)
+static void prof_job(struct mbx_context *ctx, uint64_t fence, uint64_t t_before, uint64_t t_after, unsigned ndraws, unsigned tiles, bool flat)
 {
-	static struct { unsigned n; uint64_t submit, run, submit_max, run_max, draws, t0; } p;
+	static struct { unsigned n; uint64_t submit, run, submit_max, run_max, draws, t0, tiles, flat; } p;
 	uint64_t t_done;
 
 	mbx_fence_wait(ctx->screen, fence, 5ull * 1000000000ull);
@@ -225,13 +225,16 @@ static void prof_job(struct mbx_context *ctx, uint64_t fence, uint64_t t_before,
 	p.submit += t_after - t_before;
 	p.run += t_done - t_after;
 	p.draws += ndraws;
+	p.tiles += tiles;
+	p.flat += flat;
 	if (t_after - t_before > p.submit_max)
 		p.submit_max = t_after - t_before;
 	if (t_done - t_after > p.run_max)
 		p.run_max = t_done - t_after;
 	if (t_done - p.t0 >= 2000000) {
-		fprintf(stderr, "mbx prof (%s): %u jobs in %.1f s, %.1f draws a job; SUBMIT ioctl avg %llu us max %llu us; to done avg %llu us max %llu us\n",
-			program_invocation_short_name, p.n, (double)(t_done - p.t0) / 1e6, (double)p.draws / p.n,
+		fprintf(stderr, "mbx prof (%s): %u jobs in %.1f s, %.1f draws and %llu tiles a job, flat background in %llu; SUBMIT ioctl avg %llu us max %llu us; to done avg %llu us max %llu us\n",
+			program_invocation_short_name, p.n, (double)(t_done - p.t0) / 1e6, (double)p.draws / p.n, (unsigned long long)(p.tiles / p.n),
+			(unsigned long long)p.flat,
 			(unsigned long long)(p.submit / p.n), (unsigned long long)p.submit_max,
 			(unsigned long long)(p.run / p.n), (unsigned long long)p.run_max);
 		memset(&p, 0, sizeof(p));
@@ -331,8 +334,13 @@ void mbx_job_flush(struct mbx_context *ctx)
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
-		if (t_before)
-			prof_job(ctx, s.fence, t_before, prof_now_us(), job->ndraws);
+		if (t_before) {
+			/* the tiles the job renders: its damage rectangle (x0 | y0 << 8 | x1 << 16 | y1 << 24, 0 all) or the whole frame */
+			unsigned gw = (color->base.width0 + 15) / 16, gh = (color->base.height0 + 15) / 16;
+			unsigned tiles = s.damage ? ((s.damage >> 16 & 0xff) - (s.damage & 0xff)) * ((s.damage >> 24) - (s.damage >> 8 & 0xff)) : gw * gh;
+
+			prof_job(ctx, s.fence, t_before, prof_now_us(), job->ndraws, tiles, flat);
+		}
 		if (MBX_ENV_SET("MBX_VERIFY")) {	/* debug: what the job drew */
 			const uint32_t *px;
 			unsigned nz = 0;
