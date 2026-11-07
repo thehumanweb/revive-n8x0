@@ -737,3 +737,9 @@ The chip's offset colour (state bit 23, `o2` from the vertex program, added afte
 Texel format 5 on the chip equals the model (the byte in all four channels, five cases): the driver advertises `A8_UNORM` and `L8_UNORM`, stores zero bytes as 1 (the all-zero-texel filter rule), uses a glyph atlas as an alpha-only source (the alpha half of the combiner takes the texel), gives L8 an alpha of 1 by switching its unit's alpha half to the primary colour at the draw (`mbx_tex_combiners` with the units that are L8), and sends an A8 texture used in colour lanes to the CPU. 42 feature tests pass on the host sim (`tex_a8`, `tex_l8`); piglit's GLES2 set is down to `minmax` and the `fragdepth` crash. One mistake worth keeping: a full test run failed 38 of 42 after the edit and passed after a rebuild with the same sources, so a failure that spans the whole suite is a stale build until proven otherwise (rebuild, then look).
 
 - Sources: the unit's runs (`mbxtri-drm -V 5 -Q`), the host model, the feature tests.
+
+### 2026-11-07: the first frame rates
+
+`mesa/tests/gles2_fps.c` (offscreen RGBA8 + depth16 FBO, clear + draw + `glFinish` per frame) on the unit: a plain full-screen quad is 2.9 ms at 200x120 (340 fps), 5.7 ms at 400x240 (176 fps) and 16.6 ms at 800x480 (60 fps); a textured quad 9 and 25 ms; 400 small triangles 13 and 29 ms; the CPU fallback (a squared varying, which the parser rightly refuses) 138 ms, 530 ms and 2.3 s a frame, 25-40 times slower. The first CPU benchmark shader (`rgb * 0.5 + 0.25`) ran on the chip, because the new parser takes any affine colour: a benchmark of the fallback needs a shader that is not affine in the varyings.
+
+- Sources: the unit's runs of `gles2_fps` at three sizes.

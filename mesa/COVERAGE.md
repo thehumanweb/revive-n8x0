@@ -44,6 +44,21 @@ the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 | `glReadPixels`, `glCopyTexImage`, blits | CPU or the 2D core (`twod.c`: ROPs, blits) | readpixels and plain copies done; the rest not |
 | Compressed textures (PVRTC) | native texel format | not exposed |
 
+## Performance (N810, offscreen FBO, 2026-11-07; `mesa/tests/gles2_fps.c`: clear, draw, `glFinish` per frame)
+
+| Scene | 200x120 | 400x240 | 800x480 |
+|---|---|---|---|
+| plain full-screen quad (chip) | 2.9 ms (340 fps) | 5.7 ms (176 fps) | 16.6 ms (60 fps) |
+| one small triangle (chip) | | 6.7 ms (149 fps) | 20.2 ms (50 fps) |
+| textured quad, replace / modulate (chip, 256x256 bilinear) | | 9.1 / 9.2 ms (109 fps) | 25.2 / 25.0 ms (40 fps) |
+| 400 small triangles (chip) | | 13.1 ms (76 fps) | 28.6 ms (35 fps) |
+| full-screen quad, shader on the CPU (softpipe) | 138 ms (7 fps) | 530 ms (1.9 fps) | 2347 ms (0.4 fps) |
+
+The chip's frame time follows the number of 16 x 16 tiles with a list (about 11-15 microseconds a tile plus a fixed 2-3 ms): the
+background pass reads and writes every such tile, and the colour clear is a CPU fill of the whole target first. The CPU
+fallback costs about 25-40 times the chip's time at every size (roughly 4.5 microseconds a pixel): usable for small areas,
+not for full-screen shaders at interactive rates.
+
 ## The CPU fallback (`mbx_fallback.c`)
 
 What the chip cannot do is drawn by Mesa's softpipe into the same buffers, so every GLES2 program runs: a fragment shader that is
