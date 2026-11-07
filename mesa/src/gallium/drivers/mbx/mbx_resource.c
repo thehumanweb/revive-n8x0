@@ -200,6 +200,22 @@ static struct pipe_resource *mbx_resource_from_handle(struct pipe_screen *pscree
 	}
 	rsc->stride = handle->stride;
 	rsc->size = (uint32_t)rsc->bo->size;
+	rsc->imported = true;
+	/*
+	 * A buffer another process rendered (a Wayland client's, through a dmabuf) is sampled as a linear texture with the
+	 * stride it came with: the same layout a texture of ours has (rows in 16-texel units, the sampled width the next
+	 * power of two of at least 8; the chip reads only the texels inside the real width and height).
+	 */
+	if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) && templ->last_level == 0 &&
+	    (templ->bind & PIPE_BIND_SAMPLER_VIEW) && mbx_chip_tex_format(templ->format) >= 0 &&
+	    handle->stride % (8 * util_format_get_blocksize(templ->format)) == 0 &&
+	    (uint64_t)handle->stride * templ->height0 <= rsc->bo->size) {
+		rsc->tex = true;
+		rsc->tex_lw = util_logbase2(MAX2(8, util_next_power_of_two(templ->width0)));
+		rsc->tex_lh = util_logbase2(MAX2(8, util_next_power_of_two(templ->height0)));
+		rsc->level_off[0] = 0;
+		rsc->level_stride[0] = handle->stride;
+	}
 	return &rsc->base;
 }
 
@@ -473,7 +489,7 @@ struct mbx_resource *mbx_texture_swapped(struct mbx_context *ctx, struct mbx_res
 	uint32_t *dst;
 	uint64_t n;
 
-	if (!rsc->tex || rsc->twiddled || rsc->cube || rsc->scanout || rsc->base.last_level ||
+	if (!rsc->tex || rsc->twiddled || rsc->cube || rsc->scanout || rsc->imported || rsc->base.last_level ||
 	    rsc->base.format != PIPE_FORMAT_B8G8R8A8_UNORM)
 		return NULL;
 	if (!rsc->swap) {

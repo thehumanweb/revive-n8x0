@@ -57,6 +57,8 @@ the red-blue swapped texture copy (write-combined reads; track the dirty box ins
 
 ## Other open items
 
+- `gles2_feat point_sizes` failed once in a full host-sim run ("(16,32) is 0 0 0") and passed in 3 solo runs and the next full run: an
+  intermittent failure, not investigated (per-point objects; a race in the sim shim?).
 - Fast stencil, stage 2: the stencil WRITES on the chip (README assumption 53 has the tests): render the draw's coverage into a mask target on the chip
   with a white fragment shader, merge it into the CPU stencil plane (REPLACE, ZERO; INCR/DECR/INVERT need counts); the clip write on the CPU is
   most of the remaining time of `gles2_fps stencil`. Also batching consecutive draws under one stencil state (each is its own job now).
