@@ -11,6 +11,7 @@
 #include "util/u_memory.h"
 
 #include "mbx_context.h"
+#include "mbx_fallback.h"
 #include "mbx_program.h"
 
 static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shader_state *templ)
@@ -23,6 +24,7 @@ static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shad
 		FREE(so);
 		return NULL;
 	}
+	so->nir_orig = nir_shader_clone(NULL, templ->ir.nir);	/* the fallback's, before our lowering */
 	so->nir = templ->ir.nir;	/* ours now */
 	so->stage = so->nir->info.stage;
 	mbx_nir_prepare(so->nir);
@@ -35,6 +37,7 @@ static void mbx_shader_delete(struct pipe_context *pctx, void *hwcso)
 {
 	struct mbx_shader *so = hwcso;
 
+	mbx_fallback_shader_delete(mbx_context(pctx), so);
 	ralloc_free(so->nir);
 	FREE(so);
 }
@@ -83,7 +86,7 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 	p->next = ctx->programs;
 	ctx->programs = p;	/* kept even when it fails (ninsn 0), so it is not tried again */
 	if (ctx->fs->fs_info.kind != MBX_FS_MATCHED) {
-		mesa_loge("mbx: this fragment shader does not reduce to the fixed pipe yet (a CPU fallback is planned)");
+		mbx_dbg("this fragment shader does not reduce to the fixed pipe: the CPU fallback draws it");
 		return NULL;
 	}
 	p->gouraud = !ctx->fs->fs_info.flat;

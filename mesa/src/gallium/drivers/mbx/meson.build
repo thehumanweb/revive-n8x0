@@ -7,6 +7,8 @@ files_libmbx = files(
   'mbx_context.c',
   'mbx_context.h',
   'mbx_draw.c',
+  'mbx_fallback.c',
+  'mbx_fallback.h',
   'mbx_job.c',
   'mbx_nir.c',
   'mbx_program.c',
@@ -32,7 +34,7 @@ libmbx = static_library(
 driver_mbx = declare_dependency(
   compile_args : '-DGALLIUM_MBX',
   link_with : [libmbx, libmbxwinsys],
-  dependencies : idep_nir,
+  dependencies : [idep_nir, driver_softpipe],
 )
 
 if with_tools.contains('drm-shim')

@@ -22,6 +22,7 @@
 #include "frontend/winsys_handle.h"
 
 #include "mbx_context.h"
+#include "mbx_fallback.h"
 #include "mbx_resource.h"
 #include "mbx_screen.h"
 
@@ -82,6 +83,7 @@ static struct pipe_resource *mbx_resource_create(struct pipe_screen *pscreen,
 	rsc->base = *templ;
 	rsc->base.screen = pscreen;
 	pipe_reference_init(&rsc->base.reference, 1);
+	rsc->bind_rt = (templ->bind & PIPE_BIND_RENDER_TARGET) != 0;
 
 	if (templ->target == PIPE_BUFFER) {
 		size = templ->width0;
@@ -219,6 +221,7 @@ static void mbx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resour
 
 	if (rsc->scanout)
 		renderonly_scanout_destroy(rsc->scanout, mbx_screen(pscreen)->ro);
+	mbx_fallback_resource_destroy(rsc);
 	mbx_bo_unref(rsc->bo);
 	FREE(rsc);
 }
@@ -297,6 +300,8 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 {
 	struct mbx_resource *rsc = mbx_resource(ptrans->resource);
 
+	if (ptrans->usage & PIPE_MAP_WRITE)
+		rsc->sp_dirty = true;
 	if (rsc->tex && (ptrans->usage & PIPE_MAP_WRITE))
 		tex_fill_padding(rsc, ptrans);
 	pipe_resource_reference(&ptrans->resource, NULL);

@@ -9,7 +9,7 @@ M=build/mesa/mesa-26.1.8
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work -w /work n810-mesa:1 sh -c "
 	[ -d build/mesa-host ] && RECONF=--reconfigure || RECONF=
 	meson setup build/mesa-host $M \$RECONF --prefix=/work/build/mesa-host-install --buildtype=release \
-		-Dgallium-drivers=mbx -Dvulkan-drivers= -Dllvm=disabled -Dglx=disabled -Degl=enabled \
+		-Dgallium-drivers=mbx,softpipe -Dvulkan-drivers= -Dllvm=disabled -Dglx=disabled -Degl=enabled \
 		-Dgbm=enabled -Dplatforms= -Dgles1=disabled -Dgles2=enabled -Dopengl=false \
 		-Dvideo-codecs= -Dgallium-rusticl=false -Dglvnd=disabled \
 		-Dlmsensors=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dbuild-tests=false \

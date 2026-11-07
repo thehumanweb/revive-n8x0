@@ -13,6 +13,7 @@
 #include "util/u_prim.h"
 
 #include "mbx_context.h"
+#include "mbx_fallback.h"
 #include "mbx_program.h"
 #include "mbx_vgp.h"
 
@@ -86,6 +87,30 @@ static uint32_t hw_blend_bits(struct mbx_context *ctx)
 	if (sat)
 		st |= ST_SATURATE;
 	return st;
+}
+
+/* State the chip cannot do: the CPU fallback draws it (mbx_fallback.c) */
+static bool state_needs_fallback(struct mbx_context *ctx)
+{
+	const struct pipe_rt_blend_state *rt = ctx->blend ? &ctx->blend->rt[0] : NULL;
+	bool sat;
+
+	if (rt) {
+		if (rt->colormask && rt->colormask != 0xf)
+			return true;		/* a partial colour mask: the chip writes all of the colour or none */
+		if (rt->colormask && rt->blend_enable &&
+		    (rt->rgb_func != PIPE_BLEND_ADD || rt->alpha_func != PIPE_BLEND_ADD ||
+		     rt->rgb_src_factor != rt->alpha_src_factor || rt->rgb_dst_factor != rt->alpha_dst_factor ||
+		     hw_factor(rt->rgb_src_factor, false, &sat) < 0 || hw_factor(rt->rgb_dst_factor, true, &sat) < 0))
+			return true;		/* separate or non-add blending, a constant colour */
+	}
+	if (ctx->rast && ctx->rast->offset_tri && (ctx->rast->offset_units != 0 || ctx->rast->offset_scale != 0))
+		return true;			/* polygon offset (the primitive word has a bias; not used yet) */
+	if (ctx->dsa && (ctx->dsa->stencil[0].enabled || ctx->dsa->stencil[1].enabled))
+		return true;			/* no stencil on the chip */
+	if (ctx->dsa && ctx->dsa->alpha_enabled)
+		return true;
+	return false;
 }
 
 static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_program *prog)
@@ -362,9 +387,27 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		(void *)ctx->vs, (void *)ctx->fs, (void *)ctx->velems, ctx->viewport.scale[0]);
 	if (!ctx->vs || !ctx->fs || !ctx->velems || !ctx->viewport.scale[0])
 		return;
-	if (!(prog = mbx_program_get(ctx))) {
-		mesa_loge("mbx: no program for this vertex and fragment shader pair; draw skipped");
+	if (state_needs_fallback(ctx)) {
+		if (!mbx_fallback_draw(ctx, info, drawid_offset, draws, num_draws))
+			mesa_loge("mbx: this state needs the CPU fallback and it could not draw; draw skipped");
 		return;
+	}
+	if (!(prog = mbx_program_get(ctx))) {
+		/* the pair does not reduce to the VGP and the fixed pipe: softpipe draws it */
+		if (!mbx_fallback_draw(ctx, info, drawid_offset, draws, num_draws))
+			mesa_loge("mbx: no program for this vertex and fragment shader pair, and no fallback; draw skipped");
+		return;
+	}
+	{
+		bool any = false;
+
+		for (unsigned k = 0; k < MBX_MAX_ATTRS; k++)
+			any |= prog->attr_used[k];
+		if (!any) {	/* the TA has no vertex layout to name: softpipe draws it */
+			if (!mbx_fallback_draw(ctx, info, drawid_offset, draws, num_draws))
+				mesa_loge("mbx: a draw without vertex attributes could not be drawn; skipped");
+			return;
+		}
 	}
 	if (!mbx_job_begin(ctx)) {
 		mbx_dbg("no job: framebuffer has %u colour buffers", ctx->fb.nr_cbufs);

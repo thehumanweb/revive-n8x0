@@ -14,12 +14,14 @@
 #include "util/ralloc.h"
 
 #include "mbx_context.h"
+#include "mbx_fallback.h"
 
 static void mbx_context_destroy(struct pipe_context *pctx)
 {
 	struct mbx_context *ctx = mbx_context(pctx);
 
 	mbx_job_flush(ctx);
+	mbx_fallback_context_destroy(ctx);
 	while (ctx->programs) {
 		struct mbx_vgp_program *n = ctx->programs->next;
 
@@ -80,6 +82,7 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 		/* depth lives on chip and starts every render at this value: what
 		 * was recorded finishes first */
 		mbx_job_flush(ctx);
+		mbx_fallback_clear_depth(ctx, depth);	/* softpipe's own depth, when it has drawn */
 		ctx->next_clear_depth = (float)depth;
 		ctx->job.clear_depth = (float)depth;
 	}

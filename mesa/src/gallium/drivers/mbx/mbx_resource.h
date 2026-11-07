@@ -24,6 +24,10 @@ struct mbx_resource {
 	/* a sampled 2D texture: linear (the chip reads linear textures with a stride), every level's
 	 * width and height padded to a power of two of at least 8, the edge texels repeated into the padding */
 	bool tex;
+	bool bind_rt;				/* made with a render target bind (softpipe then shares its memory) */
+	struct pipe_resource *sp_twin;		/* the CPU fallback's view of it (mbx_fallback.c) */
+	bool sp_fresh;				/* a depth twin not yet cleared */
+	bool sp_dirty;				/* a sampled texture the CPU wrote since the twin was filled */
 	uint8_t tex_lw, tex_lh;			/* log2 of level 0's padded width and height */
 	uint32_t level_off[MBX_MAX_LEVELS];	/* bytes */
 	uint32_t level_stride[MBX_MAX_LEVELS];	/* bytes a row */

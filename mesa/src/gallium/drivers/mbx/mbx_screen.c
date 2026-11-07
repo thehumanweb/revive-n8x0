@@ -19,6 +19,7 @@
 
 #include "mbx_context.h"
 #include "mbx_program.h"
+#include "mbx_fallback.h"
 #include "mbx_screen.h"
 
 bool mbx_fence_wait(struct mbx_screen *screen, uint64_t seqno, uint64_t timeout_ns)
@@ -73,6 +74,7 @@ static void mbx_screen_destroy(struct pipe_screen *pscreen)
 {
 	struct mbx_screen *screen = mbx_screen(pscreen);
 
+	mbx_fallback_screen_destroy(screen);
 	if (screen->ro)
 		screen->ro->destroy(screen->ro);
 	close(screen->fd);
@@ -182,7 +184,9 @@ static void mbx_init_shader_caps(struct mbx_screen *screen)
 		caps->max_temps = 14;
 		caps->max_const_buffer0_size = 192 * 4 * sizeof(float);
 		caps->max_const_buffers = 1;
-		caps->max_texture_samplers = caps->max_sampler_views = 2;
+		/* GLES2 needs 8 in the fragment stage: the chip has two, the draws that use more go to the CPU fallback;
+		 * no vertex textures */
+		caps->max_texture_samplers = caps->max_sampler_views = i == MESA_SHADER_FRAGMENT ? 8 : 0;
 		caps->supported_irs = 1 << PIPE_SHADER_IR_NIR;
 	}
 }

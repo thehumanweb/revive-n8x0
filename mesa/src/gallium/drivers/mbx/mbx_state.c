@@ -122,7 +122,7 @@ static void mbx_bind_sampler_states(struct pipe_context *pctx, mesa_shader_stage
 	if (shader != MESA_SHADER_FRAGMENT)
 		return;
 	for (unsigned i = 0; i < count; i++)
-		if (start + i < MBX_MAX_TEX)
+		if (start + i < MBX_MAX_SAMPLERS)
 			ctx->samplers[start + i] = states ? states[i] : NULL;
 }
 
@@ -157,10 +157,10 @@ static void mbx_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage s
 	if (shader != MESA_SHADER_FRAGMENT)
 		return;
 	for (unsigned i = 0; i < count; i++)
-		if (start + i < MBX_MAX_TEX)
+		if (start + i < MBX_MAX_SAMPLERS)
 			pipe_sampler_view_reference(&ctx->views[start + i], views ? views[i] : NULL);
 	for (unsigned i = 0; i < unbind_num_trailing_slots; i++)
-		if (start + count + i < MBX_MAX_TEX)
+		if (start + count + i < MBX_MAX_SAMPLERS)
 			pipe_sampler_view_reference(&ctx->views[start + count + i], NULL);
 	ctx->const_serial++;	/* the texture scale (a program constant) follows the bound texture */
 }

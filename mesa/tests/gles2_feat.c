@@ -31,7 +31,7 @@ static const char *fs_src =
 	"varying vec4 v_color;\n"
 	"void main() { gl_FragColor = v_color; }\n";
 
-static GLuint prog, prog_tex, prog_mod, prog_uni, prog_vu, prog_tu, prog_z;
+static GLuint prog_two, prog, prog_tex, prog_mod, prog_uni, prog_vu, prog_tu, prog_z, prog_fba, prog_fbt, prog_fbz;
 static int failures;
 
 static const char *tvs_src =
@@ -81,6 +81,24 @@ static const char *zvs_src =
 	"	gl_Position = vec4(a_pos, 1.0);\n"
 	"	v_color = a_color;\n"
 	"}\n";
+
+/* fragment shaders the fixed pipe cannot express: the CPU fallback draws them */
+static const char *fs_arith =
+	"precision mediump float;\n"
+	"varying vec4 v_color;\n"
+	"void main() { gl_FragColor = vec4(v_color.rgb * 0.5 + vec3(0.25), 1.0); }\n";
+static const char *fs_tex_arith =
+	"precision mediump float;\n"
+	"uniform sampler2D u_tex;\n"
+	"varying vec2 v_uv;\n"
+	"void main() { vec4 t = texture2D(u_tex, v_uv); gl_FragColor = vec4(t.rgb * 0.5 + vec3(0.25), 1.0); }\n";
+
+static const char *fs_two_tex =
+	"precision mediump float;\n"
+	"uniform sampler2D u_a;\n"
+	"uniform sampler2D u_b;\n"
+	"varying vec2 v_uv;\n"
+	"void main() { gl_FragColor = texture2D(u_a, v_uv) * texture2D(u_b, v_uv); }\n";
 
 static GLuint compile(GLenum type, const char *src)
 {
@@ -259,6 +277,28 @@ static void quad(float u0, float v0, float u1, float v1, float r, float g, float
 		-1, -1, u0, v0, r, g, b, 1,
 		1, 1, u1, v1, r, g, b, 1,
 		-1, 1, u0, v1, r, g, b, 1,
+	};
+
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v + 2);
+	glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v + 4);
+	glDrawArrays(GL_TRIANGLES, 0, 6);
+	glDisableVertexAttribArray(2);
+}
+
+/* a rectangle (x0, y0) to (x1, y1) in the textured programs' vertex layout, colour (r, g, b) */
+static void rect(float x0, float y0, float x1, float y1, float r, float g, float b)
+{
+	const float v[] = {
+		x0, y0, 0, 0, r, g, b, 1,
+		x1, y0, 1, 0, r, g, b, 1,
+		x1, y1, 1, 1, r, g, b, 1,
+		x0, y0, 0, 0, r, g, b, 1,
+		x1, y1, 1, 1, r, g, b, 1,
+		x0, y1, 0, 1, r, g, b, 1,
 	};
 
 	glEnableVertexAttribArray(0);
@@ -696,7 +736,184 @@ static int t_depth_mask(char *why)
 	return 1;
 }
 
+static int t_fb_arith(char *why)
+{
+	int ok;
+
+	begin();
+	glUseProgram(prog_fba);
+	quad(0, 0, 1, 1, 1.0f, 0.0f, 0.5f);		/* (1, 0, .5) * .5 + .25 = (.75, .25, .5) */
+	ok = is(32, 32, 191, 64, 128, why, 200) && is(4, 4, 191, 64, 128, why, 200) && is(60, 60, 191, 64, 128, why, 200);
+	glUseProgram(prog);
+	return ok;
+}
+
+static int t_fb_tex(char *why)
+{
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok;
+
+	quadrants(px, 8, 8);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_fbt);
+	glUniform1i(glGetUniformLocation(prog_fbt, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	/* red (1,0,0) -> (.75,.25,.25); green -> (.25,.75,.25); blue -> (.25,.25,.75); yellow -> (.75,.75,.25) */
+	ok = is(16, 16, 191, 64, 64, why, 200) && is(48, 16, 64, 191, 64, why, 200) && is(16, 48, 64, 64, 191, why, 200) &&
+	     is(48, 48, 191, 191, 64, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_fb_mix(char *why)
+{
+	/* the MBX draws green over everything, softpipe a smaller square, the MBX a still smaller one: each keeps what is under it */
+	static const float g[] = { -1, -1, 0, 1, 0, 1, 1, -1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1,
+				   -1, -1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, -1, 1, 0, 1, 0, 1 };
+	static const float r[] = { -0.25f, -0.25f, 1, 0, 0, 1, 0.25f, -0.25f, 1, 0, 0, 1, 0.25f, 0.25f, 1, 0, 0, 1,
+				   -0.25f, -0.25f, 1, 0, 0, 1, 0.25f, 0.25f, 1, 0, 0, 1, -0.25f, 0.25f, 1, 0, 0, 1 };
+	begin();
+	draw(GL_TRIANGLES, g, 6);			/* the MBX: green */
+	glUseProgram(prog_fba);
+	rect(-0.5f, -0.5f, 0.5f, 0.5f, 1, 1, 1);	/* softpipe: (1,1,1)*.5+.25 = (.75, .75, .75) in the middle half */
+	glUseProgram(prog);
+	draw(GL_TRIANGLES, r, 6);			/* the MBX again: red in the middle quarter */
+	CHECK(4, 4, 0, 255, 0);				/* the first draw survived the CPU's */
+	CHECK(20, 20, 191, 191, 191);			/* the CPU's draw is there */
+	CHECK(32, 32, 255, 0, 0);			/* the last MBX draw is over it */
+	return 1;
+}
+
+static int t_fb_depth(char *why)
+{
+	/* depth between two software draws: the nearer one wins whichever comes first */
+	begin();
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+	{
+		float a[3][7] = { { -0.9f, -0.9f, 0.2f, 1, 0, 0, 1 }, { 0.9f, -0.9f, 0.2f, 1, 0, 0, 1 }, { 0, 0.9f, 0.2f, 1, 0, 0, 1 } };
+		float b[3][7] = { { -0.9f, -0.9f, 0.6f, 0, 1, 0, 1 }, { 0.9f, -0.9f, 0.6f, 0, 1, 0, 1 }, { 0, 0.9f, 0.6f, 0, 1, 0, 1 } };
+
+		glUseProgram(prog_fbz);
+		glEnableVertexAttribArray(0);
+		glEnableVertexAttribArray(1);
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), a);
+		glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 7 * sizeof(float), &a[0][3]);
+		glDrawArrays(GL_TRIANGLES, 0, 3);	/* near, (1,0,0) -> (.75, .25, .25) */
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float), b);
+		glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 7 * sizeof(float), &b[0][3]);
+		glDrawArrays(GL_TRIANGLES, 0, 3);	/* far, (0,1,0) -> (.25,.75,.25): behind */
+		glUseProgram(prog);
+	}
+	glDisable(GL_DEPTH_TEST);
+	CHECK(32, 24, 191, 64, 64);
+	return 1;
+}
+
+static int t_colormask(char *why)
+{
+	/* white drawn with only red and alpha enabled leaves green and blue as they were */
+	begin();
+	glClearColor(0, 0.5f, 0.25f, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_TRUE);
+	tri_z(0, 1, 1, 1, 1, 0);
+	glColorMask(1, 1, 1, 1);
+	CHECK(32, 24, 255, 128, 64);
+	CHECK(2, 60, 0, 128, 64);
+	return 1;
+}
+
+static int t_blend_constant(char *why)
+{
+	/* the source times the constant colour (0.5, 0.25, 1) over nothing: red (1, 0, 0) -> (128, 0, 0), white -> (128, 64, 255) */
+	begin();
+	glBlendColor(0.5f, 0.25f, 1.0f, 1.0f);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_CONSTANT_COLOR, GL_ZERO);
+	tri_z(0, 1, 1, 1, 1, 0);
+	glDisable(GL_BLEND);
+	CHECK(32, 24, 128, 64, 255);
+	return 1;
+}
+
+static int t_blend_subtract(char *why)
+{
+	/* destination minus source: (0.75, 0.5, 0.25) - (0.25, 0.25, 0.25) = (.5, .25, 0) */
+	begin();
+	glClearColor(0.75f, 0.5f, 0.25f, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glEnable(GL_BLEND);
+	glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
+	glBlendFunc(GL_ONE, GL_ONE);
+	tri_z(0, 0.25f, 0.25f, 0.25f, 1, 0);
+	glBlendEquation(GL_FUNC_ADD);
+	glDisable(GL_BLEND);
+	CHECK(32, 24, 128, 64, 0);
+	return 1;
+}
+
+static int t_polygon_offset(char *why)
+{
+	/* two triangles at the same depth: the second fails GL_LESS, unless polygon offset pulls it forward */
+	begin();
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+	tri_z(0.5f, 1, 0, 0, 1, 0);
+	tri_z(0.5f, 0, 1, 0, 1, 0);
+	CHECK(32, 24, 255, 0, 0);			/* equal depth: the red one stays */
+	glEnable(GL_POLYGON_OFFSET_FILL);
+	glPolygonOffset(0, -4);
+	tri_z(0.5f, 0, 0, 1, 1, 0);
+	glDisable(GL_POLYGON_OFFSET_FILL);
+	glDisable(GL_DEPTH_TEST);
+	CHECK(32, 24, 0, 0, 255);			/* offset toward the viewer: the blue one wins */
+	return 1;
+}
+
+static int t_fb_two_tex(char *why)
+{
+	/* two textures multiplied (the chip takes one in the fixed pipe: the CPU does this): quadrants times mid grey */
+	unsigned char px[8 * 8 * 4], grey[8 * 8 * 4];
+	GLuint t0, t1;
+	int ok;
+
+	quadrants(px, 8, 8);
+	memset(grey, 128, sizeof(grey));
+	for (int i = 0; i < 64; i++)
+		grey[4 * i + 3] = 255;
+	begin();
+	glActiveTexture(GL_TEXTURE0);
+	t0 = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glActiveTexture(GL_TEXTURE1);
+	t1 = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, grey, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_two);
+	glUniform1i(glGetUniformLocation(prog_two, "u_a"), 0);
+	glUniform1i(glGetUniformLocation(prog_two, "u_b"), 1);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = is(16, 16, 128, 0, 0, why, 200) && is(48, 16, 0, 128, 0, why, 200) && is(16, 48, 0, 0, 128, why, 200) &&
+	     is(48, 48, 128, 128, 0, why, 200);
+	glUseProgram(prog);
+	glActiveTexture(GL_TEXTURE1);
+	glDeleteTextures(1, &t1);
+	glActiveTexture(GL_TEXTURE0);
+	glDeleteTextures(1, &t0);
+	return ok;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "fb_two_tex", t_fb_two_tex },
+	{ "colormask", t_colormask },
+	{ "blend_constant", t_blend_constant },
+	{ "blend_subtract", t_blend_subtract },
+	{ "polygon_offset", t_polygon_offset },
+	{ "fb_arith", t_fb_arith },
+	{ "fb_tex", t_fb_tex },
+	{ "fb_mix", t_fb_mix },
+	{ "fb_depth", t_fb_depth },
 	{ "blend_alpha", t_blend_alpha },
 	{ "blend_add", t_blend_add },
 	{ "cull", t_cull },
@@ -773,6 +990,15 @@ int main(int argc, char **argv)
 	glBindAttribLocation(prog_z, 0, "a_pos");
 	glBindAttribLocation(prog_z, 1, "a_color");
 	glLinkProgram(prog_z);
+	prog_fba = link_tex(fs_arith);
+	prog_fbt = link_tex(fs_tex_arith);
+	prog_fbz = glCreateProgram();
+	glAttachShader(prog_fbz, compile(GL_VERTEX_SHADER, zvs_src));
+	glAttachShader(prog_fbz, compile(GL_FRAGMENT_SHADER, fs_arith));
+	glBindAttribLocation(prog_fbz, 0, "a_pos");
+	glBindAttribLocation(prog_fbz, 1, "a_color");
+	glLinkProgram(prog_fbz);
+	prog_two = link_tex(fs_two_tex);
 	prog_uni = link_tex(fs_uniform);
 	prog_vu = link_tex(fs_var_uniform);
 	prog_tu = link_tex(fs_tex_uniform);

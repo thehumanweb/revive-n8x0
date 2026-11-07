@@ -20,8 +20,12 @@ struct pipe_fence_handle {
 	uint64_t seqno;
 };
 
+struct sw_winsys;
+
 struct mbx_screen {
 	struct pipe_screen base;
+	struct pipe_screen *sp_screen;	/* the CPU fallback's softpipe, made at the first use (mbx_fallback.c) */
+	struct sw_winsys *sp_ws;
 	uint64_t fence_done;	/* the highest fence known to be done */
 	int fd;
 	struct renderonly *ro;

@@ -13,13 +13,16 @@
 
 struct nir_shader;
 
-#define MBX_MAX_TEX 2	/* texture units: the TSP has two */
+#define MBX_MAX_TEX 2	/* texture units the TSP has (the draws it takes use the first) */
+#define MBX_MAX_SAMPLERS 8	/* what GLES2 needs: the CPU fallback takes the draws that use more than the chip does */
 
 /* A shader as the state tracker hands it over; its VGP program is made at the first draw */
 struct mbx_shader {
 	mesa_shader_stage stage;
 	struct nir_shader *nir;		/* owned */
 	struct mbx_fs_info fs_info;	/* fragment shaders: what the fixed pipe does with it */
+	struct nir_shader *nir_orig;	/* a copy from before our lowering, for the CPU fallback */
+	void *sp_handle;		/* its softpipe shader, made at the first fallback draw */
 };
 
 struct mbx_vertex_elements {
@@ -63,8 +66,8 @@ struct mbx_context {
 	struct pipe_scissor_state scissor;
 	struct pipe_blend_color blend_color;
 	struct pipe_constant_buffer cb[2];		/* vertex, fragment */
-	struct pipe_sampler_state *samplers[MBX_MAX_TEX];	/* the fragment stage's */
-	struct pipe_sampler_view *views[MBX_MAX_TEX];
+	struct pipe_sampler_state *samplers[MBX_MAX_SAMPLERS];	/* the fragment stage's */
+	struct pipe_sampler_view *views[MBX_MAX_SAMPLERS];
 	uint32_t const_serial;				/* bumped when uniforms change */
 	struct pipe_vertex_buffer vb[PIPE_MAX_ATTRIBS];
 	unsigned num_vb;
@@ -74,6 +77,7 @@ struct mbx_context {
 	struct pipe_depth_stencil_alpha_state *dsa;
 	struct mbx_vertex_elements *velems;
 	struct mbx_shader *vs, *fs;
+	struct pipe_context *sp;	/* the CPU fallback's softpipe context, made at the first use */
 
 	struct mbx_vgp_program *programs;	/* linked pairs */
 	struct mbx_job job;

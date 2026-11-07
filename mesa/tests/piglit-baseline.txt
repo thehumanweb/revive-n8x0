@@ -1,6 +1,6 @@
 pass spec@!opengl es 2.0@draw_buffers_gles2
 pass spec@!opengl es 2.0@fbo_discard_gles2
-fail spec@!opengl es 2.0@glsl-fs-pointcoord
+pass spec@!opengl es 2.0@glsl-fs-pointcoord
 pass spec@!opengl es 2.0@invalid-es3-queries_gles2
 pass spec@!opengl es 2.0@link-no-vsfs
 fail spec@!opengl es 2.0@minmax_gles2
@@ -118,9 +118,9 @@ pass spec@glsl-es-1.00@compiler@structure-and-array-operations@embedded-struct-0
 pass spec@glsl-es-1.00@compiler@structure-and-array-operations@sampler-array-index.frag
 pass spec@glsl-es-1.00@compiler@version-macro.frag
 pass spec@glsl-es-1.00@execution@array-of-float-using-default-precision
-fail spec@glsl-es-1.00@execution@glsl-no-vertex-attribs
+pass spec@glsl-es-1.00@execution@glsl-no-vertex-attribs
 pass spec@glsl-es-1.00@execution@sanity
-fail spec@glsl-es-1.00@execution@unroll-do-while-false-loop-only-once
+pass spec@glsl-es-1.00@execution@unroll-do-while-false-loop-only-once
 pass spec@glsl-es-1.00@linker@glsl-default-precision-qualifier-redeclaration
 pass spec@glsl-es-1.00@linker@glsl-fcoord-invariant
 pass spec@glsl-es-1.00@linker@glsl-fcoord-invariant-pass

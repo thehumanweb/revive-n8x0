@@ -34,13 +34,26 @@ the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 | Textures: 2D, NPOT, RGB565/ARGB1555/4444/8888/PVRTC, linear or twiddled, mipmaps (twiddled), nearest/bilinear/trilinear | two texture units per pass, texture words A/B/C | done on the sim: one unit, linear power-of-two storage (the chip reads linear textures with a stride, as the background object does), NPOT by coordinate scaling in the VGP and edge repeat in the padding, nearest/bilinear, clamp/repeat, formats ARGB8888/565/4444/1555/LA88, `replace` and `modulate` fragment shaders (`gles2_feat` tex_* tests). Not done: mipmaps (twiddled), two units, other combiners, PVRTC. On the chip: a textured triangle through `mbxtri-drm -N 2` equals the model's picture exactly (replace, modulate, bilinear); one unit is state bits 16-18 = 2 (README assumption 38); the Mesa path on the unit follows the next device image |
 | Wrap modes | texture word flags (clamp, wrap; mirror?) | not done |
 | Cube maps, 3D, vertex textures | none in hardware | would need a fallback |
-| Fragment shaders | fixed combiners (modulate, add, decal, ...) per texture unit, offset colour, fog | only shaders that reduce to the fixed pipe; the rest has no fallback yet |
+| Fragment shaders | fixed combiners (modulate, add, decal, ...) per texture unit, offset colour, fog | products of a texel, a varying, a uniform and constants on the chip; everything else through the CPU fallback |
 | Fog | state bit 24, fog table | not exposed (not GLES2) |
 | Stencil | none (depth only) | none: report no stencil bits |
 | Framebuffer objects, RGB565/RGBA4/5551/8888, depth 16/24 | render target format register `0x650`, the external Z buffer | window surfaces and simple FBOs only |
 | Clear (colour, depth) | background object, depth-only clear object | colour+depth clear done, scissor not |
 | `glReadPixels`, `glCopyTexImage`, blits | CPU or the 2D core (`twod.c`: ROPs, blits) | readpixels and plain copies done; the rest not |
 | Compressed textures (PVRTC) | native texel format | not exposed |
+
+## The CPU fallback (`mbx_fallback.c`)
+
+What the chip cannot do is drawn by Mesa's softpipe into the same buffers, so every GLES2 program runs: a fragment shader that is
+not a product of a texel, a varying, a uniform and constants (any arithmetic, `discard`, `gl_FragDepthEXT`, two or more
+textures, `gl_PointCoord`), a partial colour mask, separate / subtract / constant-colour blending, polygon offset, stencil, a draw
+without vertex attributes. The pending MBX job finishes first (its render is waited for), softpipe draws into the render
+target's memory through a small software winsys (a display target is an MBX buffer, mapped), and later MBX jobs start from
+what it left (the background object is the target). Textures are copied to softpipe when the CPU wrote them (render
+targets are shared in place); vertex, index and constant buffers are read through user pointers; the shaders are softpipe's
+own (a copy of the NIR from before our lowering). Limits: the MBX keeps depth on chip and never in memory, so depth does not
+carry between MBX and CPU draws of one frame (a frame of either kind is right); mipmaps of a render target are not shared; it
+is slow (softpipe on the 330 MHz ARM1136), a path for correctness.
 
 ## Hardware limits found on the unit (texturing)
 
