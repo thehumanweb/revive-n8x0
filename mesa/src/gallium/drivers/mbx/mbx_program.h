@@ -22,26 +22,41 @@ enum mbx_fs_kind {
 #define MBX_MAX_TEX 2	/* texture units the TSP has */
 #define MBX_MAX_FSU 4	/* fragment uniform vec4s the vertex program can take */
 
-/* One lane of gl_FragColor: a product of up to one of each factor */
+/*
+ * What the vertex program computes for the fragment shader, as a small expression tree over what the TSP cannot
+ * (everything but the texels): constants, the vertex shader's outputs (varyings), fragment uniforms, and sums and
+ * products of those. Affine in the varyings, so it is exact when the hardware interpolates the result.
+ */
+enum mbx_fs_op { FSN_CONST, FSN_VAR, FSN_UNI, FSN_ADD, FSN_SUB, FSN_MUL, FSN_NEG };
+
+struct mbx_fs_node {
+	uint8_t op;
+	uint16_t a, b;			/* operands (node indices) */
+	float k;			/* FSN_CONST */
+	unsigned loc, comp;		/* FSN_VAR: slot and component; FSN_UNI: index in fsu_vec and component */
+};
+
+#define MBX_MAX_NODES 96
+
+/* One lane of gl_FragColor: texel units' product times a coefficient, plus an additive term */
 struct mbx_fs_lane {
-	unsigned tex;			/* the units whose texel (this lane) is a factor, bit k for unit k */
-	bool has_var;
-	unsigned var_loc, var_comp;	/* a varying's component: slot, component */
-	bool has_uni;
-	unsigned uni_slot, uni_comp;	/* a fragment uniform's component: vec4 slot, component */
-	unsigned uni_index;		/* its index in mbx_fs_info.fsu_vec */
-	bool has_k;
-	float k;			/* the constants' product */
+	unsigned tex;			/* the units whose texel multiplies the coefficient, bit k for unit k (0: no texel) */
+	int prim;			/* the coefficient (the whole value when no texel): a node, -1 for 1 */
+	int off;			/* the additive term (the offset colour): a node, -1 for none */
 };
 
 struct mbx_fs_info {
 	enum mbx_fs_kind kind;
 	struct mbx_fs_lane lane[4];
+	struct mbx_fs_node node[MBX_MAX_NODES];
+	unsigned nnode;
 	bool flat;		/* flat shading (declared so, or nothing varies) */
-	/* texturing: unit 0's texel, times the lanes' other factors (modulate) or alone (replace) */
+	bool has_off;		/* some lane has an additive term: the offset colour */
+	/* texturing */
 	bool tex;
-	unsigned units;		/* the texture units the shader samples: 1 (unit 0) or 3 (both) */
-	bool modulate;
+	unsigned units;		/* the texture units the shader samples: 1 (unit 0), 2 (unit 1), 3 (both) */
+	unsigned mc, ma;	/* the units' texels in the colour lanes (0-2) and in the alpha lane (3) */
+	bool pass_c, pass_a;	/* the colour lanes / the alpha lane have a primary colour (a coefficient other than 1) */
 	unsigned uv_loc[MBX_MAX_TEX][2], uv_comp[MBX_MAX_TEX][2];	/* where each unit's coordinate comes from in the vertex shader's outputs */
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* the fragment uniform vec4s read */
 };
@@ -66,7 +81,8 @@ struct mbx_vgp_program {
 	int scissor_slot;		/* its four planes: uniform slots scissor_slot .. +3 */
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* fragment uniform vec4s the program carries as constants */
 	int fsu_base;			/* their first constant slot */
-	bool tex;			/* unit 0 is sampled */
+	bool tex;			/* a texture is sampled */
+	unsigned units;			/* which units texels the shader uses (bit k: unit k) */
 	unsigned ntex;			/* texture units used */
 	uint32_t tex_c[MBX_MAX_TEX];	/* their combiners (texture word C) */
 	int tex_scale_slot[MBX_MAX_TEX];	/* the uniform slot holding each texture's (width / padded width, height / padded height) */

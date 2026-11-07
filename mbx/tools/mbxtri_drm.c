@@ -117,7 +117,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:J:Q:V:U:u:L:m:y:z:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:J:Q:V:U:u:L:m:y:z:O")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -134,6 +134,7 @@ int main(int argc, char **argv)
 		else if (o == 'L') tex_a_or = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'U') mip_lw = (int)strtoul(optarg, NULL, 0);
 		else if (o == 'u') tri_uvscale = (float)atof(optarg);
+		else if (o == 'O') tri_offset = 1;
 		else if (o == 'V') tex_fmt = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'Q') { tex_bw = 1; tex_lo = (uint32_t)strtoul(optarg, &endp, 0); tex_hi = *endp == ':' ? (uint32_t)strtoul(endp + 1, NULL, 0) : 0xffffffff; }
 		else if (o == 'J') tex_pitch = (uint32_t)strtoul(optarg, NULL, 0);

@@ -633,3 +633,15 @@ circuit.
     colour and alpha A = previous, B = texel, C = 1 - 1: previous x texel, so unit 0 replace (`0xd6887610`) or modulate (`0x86884610`)
     followed by it is texel0 x texel1 (x the primary colour). Trilinear sweeps with two units (the second unit with bits 29 and
     30, `maxlev` 5, 11 or 15 in word A) still sample level 0.
+
+
+42. **The offset colour** (found during device testing; `mbxtri-drm -O` with and without `-N`, `-Y`, `-y -z`, against `mbxtri -O`: six cases,
+    0 differing pixels each). State word bit 23 with the vertex program writing `o2` (BGRA like `o1`; its alpha is the fog
+    factor) adds `o2`'s red, green and blue to the texture units' result in 8 bits after the last unit, clamped, with or
+    without a texture and with one or two units. `o1` and `o2` are clamped to 0..1 before the TSP, so the primary colour
+    cannot scale a texel up and the offset colour cannot subtract. The driver uses it for the additive term of a fragment
+    shader (`texel * a + b`): a shader is parsed into sums of products of texels, varyings, fragment uniforms and constants,
+    the term with texels is the combiner (replace or modulate, one unit or two; colour and alpha have their own halves, so
+    a shader may take only the alpha from a texture), the rest is `o2`, and the vertex program evaluates the coefficients
+    (exact when they are affine in the varyings). An additive term in the alpha lane has no place on the chip (the
+    shader takes the CPU).

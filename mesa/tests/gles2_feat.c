@@ -32,7 +32,7 @@ static const char *fs_src =
 	"void main() { gl_FragColor = v_color; }\n";
 
 static GLuint main_fbo;
-static GLuint prog_two, prog, prog_tex, prog_mod, prog_uni, prog_vu, prog_tu, prog_z, prog_fba, prog_fbt, prog_fbz;
+static GLuint prog_sum, prog_mix, prog_txt, prog_two, prog, prog_tex, prog_mod, prog_uni, prog_vu, prog_tu, prog_z, prog_fba, prog_fbt, prog_fbz;
 static int failures;
 
 static const char *tvs_src =
@@ -100,6 +100,27 @@ static const char *fs_two_tex =
 	"uniform sampler2D u_b;\n"
 	"varying vec2 v_uv;\n"
 	"void main() { gl_FragColor = texture2D(u_a, v_uv) * texture2D(u_b, v_uv); }\n";
+
+/* shader forms the combiner and the offset colour can do (the colour terms are computed per vertex) */
+static const char *fs_tex_sum =
+	"precision mediump float;\n"
+	"uniform sampler2D u_tex;\n"
+	"uniform vec4 u_add;\n"
+	"varying vec2 v_uv;\n"
+	"varying vec4 v_color;\n"
+	"void main() { gl_FragColor = vec4(texture2D(u_tex, v_uv).rgb * v_color.rgb + u_add.rgb, 1.0); }\n";
+static const char *fs_tex_mix =
+	"precision mediump float;\n"
+	"uniform sampler2D u_tex;\n"
+	"uniform vec4 u_color;\n"
+	"varying vec2 v_uv;\n"
+	"void main() { gl_FragColor = vec4(mix(texture2D(u_tex, v_uv).rgb, u_color.rgb, 0.25), 1.0); }\n";
+static const char *fs_text =
+	"precision mediump float;\n"
+	"uniform sampler2D u_tex;\n"
+	"varying vec2 v_uv;\n"
+	"varying vec4 v_color;\n"
+	"void main() { gl_FragColor = vec4(v_color.rgb, v_color.a * texture2D(u_tex, v_uv).a); }\n";
 
 static GLuint compile(GLenum type, const char *src)
 {
@@ -1112,7 +1133,83 @@ static int t_bilinear_black(char *why)
 	return ok;
 }
 
+static int t_tex_sum(char *why)
+{
+	/* texel * colour + a uniform: quadrants * .5 + (.25, 0, .25) */
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok;
+
+	quadrants(px, 8, 8);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_sum);
+	glUniform1i(glGetUniformLocation(prog_sum, "u_tex"), 0);
+	glUniform4f(glGetUniformLocation(prog_sum, "u_add"), 0.25f, 0.0f, 0.25f, 0.0f);
+	quad(0, 0, 1, 1, 0.5f, 0.5f, 0.5f);
+	/* red (1,0,0) -> (.75, 0, .25); green -> (.25, .5, .25); blue -> (.25, 0, .75); yellow -> (.75, .5, .25) */
+	ok = is(16, 16, 191, 0, 64, why, 200) && is(48, 16, 64, 128, 64, why, 200) && is(16, 48, 64, 0, 191, why, 200) &&
+	     is(48, 48, 191, 128, 64, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_mix(char *why)
+{
+	/* mix(texel, colour, .25): .75 * texel + .25 * (.2, .4, .8) */
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok;
+
+	quadrants(px, 8, 8);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_mix);
+	glUniform1i(glGetUniformLocation(prog_mix, "u_tex"), 0);
+	glUniform4f(glGetUniformLocation(prog_mix, "u_color"), 0.2f, 0.4f, 0.8f, 1.0f);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	/* red -> (.75 + .05, .1, .2) = (204, 26, 51); green -> (.05, .85, .2); blue -> (.05, .1, .95); yellow -> (.8, .85, .2) */
+	ok = is(16, 16, 204, 26, 51, why, 200) && is(48, 16, 13, 217, 51, why, 200) && is(16, 48, 13, 26, 242, why, 200) &&
+	     is(48, 48, 204, 217, 51, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_alpha_only(char *why)
+{
+	/* the colour from the vertices, the alpha from a texture (a glyph atlas): blended over green, the left half of the
+	 * texture transparent, the right half opaque */
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok;
+
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++) {
+			px[4 * (y * 8 + x)] = px[4 * (y * 8 + x) + 1] = px[4 * (y * 8 + x) + 2] = 255;
+			px[4 * (y * 8 + x) + 3] = x >= 4 ? 255 : 0;
+		}
+	begin();
+	glClearColor(0, 1, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_txt);
+	glUniform1i(glGetUniformLocation(prog_txt, "u_tex"), 0);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	quad(0, 0, 1, 1, 1, 0, 0);	/* red text colour */
+	glDisable(GL_BLEND);
+	ok = is(10, 32, 0, 255, 0, why, 200) && is(50, 32, 255, 0, 0, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "tex_sum", t_tex_sum },
+	{ "tex_mix", t_tex_mix },
+	{ "tex_alpha_only", t_tex_alpha_only },
 	{ "bilinear_black", t_bilinear_black },
 	{ "mip_chip", t_mip_chip },
 	{ "copy_tex", t_copy_tex },
@@ -1214,6 +1311,9 @@ int main(int argc, char **argv)
 	glBindAttribLocation(prog_fbz, 1, "a_color");
 	glLinkProgram(prog_fbz);
 	prog_two = link_tex(fs_two_tex);
+	prog_sum = link_tex(fs_tex_sum);
+	prog_mix = link_tex(fs_tex_mix);
+	prog_txt = link_tex(fs_text);
 	prog_uni = link_tex(fs_uniform);
 	prog_vu = link_tex(fs_var_uniform);
 	prog_tu = link_tex(fs_tex_uniform);

@@ -324,6 +324,44 @@ static void write_dest(struct cc *c, struct vsrc v, enum dkind dk, int reg, int 
 		c->max_uniform = v.idx;
 }
 
+/* An expression of the fragment shader's non-texel part, in the vertex program */
+static struct vsrc fs_eval(struct cc *c, int n)
+{
+	const struct mbx_fs_info *fs = c->fs;
+	const struct mbx_fs_node *nd = &fs->node[n];
+	struct vsrc a, b, r = imm(0.0f);
+
+	switch (nd->op) {
+	case FSN_CONST:
+		return imm(nd->k);
+	case FSN_VAR:
+		r = c->outs[nd->loc][nd->comp];
+		if (r.kind == V_NONE) {
+			fail(c, "the vertex shader does not write a varying the fragment shader reads");
+			return imm(0.0f);
+		}
+		return r;
+	case FSN_UNI:
+		r = (struct vsrc){ .kind = V_CONST, .idx = c->prog->fsu_base + (int)nd->loc, .lane = (int)nd->comp };
+		return r;
+	case FSN_NEG:
+		return negated(fs_eval(c, nd->a));
+	case FSN_ADD:
+		a = fs_eval(c, nd->a);
+		b = fs_eval(c, nd->b);
+		return op2(c, MBX_VGP_ADD, a, b);
+	case FSN_SUB:
+		a = fs_eval(c, nd->a);
+		b = fs_eval(c, nd->b);
+		return op2(c, MBX_VGP_ADD, a, negated(b));
+	case FSN_MUL:
+		a = fs_eval(c, nd->a);
+		b = fs_eval(c, nd->b);
+		return op2(c, MBX_VGP_MUL, a, b);
+	}
+	return r;
+}
+
 static bool pass_one(struct cc *c)
 {
 	nir_function_impl *impl = nir_shader_get_entrypoint(c->nir);
@@ -428,26 +466,26 @@ static bool pass_one(struct cc *c)
 	}
 	for (lane = 0; lane < 4; lane++) {
 		const struct mbx_fs_lane *L = &fs->lane[lane];
-		struct vsrc v = { .kind = V_NONE };
+		struct vsrc v = L->prim >= 0 ? fs_eval(c, L->prim) : imm(1.0f);	/* the primary colour: the texel's factor, or the whole value */
 
-		/* the lane's factors other than the texel, multiplied in the vertex program */
-		if (L->has_var) {
-			v = c->outs[L->var_loc][L->var_comp];
-			if (v.kind == V_NONE)
-				return fail(c, "the vertex shader does not write a varying the fragment shader reads");
-		}
-		if (L->has_uni) {
-			struct vsrc u = { .kind = V_CONST, .idx = c->prog->fsu_base + (int)L->uni_index, .lane = (int)L->uni_comp };
-
-			v = v.kind == V_NONE ? u : op2(c, MBX_VGP_MUL, v, u);
-		}
-		if (L->has_k && (L->k != 1.0f || v.kind == V_NONE))
-			v = v.kind == V_NONE ? imm(L->k) : op2(c, MBX_VGP_MUL, v, imm(L->k));
-		if (v.kind == V_NONE)
-			v = imm(1.0f);	/* the texel alone */
+		if (c->why)
+			return false;
 		if (v.kind == V_VREG)
 			c->vuse[v.idx]++;
 		write_dest(c, v, D_OUT, 1, bgra[lane]);
+	}
+	if (fs->has_off) {
+		/* the offset colour o2: the additive terms (red, green, blue; its alpha is the fog factor, unused) */
+		for (lane = 0; lane < 4; lane++) {
+			const struct mbx_fs_lane *L = &fs->lane[lane];
+			struct vsrc v = lane < 3 && L->off >= 0 ? fs_eval(c, L->off) : imm(0.0f);
+
+			if (c->why)
+				return false;
+			if (v.kind == V_VREG)
+				c->vuse[v.idx]++;
+			write_dest(c, v, D_OUT, 2, bgra[lane]);
+		}
 	}
 	for (unsigned u = 0; u < MBX_MAX_TEX; u++) {
 		/* unit u's texture coordinate into o(3 + u).xy, times (width / padded width, height / padded height): the
@@ -706,59 +744,274 @@ bool mbx_compile_vs(nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp
 /* --- the fragment side --- */
 
 /*
- * What the fixed pipe can do with a fragment shader: each lane of gl_FragColor is a product of factors, a texel of
- * unit 0 (the same lane), a varying's component, a fragment uniform's component, a constant. The hardware
- * interpolates what the vertex shader gives it, so everything but the texel is computed per vertex, in the
- * vertex program, and reaches the TSP as the primary colour: it is exact because each factor is linear across a
- * triangle (a varying) or constant (a uniform). The texel then multiplies it (modulate), or is it (replace).
+ * What the fixed pipe can do with a fragment shader. Each lane of gl_FragColor is parsed into a sum of terms, each a
+ * product of texels (unit 0, unit 1, each at most once) and factors the vertex program can compute (constants, varyings,
+ * fragment uniforms). Terms are grouped by the texels they carry; what the chip draws is
+ *
+ *     texel units' product x primary colour   (the term with texels: the TSP combiner, replace or modulate)
+ *   + offset colour                           (the term without: added after the units, 8 bits, red green blue only)
+ *
+ * with the primary and the offset colour computed per vertex in the vertex program: exact because the result is affine
+ * in the varyings, so the hardware's interpolation commutes with it. A shader with no texel at all is one sum, the
+ * primary colour. Colour and alpha have their own combiner halves, so the texel units may differ between lane 3 and the rest.
  */
-static bool fs_factors(nir_scalar s, struct mbx_fs_lane *L, nir_tex_instr *const tex[MBX_MAX_TEX], unsigned lane)
+struct fsp {
+	struct mbx_fs_info *info;
+	nir_tex_instr *tex[MBX_MAX_TEX];
+	unsigned lane;		/* the lane being parsed: a texel must be this lane's component */
+	bool bad;
+};
+
+struct fs_term {
+	int coef;		/* a node, or -1 for 1 */
+	unsigned mask;		/* the texel units multiplied in */
+};
+
+#define FS_MAX_TERMS 8
+
+static int fs_node(struct fsp *p, enum mbx_fs_op op, int a, int b, float k, unsigned loc, unsigned comp)
 {
+	struct mbx_fs_info *i = p->info;
+	struct mbx_fs_node *n;
+
+	if (i->nnode >= MBX_MAX_NODES) {
+		p->bad = true;
+		return 0;
+	}
+	n = &i->node[i->nnode];
+	n->op = op;
+	n->a = (uint16_t)a;
+	n->b = (uint16_t)b;
+	n->k = k;
+	n->loc = loc;
+	n->comp = comp;
+	return (int)i->nnode++;
+}
+
+static int fs_one(struct fsp *p, int c)
+{
+	return c >= 0 ? c : fs_node(p, FSN_CONST, 0, 0, 1.0f, 0, 0);
+}
+
+static int fs_mulc(struct fsp *p, int a, int b)
+{
+	if (a < 0)
+		return b;
+	if (b < 0)
+		return a;
+	return fs_node(p, FSN_MUL, a, b, 0, 0, 0);
+}
+
+static int fs_negc(struct fsp *p, int a)
+{
+	return a < 0 ? fs_node(p, FSN_CONST, 0, 0, -1.0f, 0, 0) : fs_node(p, FSN_NEG, a, 0, 0, 0, 0);
+}
+
+static int fs_addc(struct fsp *p, int a, int b)
+{
+	return fs_node(p, FSN_ADD, fs_one(p, a), fs_one(p, b), 0, 0, 0);
+}
+
+static unsigned fs_uniform_index(struct fsp *p, unsigned slot)
+{
+	struct mbx_fs_info *i = p->info;
+	unsigned j;
+
+	for (j = 0; j < i->nfsu; j++)
+		if (i->fsu_vec[j] == slot)
+			return j;
+	if (i->nfsu == MBX_MAX_FSU) {
+		p->bad = true;
+		return 0;
+	}
+	i->fsu_vec[i->nfsu] = slot;
+	return i->nfsu++;
+}
+
+static int fs_terms(struct fsp *p, nir_scalar s, struct fs_term *out);
+
+static int fs_concat(struct fs_term *out, int na, const struct fs_term *b, int nb)
+{
+	if (na < 0 || nb < 0 || na + nb > FS_MAX_TERMS)
+		return -1;
+	memcpy(out + na, b, sizeof(*b) * (size_t)nb);
+	return na + nb;
+}
+
+static void fs_neg_terms(struct fsp *p, struct fs_term *t, int n)
+{
+	for (int k = 0; k < n; k++)
+		t[k].coef = fs_negc(p, t[k].coef);
+}
+
+/* The product of two term lists */
+static int fs_mul_terms(struct fsp *p, const struct fs_term *a, int na, const struct fs_term *b, int nb, struct fs_term *out)
+{
+	int n = 0;
+
+	if (na < 0 || nb < 0 || na * nb > FS_MAX_TERMS)
+		return -1;
+	for (int i = 0; i < na; i++)
+		for (int j = 0; j < nb; j++) {
+			if (a[i].mask & b[j].mask)
+				return -1;	/* a texel squared */
+			out[n].mask = a[i].mask | b[j].mask;
+			out[n].coef = fs_mulc(p, a[i].coef, b[j].coef);
+			n++;
+		}
+	return n;
+}
+
+static int fs_terms(struct fsp *p, nir_scalar s, struct fs_term *out)
+{
+	struct fs_term x[FS_MAX_TERMS], y[FS_MAX_TERMS], z[FS_MAX_TERMS];
+	int nx, ny, nz;
+
 	s = nir_scalar_chase_movs(s);
 	if (nir_scalar_is_const(s)) {
-		L->k *= nir_scalar_as_float(s);
-		L->has_k = true;
-		return true;
+		out[0] = (struct fs_term){ fs_node(p, FSN_CONST, 0, 0, nir_scalar_as_float(s), 0, 0), 0 };
+		return 1;
 	}
 	for (unsigned k = 0; k < MBX_MAX_TEX; k++)
-		if (tex[k] && nir_def_instr(s.def) == &tex[k]->instr) {
-			if (s.comp != lane || (L->tex >> k & 1))
-				return false;
-			L->tex |= 1u << k;
-			return true;
+		if (p->tex[k] && nir_def_instr(s.def) == &p->tex[k]->instr) {
+			if (s.comp != p->lane)
+				return -1;
+			out[0] = (struct fs_term){ -1, 1u << k };
+			return 1;
 		}
 	if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_input) {
 		nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
 
-		if (L->has_var)
-			return false;
-		L->has_var = true;
-		L->var_loc = nir_intrinsic_io_semantics(in).location;
-		L->var_comp = nir_intrinsic_component(in) + s.comp;
-		return true;
+		out[0] = (struct fs_term){ fs_node(p, FSN_VAR, 0, 0, 0, nir_intrinsic_io_semantics(in).location,
+						   nir_intrinsic_component(in) + s.comp), 0 };
+		return 1;
 	}
 	if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_uniform) {
 		nir_intrinsic_instr *un = nir_def_as_intrinsic(s.def);
 
-		if (L->has_uni || !nir_src_is_const(un->src[0]))
-			return false;
-		L->has_uni = true;
-		L->uni_slot = nir_intrinsic_base(un) + nir_src_as_uint(un->src[0]);
-		L->uni_comp = s.comp;	/* the load starts at the first component of its vec4 slot */
-		return true;
+		if (!nir_src_is_const(un->src[0]))
+			return -1;
+		/* the load starts at the first component of its vec4 slot */
+		out[0] = (struct fs_term){ fs_node(p, FSN_UNI, 0, 0, 0,
+						   fs_uniform_index(p, nir_intrinsic_base(un) + nir_src_as_uint(un->src[0])), s.comp), 0 };
+		return 1;
 	}
-	if (nir_scalar_is_alu(s) && nir_scalar_alu_op(s) == nir_op_fmul)
-		return fs_factors(nir_scalar_chase_alu_src(s, 0), L, tex, lane) &&
-		       fs_factors(nir_scalar_chase_alu_src(s, 1), L, tex, lane);
-	return false;
+	if (!nir_scalar_is_alu(s))
+		return -1;
+	switch (nir_scalar_alu_op(s)) {
+	case nir_op_fmul:
+		nx = fs_terms(p, nir_scalar_chase_alu_src(s, 0), x);
+		ny = fs_terms(p, nir_scalar_chase_alu_src(s, 1), y);
+		return fs_mul_terms(p, x, nx, y, ny, out);
+	case nir_op_fadd:
+	case nir_op_fsub:
+		nx = fs_terms(p, nir_scalar_chase_alu_src(s, 0), x);
+		ny = fs_terms(p, nir_scalar_chase_alu_src(s, 1), y);
+		if (ny < 0)
+			return -1;
+		if (nir_scalar_alu_op(s) == nir_op_fsub)
+			fs_neg_terms(p, y, ny);
+		memcpy(out, x, sizeof(*x) * (size_t)(nx < 0 ? 0 : nx));
+		return fs_concat(out, nx, y, ny);
+	case nir_op_fneg:
+		nx = fs_terms(p, nir_scalar_chase_alu_src(s, 0), out);
+		if (nx > 0)
+			fs_neg_terms(p, out, nx);
+		return nx;
+	case nir_op_ffma:		/* a * b + c */
+		nx = fs_terms(p, nir_scalar_chase_alu_src(s, 0), x);
+		ny = fs_terms(p, nir_scalar_chase_alu_src(s, 1), y);
+		nz = fs_terms(p, nir_scalar_chase_alu_src(s, 2), z);
+		nx = fs_mul_terms(p, x, nx, y, ny, out);
+		if (nz < 0)
+			return -1;
+		return fs_concat(out, nx, z, nz);
+	case nir_op_flrp: {		/* a * (1 - t) + b * t */
+		struct fs_term t[FS_MAX_TERMS], omt[FS_MAX_TERMS + 1], p1[FS_MAX_TERMS], p2[FS_MAX_TERMS];
+		int nt, nomt, n1, n2;
+
+		nx = fs_terms(p, nir_scalar_chase_alu_src(s, 0), x);
+		ny = fs_terms(p, nir_scalar_chase_alu_src(s, 1), y);
+		nt = fs_terms(p, nir_scalar_chase_alu_src(s, 2), t);
+		if (nx < 0 || ny < 0 || nt < 0 || nt + 1 > FS_MAX_TERMS)
+			return -1;
+		omt[0] = (struct fs_term){ -1, 0 };
+		memcpy(omt + 1, t, sizeof(*t) * (size_t)nt);
+		fs_neg_terms(p, omt + 1, nt);
+		nomt = nt + 1;
+		n1 = fs_mul_terms(p, x, nx, omt, nomt, p1);
+		n2 = fs_mul_terms(p, y, ny, t, nt, p2);
+		if (n1 < 0 || n2 < 0)
+			return -1;
+		memcpy(out, p1, sizeof(*p1) * (size_t)n1);
+		return fs_concat(out, n1, p2, n2);
+	}
+	default:
+		return -1;
+	}
+}
+
+/* The degree in the varyings (the coefficient must be affine) and whether the expression subtracts */
+static int fs_degree(const struct mbx_fs_info *i, int n, bool *subtracts)
+{
+	const struct mbx_fs_node *nd = &i->node[n];
+	int da, db;
+
+	switch (nd->op) {
+	case FSN_VAR: return 1;
+	case FSN_CONST: case FSN_UNI: return 0;
+	case FSN_NEG:
+		*subtracts = true;
+		return fs_degree(i, nd->a, subtracts);
+	case FSN_ADD: case FSN_SUB:
+		da = fs_degree(i, nd->a, subtracts);
+		db = fs_degree(i, nd->b, subtracts);
+		return da > db ? da : db;
+	default:
+		da = fs_degree(i, nd->a, subtracts);
+		db = fs_degree(i, nd->b, subtracts);
+		return da + db;
+	}
+}
+
+/* A lane's terms grouped by texel mask: the texel term's coefficient, the plain term's */
+static bool fs_lane(struct fsp *p, nir_scalar s, struct mbx_fs_lane *L)
+{
+	struct fs_term t[FS_MAX_TERMS];
+	int n, k;
+	int coef[4], have[4] = { 0 };
+	unsigned m = 0;
+
+	p->lane = (unsigned)(L - p->info->lane);
+	n = fs_terms(p, s, t);
+	if (n <= 0 || p->bad)
+		return false;
+	for (k = 0; k < 4; k++)
+		coef[k] = -1;
+	for (k = 0; k < n; k++) {
+		unsigned mk = t[k].mask;
+
+		if (mk && m && mk != m)
+			return false;	/* two different texel products in a lane: the chip's combiner has one */
+		if (mk)
+			m = mk;
+		coef[mk] = have[mk] ? fs_addc(p, coef[mk], t[k].coef) : t[k].coef;
+		have[mk] = 1;
+	}
+	L->tex = m;
+	L->prim = have[m] ? coef[m] : -1;
+	L->off = m && have[0] ? coef[0] : -1;
+	if (m && !have[m])
+		return false;
+	return !p->bad;
 }
 
 void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 {
 	nir_function_impl *impl = nir_shader_get_entrypoint(fs);
 	nir_intrinsic_instr *store = NULL;
-	nir_tex_instr *tex[MBX_MAX_TEX] = { NULL, NULL };
-	unsigned i, j;
+	struct fsp p = { .info = info };
+	unsigned i;
 
 	memset(info, 0, sizeof(*info));
 	info->kind = MBX_FS_UNSUPPORTED;
@@ -774,8 +1027,9 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		case nir_instr_type_alu: {
 			nir_alu_instr *alu = nir_instr_as_alu(instr);
 
-			if (alu->op != nir_op_mov && alu->op != nir_op_vec2 && alu->op != nir_op_vec3 &&
-			    alu->op != nir_op_vec4 && alu->op != nir_op_fmul)
+			if (alu->op != nir_op_mov && alu->op != nir_op_vec2 && alu->op != nir_op_vec3 && alu->op != nir_op_vec4 &&
+			    alu->op != nir_op_fmul && alu->op != nir_op_fadd && alu->op != nir_op_fsub && alu->op != nir_op_fneg &&
+			    alu->op != nir_op_ffma && alu->op != nir_op_flrp)
 				return;
 			break;
 		}
@@ -784,13 +1038,13 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 
 			/* a plain 2D sample of unit 0 or unit 1 (the chip has two), once each */
 			if (t->op != nir_texop_tex || t->sampler_dim != GLSL_SAMPLER_DIM_2D || t->is_array || t->is_shadow ||
-			    t->texture_index >= MBX_MAX_TEX || tex[t->texture_index] ||
+			    t->texture_index >= MBX_MAX_TEX || p.tex[t->texture_index] ||
 			    nir_tex_instr_src_index(t, nir_tex_src_coord) < 0)
 				return;
 			for (i = 0; i < t->num_srcs; i++)
 				if (t->src[i].src_type != nir_tex_src_coord)
 					return;	/* a bias, a projector, an offset: not yet */
-			tex[t->texture_index] = t;
+			p.tex[t->texture_index] = t;
 			break;
 		}
 		case nir_instr_type_intrinsic: {
@@ -814,14 +1068,15 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 	if (!store || nir_src_num_components(store->src[0]) != 4)
 		return;
 
+	/* each sampled unit's coordinate: the first two components of one varying (or any two, each its own) */
 	for (unsigned k = 0; k < MBX_MAX_TEX; k++) {
 		nir_scalar u, v;
 		nir_intrinsic_instr *iu, *iv;
 
-		if (!tex[k])
+		if (!p.tex[k])
 			continue;
-		u = nir_scalar_resolved(tex[k]->src[nir_tex_instr_src_index(tex[k], nir_tex_src_coord)].src.ssa, 0);
-		v = nir_scalar_resolved(tex[k]->src[nir_tex_instr_src_index(tex[k], nir_tex_src_coord)].src.ssa, 1);
+		u = nir_scalar_resolved(p.tex[k]->src[nir_tex_instr_src_index(p.tex[k], nir_tex_src_coord)].src.ssa, 0);
+		v = nir_scalar_resolved(p.tex[k]->src[nir_tex_instr_src_index(p.tex[k], nir_tex_src_coord)].src.ssa, 1);
 		if (!nir_scalar_is_intrinsic(u) || nir_scalar_intrinsic_op(u) != nir_intrinsic_load_input ||
 		    !nir_scalar_is_intrinsic(v) || nir_scalar_intrinsic_op(v) != nir_intrinsic_load_input)
 			return;
@@ -831,50 +1086,54 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		info->uv_comp[k][0] = nir_intrinsic_component(iu) + u.comp;
 		info->uv_loc[k][1] = nir_intrinsic_io_semantics(iv).location;
 		info->uv_comp[k][1] = nir_intrinsic_component(iv) + v.comp;
-		info->units |= 1u << k;
 	}
-	if (info->units & ~1u && !(info->units & 1u))
-		return;			/* unit 1 alone: the chain starts at unit 0 */
-	info->tex = info->units != 0;
-	for (i = 0; i < 4; i++) {
-		struct mbx_fs_lane *L = &info->lane[i];
-
-		L->k = 1.0f;
-		if (!fs_factors(nir_scalar_resolved(store->src[0].ssa, i), L, tex, i))
+	for (i = 0; i < 4; i++)
+		if (!fs_lane(&p, nir_scalar_resolved(store->src[0].ssa, i), &info->lane[i]))
 			return;
-		if (L->tex != info->units)
-			return;	/* the same texels in every lane: it is one combiner chain */
-	}
-	/* the fragment uniforms the vertex program needs, each vec4 once */
-	for (i = 0; i < 4; i++) {
-		struct mbx_fs_lane *L = &info->lane[i];
 
-		if (!L->has_uni)
-			continue;
-		for (j = 0; j < info->nfsu && info->fsu_vec[j] != L->uni_slot; j++)
-			;
-		if (j == info->nfsu) {
-			if (info->nfsu == MBX_MAX_FSU)
-				return;
-			info->fsu_vec[info->nfsu++] = L->uni_slot;
-		}
-		L->uni_index = j;
-	}
-	/* flat when no lane takes a varying, or the varyings are declared flat */
-	info->flat = true;
+	/* the texel units: one set for the colour lanes, one for alpha; the chain starts at unit 0 */
+	info->mc = info->lane[0].tex;
+	if (info->lane[1].tex != info->mc || info->lane[2].tex != info->mc)
+		return;
+	info->ma = info->lane[3].tex;
+	info->units = info->mc | info->ma;
+	info->tex = info->units != 0;
+	for (unsigned k = 0; k < MBX_MAX_TEX; k++)
+		if ((info->units >> k & 1) != (p.tex[k] != NULL))
+			return;		/* a sample whose texel is not used, or used by only part of the lanes' sums */
 	for (i = 0; i < 4; i++) {
 		struct mbx_fs_lane *L = &info->lane[i];
+		bool sub = false, sub_off = false;
+
+		if (L->prim >= 0) {
+			if (fs_degree(info, L->prim, &sub) > 1)
+				return;	/* not affine in the varyings: the hardware's interpolation is not the shader's */
+			if (L->tex && info->node[L->prim].op == FSN_CONST &&
+			    (info->node[L->prim].k > 1.0f || info->node[L->prim].k < 0.0f))
+				return;	/* the primary colour is clamped to 0..1 on the chip: it cannot scale a texel up */
+		}
+		if (L->off >= 0) {
+			if (fs_degree(info, L->off, &sub_off) > 1 || sub_off)
+				return;	/* the offset colour is clamped at 0: nothing can be taken away with it */
+			if (i == 3 || !info->tex)
+				return;	/* no alpha lane in the offset colour */
+			info->has_off = true;
+		}
+		if (L->prim >= 0) {
+			info->pass_c |= i < 3;
+			info->pass_a |= i == 3;
+		}
+	}
+	/* flat when no varying is read, or the varyings read are declared flat */
+	info->flat = true;
+	for (i = 0; i < info->nnode; i++) {
 		nir_variable *var;
 
-		if (!L->has_var)
+		if (info->node[i].op != FSN_VAR)
 			continue;
-		var = nir_find_variable_with_location(fs, nir_var_shader_in, L->var_loc);
+		var = nir_find_variable_with_location(fs, nir_var_shader_in, info->node[i].loc);
 		if (!(var && var->data.interpolation == INTERP_MODE_FLAT))
 			info->flat = false;
 	}
-	/* modulate when anything but the texel is a factor, else replace */
-	for (i = 0; i < 4; i++)
-		if (info->lane[i].has_var || info->lane[i].has_uni || (info->lane[i].has_k && info->lane[i].k != 1.0f))
-			info->modulate = true;
 	info->kind = MBX_FS_MATCHED;
 }

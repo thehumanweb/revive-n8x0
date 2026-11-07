@@ -221,9 +221,16 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 	uint32_t ta[MBX_MAX_TEX] = { 0 }, tb[MBX_MAX_TEX] = { 0 };
 	unsigned u;
 
-	for (u = 0; u < prog->ntex; u++)
+	for (u = 0; u < prog->ntex; u++) {
+		if (u == 0 && !(prog->units & 1))
+			continue;	/* unit 1 alone: unit 0's block is a copy of unit 1's (below) */
 		if (!tex_words(ctx, u, &ta[u], &tb[u]))
 			ta[u] = tb[u] = 0;
+	}
+	if (!(prog->units & 1) && prog->ntex == 2) {
+		ta[0] = ta[1];
+		tb[0] = tb[1];
+	}
 	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | (prog->ntex > 0 ? 0x4 : 0) | (prog->ntex > 1 ? 0x8 : 0) | 0x20 | 0x80 | 0x100);
 	mbx_emit(ctx, MBX_CH_TA, hw_state_word(ctx, prog));
 	mbx_emit(ctx, MBX_CH_TA, 0xe0000000);		/* alpha function ALWAYS (0 is NEVER, which rejects every pixel with bit 25 set) */
@@ -483,7 +490,7 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 
 		mbx_dbg("draw %u: header", d);
 		for (unsigned un = 0; un < prog->ntex; un++)
-			if (ctx->views[un] && ctx->views[un]->texture)
+			if ((prog->units >> un & 1) && ctx->views[un] && ctx->views[un]->texture)
 				mbx_job_use_texture(ctx, mbx_resource(ctx->views[un]->texture));
 		emit_header(ctx, prog, layout);
 		mbx_dbg("draw %u: program", d);

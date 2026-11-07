@@ -14,6 +14,31 @@
 #include "mbx_fallback.h"
 #include "mbx_program.h"
 
+/*
+ * A texture combiner word C (README assumption 38, 41): colour in bits 15-31 and alpha in 0-14, each A * B + C * D with
+ * C = 1 - 1 = 0. Sources: A {konst, previous, texel, one}, B and D {primary, previous, texel, konst}, C {primary,
+ * previous, texel, one}; the stock replace word is 0xd6887610, the model's decoding of the rest is texture.c.
+ * unit 0: the texel times the primary colour (modulate), the texel alone (replace), or the primary colour (no texel here);
+ * unit 1: the previous result times its texel, or the previous result.
+ */
+static uint32_t comb_word(unsigned has_texel, bool has_prim, unsigned unit)
+{
+	const uint32_t tail = 3u << 25 | 2u << 22 | 1u << 19;	/* C = one, complemented: zero; D = texel (unused) */
+
+	if (unit == 0)
+		return has_texel ? (has_prim ? 2u << 30 : 3u << 30 | 2u << 27) | tail : 3u << 30 | tail;
+	return has_texel ? 1u << 30 | 2u << 27 | tail : 3u << 30 | 1u << 27 | tail;
+}
+
+static uint32_t comb_word_alpha(unsigned has_texel, bool has_prim, unsigned unit)
+{
+	const uint32_t tail = 3u << 9 | 1u << 4;
+
+	if (unit == 0)
+		return has_texel ? (has_prim ? 2u << 13 : 3u << 13 | 2u << 11) | tail : 3u << 13 | tail;
+	return has_texel ? 1u << 13 | 2u << 11 | tail : 3u << 13 | 1u << 11 | tail;
+}
+
 static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shader_state *templ)
 {
 	struct mbx_shader *so = CALLOC_STRUCT(mbx_shader);
@@ -92,21 +117,20 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 	p->gouraud = !ctx->fs->fs_info.flat;
 	p->tex_scale_slot[0] = p->tex_scale_slot[1] = -1;
 	if (ctx->fs->fs_info.tex) {
-		/* texture word C: colour and alpha each A * B + C * D with C = 1 - 1 = 0. Replace is the stock
-		 * stack's own word (the background object's); modulate has the texel in A and the primary colour in B */
+		const struct mbx_fs_info *fi = &ctx->fs->fs_info;
+
 		p->tex = true;
-		p->tex_c[0] = ctx->fs->fs_info.modulate ? 0x86884610 : 0xd6887610;
-		p->ntex = 1;
-		if (ctx->fs->fs_info.units & 2) {
-			/* the second unit multiplies the first's result by its own texel (found on the chip: its picture is
-			 * the model's): colour and alpha A = previous, B = texel, C = 1 - 1 */
-			p->tex_c[1] = 0x56883610;
-			p->ntex = 2;
-		}
+		p->units = fi->units;
+		p->ntex = fi->units & 2 ? 2 : 1;	/* unit 1 needs unit 0's block before it */
+		p->tex_c[0] = comb_word(fi->mc & 1, fi->pass_c, 0) | comb_word_alpha(fi->ma & 1, fi->pass_a, 0);
+		if (p->ntex == 2)
+			p->tex_c[1] = comb_word(fi->mc & 2, fi->pass_c, 1) | comb_word_alpha(fi->ma & 2, fi->pass_a, 1);
 		/* state bits 16-18: one texture unit is mode 2, two are 5 (found on the chip: 1 draws nothing, 3, 4, 6, 7 hang) */
 		p->st_extra |= (p->ntex == 2 ? 5u : 2u) << 16;
 	}
-	p->sections = 0xf0020000 | 0x4 | (scissor ? 0xfu << 20 : 0);	/* user clip planes 0-3 on for the scissor */	/* the VGP section the program is loaded in (bit 2); bit 17 is needed on the chip (observed on an N810), the model ignores it */
+	p->sections = 0xf0020000 | 0x4 | (scissor ? 0xfu << 20 : 0);	/* the VGP section the program is loaded in (bit 2); user clip planes 0-3 on for the scissor; bit 17 is needed on the chip (observed on an N810), the model ignores it */
+	if (ctx->fs->fs_info.has_off)
+		p->st_extra |= 1u << 23;	/* the offset colour (o2) is added after the texture units (found on the chip) */
 	if (!mbx_compile_vs(ctx->vs->nir, &ctx->fs->fs_info, p)) {
 		p->ninsn = 0;
 		return NULL;

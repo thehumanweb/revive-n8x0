@@ -108,7 +108,7 @@ int main(int argc, char **argv)
 	char *endp;
 	int i, x, y;
 
-	while ((o = getopt(argc, argv, "a:vo:N:Y:H:J:Q:V:U:u:y:z:")) != -1) {
+	while ((o = getopt(argc, argv, "a:vo:N:Y:H:J:Q:V:U:u:y:z:O")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'N') { tri_tex = 1; tri_tex_mode = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'Y') tri_tex_c = (uint32_t)strtoul(optarg, NULL, 0);
@@ -116,6 +116,7 @@ int main(int argc, char **argv)
 		else if (o == 'u') tri_uvscale = (float)atof(optarg);
 		else if (o == 'y') { tri_tex2 = 1; tex2_b_bits = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'z') tri_tex2_c = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'O') tri_offset = 1;
 		else if (o == 'V') tex_fmt = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'Q') { tex_bw = 1; tex_lo = (uint32_t)strtoul(optarg, &endp, 0); tex_hi = *endp == ':' ? (uint32_t)strtoul(endp + 1, NULL, 0) : 0xffffffff; }
 		else if (o == 'J') tex_pitch = (uint32_t)strtoul(optarg, NULL, 0);
