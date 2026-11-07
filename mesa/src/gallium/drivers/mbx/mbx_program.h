@@ -69,6 +69,8 @@ struct mbx_fs_info {
  */
 struct mbx_vgp_program {
 	const void *vs, *fs;		/* the key */
+	const void *fsv;		/* and the fragment shader's variant (folded uniforms), if any */
+	const struct mbx_fs_info *fsi;	/* the match the program was made from */
 	uint32_t code[256][2];		/* high word, low word */
 	unsigned ninsn;
 	/* constants: the uniform buffer's vec4s first, then the compiler's immediates */
@@ -106,6 +108,15 @@ void mbx_cpuvs_run(const uint32_t code[][2], unsigned ninsn, const float k[][4],
 void mbx_fs_match(struct nir_shader *fs, struct mbx_fs_info *info);
 bool mbx_compile_vs(struct nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp_program *prog);
 
+/* A fragment shader matched with some uniforms folded in as constants (their values are the key) */
+struct mbx_fs_variant {
+	struct mbx_fs_variant *next;
+	uint32_t fold;			/* bit per entry of the shader's uniform list: folded in */
+	uint32_t val[8][4];
+	struct mbx_fs_info info;
+};
+void mbx_nir_optimize(struct nir_shader *s);
+const struct mbx_fs_info *mbx_fs_specialize(struct mbx_context *ctx, const struct mbx_fs_variant **variant);
 struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx);
 void mbx_tex_combiners(const struct mbx_fs_info *fi, unsigned ntex, unsigned l8, uint32_t out[MBX_MAX_TEX]);
 void mbx_program_destroy(struct mbx_vgp_program *p);

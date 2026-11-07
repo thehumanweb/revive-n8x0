@@ -118,9 +118,9 @@ static bool state_needs_fallback(struct mbx_context *ctx)
 			return true;		/* cube maps: softpipe samples them */
 	if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture && mbx_resource(ctx->fb.cbufs[0].texture)->twiddled)
 		return true;			/* a mipmapped texture is twiddled: the chip cannot render into it */
-	if (ctx->fs && ctx->fs->fs_info.kind == MBX_FS_MATCHED)
+	if (ctx->fsi && (*ctx->fsi).kind == MBX_FS_MATCHED)
 		for (unsigned u = 0; u < MBX_MAX_TEX; u++)
-			if ((ctx->fs->fs_info.mc >> u & 1) && ctx->views[u] && ctx->views[u]->texture &&
+			if (((*ctx->fsi).mc >> u & 1) && ctx->views[u] && ctx->views[u]->texture &&
 			    ctx->views[u]->texture->format == PIPE_FORMAT_A8_UNORM)
 				return true;	/* an alpha-only texture's colour is zero, the chip returns its byte in every channel */
 	return false;
@@ -151,7 +151,7 @@ static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_prog
 	if (want_trilinear(ctx, prog))
 		st = (st & ~(7u << 16)) | 4u << 16;	/* two-pass trilinear */
 	st |= hw_blend_bits(ctx);
-	if (ctx->fs && ctx->fs->fs_info.kind == MBX_FS_MATCHED && ctx->fs->fs_info.alpha_word)
+	if (ctx->fsi && (*ctx->fsi).kind == MBX_FS_MATCHED && (*ctx->fsi).alpha_word)
 		st |= ST_ALPHATEST;		/* the alpha function takes effect only with bit 14 (found during device testing, README assumption 45) */
 	return st;
 }
@@ -261,7 +261,7 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 			l8 |= 1u << u;
 	}
 	if (l8)
-		mbx_tex_combiners(&((const struct mbx_shader *)prog->fs)->fs_info, prog->ntex, l8, tc);
+		mbx_tex_combiners(prog->fsi, prog->ntex, l8, tc);
 	for (u = 0; u < prog->ntex; u++) {
 		if (u == 0 && !(prog->units & 1))
 			continue;	/* unit 1 alone: unit 0's block is a copy of unit 1's (below) */
@@ -274,8 +274,8 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 	}
 	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | (prog->ntex > 0 ? 0x4 : 0) | (prog->ntex > 1 ? 0x8 : 0) | 0x20 | 0x80 | 0x100);
 	mbx_emit(ctx, MBX_CH_TA, hw_state_word(ctx, prog));
-	mbx_emit(ctx, MBX_CH_TA, ctx->fs && ctx->fs->fs_info.kind == MBX_FS_MATCHED && ctx->fs->fs_info.alpha_word ?
-		 ctx->fs->fs_info.alpha_word : 0xe0000000);	/* alpha function ALWAYS (0 is NEVER, which rejects every pixel with bit 25 set), or the shader's discard on alpha */
+	mbx_emit(ctx, MBX_CH_TA, ctx->fsi && (*ctx->fsi).kind == MBX_FS_MATCHED && (*ctx->fsi).alpha_word ?
+		 (*ctx->fsi).alpha_word : 0xe0000000);	/* alpha function ALWAYS (0 is NEVER, which rejects every pixel with bit 25 set), or the shader's discard on alpha */
 	for (u = 0; u < prog->ntex; u++) {
 		mbx_emit(ctx, MBX_CH_TA, ta[u]);
 		mbx_emit(ctx, MBX_CH_TA, tb[u]);
@@ -575,6 +575,8 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		mesa_loge("mbx: primitive mode %d reached the driver (not in the caps)", info->mode);
 		return;
 	}
+	if (ctx->fs)
+		ctx->fsi = mbx_fs_specialize(ctx, &ctx->fsv);
 	mbx_dbg("draw mode %d, %u draws, vs %p fs %p velems %p viewport scale %g", info->mode, num_draws,
 		(void *)ctx->vs, (void *)ctx->fs, (void *)ctx->velems, ctx->viewport.scale[0]);
 	if (!ctx->vs || !ctx->fs || !ctx->velems || !ctx->viewport.scale[0])

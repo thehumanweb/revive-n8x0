@@ -1157,6 +1157,61 @@ static int t_tex_uniform(char *why)
 	return ok;
 }
 
+/* Weston's texture shader on GLES2: the channel swizzle comes in as integer uniforms. The identity value must reduce to a
+ * plain texture on the chip; a real swizzle (here BGR) draws correctly on the CPU. */
+static const char *tfs_weston =
+	"precision mediump float;\n"
+	"uniform sampler2D tex;\n"
+	"uniform float view_alpha;\n"
+	"uniform mediump ivec4 swizzle_idx[1];\n"
+	"uniform vec4 swizzle_mask[1];\n"
+	"uniform vec4 swizzle_sub[1];\n"
+	"varying vec2 v_uv;\n"
+	"float pick(int i, vec4 t) { return i < 2 ? (i < 1 ? t.x : t.y) : (i < 3 ? t.z : t.w); }\n"
+	"void main() {\n"
+	"	vec4 t = texture2D(tex, v_uv);\n"
+	"	vec4 c = vec4(pick(swizzle_idx[0].x, t), pick(swizzle_idx[0].y, t), pick(swizzle_idx[0].z, t), pick(swizzle_idx[0].w, t));\n"
+	"	gl_FragColor = (c * swizzle_mask[0] + swizzle_sub[0]) * view_alpha;\n"
+	"}\n";
+
+static int t_tex_weston(char *why)
+{
+	unsigned char px[8 * 8 * 4];
+	static GLuint pw;
+	GLuint t;
+	int ok;
+
+	if (!pw)
+		pw = link_tex(tfs_weston);
+	quadrants(px, 8, 8);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(pw);
+	glUniform1i(glGetUniformLocation(pw, "tex"), 0);
+	glUniform1f(glGetUniformLocation(pw, "view_alpha"), 1.0f);
+	glUniform4f(glGetUniformLocation(pw, "swizzle_mask[0]"), 1, 1, 1, 1);
+	glUniform4f(glGetUniformLocation(pw, "swizzle_sub[0]"), 0, 0, 0, 0);
+	glUniform4i(glGetUniformLocation(pw, "swizzle_idx[0]"), 0, 1, 2, 3);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = is(16, 16, 255, 0, 0, why, 200) && is(48, 16, 0, 255, 0, why, 200) && is(16, 48, 0, 0, 255, why, 200);
+	if (ok) {		/* half the alpha: not a folded value, still the same program */
+		begin();
+		glUniform1f(glGetUniformLocation(pw, "view_alpha"), 0.5f);
+		quad(0, 0, 1, 1, 1, 1, 1);
+		ok = is(16, 16, 128, 0, 0, why, 200) && is(48, 48, 128, 128, 0, why, 200);
+	}
+	if (ok) {		/* blue and red swapped */
+		begin();
+		glUniform1f(glGetUniformLocation(pw, "view_alpha"), 1.0f);
+		glUniform4i(glGetUniformLocation(pw, "swizzle_idx[0]"), 2, 1, 0, 3);
+		quad(0, 0, 1, 1, 1, 1, 1);
+		ok = is(16, 16, 0, 0, 255, why, 200) && is(16, 48, 255, 0, 0, why, 200) && is(48, 48, 0, 255, 255, why, 200);
+	}
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 /* a triangle (x, y, z, r, g, b, a) per vertex */
 static void draw_z(GLenum mode, const float *v, int n)
 {
@@ -1867,6 +1922,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "fs_uniform", t_fs_uniform },
 	{ "fs_var_uniform", t_fs_var_uniform },
 	{ "tex_uniform", t_tex_uniform },
+	{ "tex_weston", t_tex_weston },
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },

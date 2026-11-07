@@ -39,6 +39,12 @@ static int type_size(const struct glsl_type *type, bool bindless)
 	return glsl_count_attribute_slots(type, false);
 }
 
+static void optimize(struct nir_shader *s);
+void mbx_nir_optimize(struct nir_shader *s)
+{
+	optimize(s);
+}
+
 static void optimize(struct nir_shader *s)
 {
 	bool progress;

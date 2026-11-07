@@ -22,6 +22,11 @@ struct mbx_shader {
 	struct mbx_fs_info fs_info;	/* fragment shaders: what the fixed pipe does with it */
 	struct nir_shader *nir_orig;	/* a copy from before our lowering, for the CPU fallback */
 	void *sp_handle;		/* its softpipe shader, made at the first fallback draw */
+	/* fragment shaders the matcher rejects that read uniforms (Weston's channel swizzle on GLES2): matched again per draw with the
+	 * whole-number uniforms (indices, switches, 0 and 1) folded in as constants (mbx_fs_specialize) */
+	unsigned nuslot;
+	struct { unsigned slot, comps; } uslot[8];
+	struct mbx_fs_variant *variants;
 };
 
 struct mbx_vertex_elements {
@@ -89,6 +94,8 @@ struct mbx_context {
 	struct pipe_depth_stencil_alpha_state *dsa;
 	struct mbx_vertex_elements *velems;
 	struct mbx_shader *vs, *fs;
+	const struct mbx_fs_info *fsi;		/* what the fragment shader bound is matched as for this draw (a variant, or fs->fs_info) */
+	const struct mbx_fs_variant *fsv;	/* the variant, NULL for the plain match */
 	struct pipe_context *sp;	/* the CPU fallback's softpipe context, made at the first use */
 
 	struct mbx_vgp_program *programs;	/* linked pairs */
