@@ -42,11 +42,13 @@ Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` c
 
 ## Weston
 
-Runs on the unit with the GL renderer, every draw on the chip (JOURNEY.md, 2026-11-07, "Weston on the unit"). Open: look at the panel
-(screenshot with `weston-screenshooter`, or by eye), touch input through libinput with the calibration rule, `weston-terminal` and
-other clients, the opaque and dmabuf shader variants, the 20 fps of `weston-simple-egl -f` (display update or render?), the cost of
-the red-blue swapped texture copy (write-combined reads; track the dirty box instead of the whole texture), a client memory budget
-(two GL clients plus Weston on 123 MB), piglit against the specialisation changes, and a Weston start script in the image.
+Runs on the unit with the GL renderer, every draw on the chip, shm and dmabuf clients both verified by screenshot (JOURNEY.md,
+2026-11-07, "Weston on the unit" and "A Wayland client in Weston"; `docs/weston-simple-egl.png`). Open: touch input through libinput
+with the calibration rule, `weston-terminal` and other clients (two GL clients plus Weston on 123 MB), the frame rate of Weston
+itself against the display update, the cost of the red-blue swapped texture copy (write-combined reads; track the dirty box instead
+of the whole texture), the colour of the unused byte when a client renders fragments with alpha below 1 into an XRGB buffer, a
+Weston start script (and `--idle-time`) in the image, the debug code's per-draw `getenv` calls, and a feature test for a
+dma-buf export and re-import in one process (the shared-handle bug had no test).
 
 - The client's `DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied` (Mesa's `renderonly.c`, so our scanout path): the wayland EGL
   platform asks for scanout-capable buffers, the client has no right to create dumb buffers on the KMS device, and the buffer then
