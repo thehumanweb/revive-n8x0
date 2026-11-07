@@ -208,7 +208,7 @@ module_param(mmu_seq, int, 0644);
 MODULE_PARM_DESC(mmu_seq, "debug: 1 does the stock daemon's MMU enable handshake");
 static int tlb_mode = 1;	/* default: the TLB is loaded with the client's pages at every address-space switch (found on the unit: without it a new process's first textured job read the previous process's texels) */
 module_param(tlb_mode, int, 0644);
-MODULE_PARM_DESC(tlb_mode, "debug: 1 loads the TLB for the client's pages, 2 also for the whole parameter buffer");
+MODULE_PARM_DESC(tlb_mode, "debug: 1 loads the TLB for the client's pages, 2 also for the whole parameter buffer, 3 only flushes it (256 loads)");
 
 static void mbx_tlb_load(struct mbx_vm *vm, u32 pg)
 {
@@ -251,7 +251,17 @@ void mbx_vm_activate(struct mbx_vm *vm)
 	} else {
 		mbx_write(m, MBX_REG_MMU_CTRL, 1);
 	}
-	if (tlb_mode) {
+	if (tlb_mode == 3) {
+		/*
+		 * The 256-entry TLB flushed by loading 256 valid pages (the parameter buffer's first: every address space has them
+		 * mapped), then the pages the driver itself needs; the chip walks the tables for anything else. The loads of
+		 * mode 1 (every page of every buffer the client has) do the same flush, thousands of loads at four register
+		 * accesses each.
+		 */
+		mbx_tlb_load_range(vm, MBX_PB_VA, 256 * MBX_PAGE);
+		mbx_tlb_load_range(vm, MBX_CTX_VA, MBX_CTX_SIZE);
+		mbx_tlb_load_range(vm, MBX_PB_TABLE_VA, MBX_PB_TABLE_SIZE);
+	} else if (tlb_mode) {
 		struct mbx_mapping *map;
 
 		mutex_lock(&vm->lock);

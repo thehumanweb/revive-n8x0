@@ -288,6 +288,8 @@ void mbx_pb_set_background(struct mbx_device *m, const struct drm_mbx_submit *a)
 /* The region array before the TA: 0x22000000 | the macro tile's origin, word 1 clear (assumption 31) */
 struct region_init {
 	u32 tx, ty, mx, my, nx;
+	u32 shift;		/* log2 of the entries in a macro tile: 16, 64 or 256 */
+	u32 macro_last, word0;	/* the macro tile whose entry word was last worked out (its divisions are not repeated for each of its entries) */
 };
 
 static void region_init_fn(void *priv, u32 off, u32 *w, u32 n)
@@ -296,9 +298,17 @@ static void region_init_fn(void *priv, u32 off, u32 *w, u32 n)
 	u32 k;
 
 	for (k = 0; k < n; k++) {
-		u32 word = off / 4 + k, entry = word / 2, macro = entry / (r->mx * r->my);
+		u32 word = off / 4 + k, macro = (word >> 1) >> r->shift;
 
-		w[k] = word & 1 ? 0 : 0x22000000 | ((macro / r->nx) * r->my) << 8 | (macro % r->nx) * r->mx;
+		if (word & 1) {
+			w[k] = 0;
+			continue;
+		}
+		if (macro != r->macro_last) {	/* the ARM11 has no divide instruction: once a macro tile, not once a word */
+			r->macro_last = macro;
+			r->word0 = 0x22000000 | ((macro / r->nx) * r->my) << 8 | (macro % r->nx) * r->mx;
+		}
+		w[k] = r->word0;
 	}
 }
 
@@ -359,6 +369,8 @@ int mbx_job_prepare_buffers(struct mbx_vm *vm, const struct drm_mbx_submit *a)
 	r.mx = mt_size(r.tx);
 	r.my = mt_size(r.ty);
 	r.nx = DIV_ROUND_UP(r.tx, r.mx);
+	r.macro_last = ~0u;
+	r.shift = __ffs(r.mx * r.my);
 	ret = mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), region_init_fn, &r);
 	if (ret)
 		return ret;
