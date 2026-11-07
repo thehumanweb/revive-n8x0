@@ -508,7 +508,41 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 
 	for (d = 0; d < num_draws; d++) {
 		unsigned i;
+		bool per_point = prim >> 28 == 0xe && prog->psize_kind == MBX_PSIZE_INPUT;
 
+		if (per_point) {
+			/* gl_PointSize from a vertex attribute: the chip takes one size per object, so each point is an object */
+			const struct pipe_vertex_element *e = &ctx->velems->e[MIN2(prog->psize_slot, ctx->velems->count - 1)];
+
+			for (i = 0; i < draws[d].count; i++) {
+				unsigned idx = draws[d].start + i;
+				float rgba[4] = { 0, 0, 0, 1 };
+				const uint8_t *pp;
+
+				if (info->index_size == 1)
+					idx = ((const uint8_t *)indices)[idx];
+				else if (info->index_size == 2)
+					idx = ((const uint16_t *)indices)[idx];
+				else if (info->index_size == 4)
+					idx = ((const uint32_t *)indices)[idx];
+				if (info->index_size)
+					idx += draws[d].index_bias;
+				pp = vb_ptr[e->vertex_buffer_index] + e->src_offset + (uint64_t)idx * e->src_stride;
+				util_format_unpack_rgba(e->src_format, rgba, pp, 1);
+				for (unsigned un = 0; un < prog->ntex; un++)
+					if ((prog->units >> un & 1) && ctx->views[un] && ctx->views[un]->texture)
+						mbx_job_use_texture(ctx, mbx_resource(ctx->views[un]->texture));
+				emit_header(ctx, prog, layout);
+				emit_program(ctx, prog);
+				mbx_emit(ctx, MBX_CH_TA, prim | hw_cull_bits(ctx));
+				mbx_emit_f(ctx, MBX_CH_TA, CLAMP(rgba[prog->psize_lane], 1.0f, 32.0f) * 0.5f);
+				mbx_emit(ctx, MBX_CH_TA, prog->sections);
+				emit_vertex(ctx, comps, idx, info->start_instance, vb_ptr);
+				mbx_emit(ctx, MBX_CH_CTL, 1);
+				ctx->job.ndraws++;
+			}
+			continue;
+		}
 		mbx_dbg("draw %u: header", d);
 		for (unsigned un = 0; un < prog->ntex; un++)
 			if ((prog->units >> un & 1) && ctx->views[un] && ctx->views[un]->texture)

@@ -206,6 +206,39 @@ static int t_point(char *why)
 	return 1;
 }
 
+/* gl_PointSize from a vertex attribute: a size per point */
+static int t_point_sizes(char *why)
+{
+	static const char vs[] =
+		"attribute vec2 a_pos;\nattribute vec4 a_color;\nattribute float a_size;\nvarying vec4 v_color;\n"
+		"void main() { gl_Position = vec4(a_pos, 0.0, 1.0); v_color = a_color; gl_PointSize = a_size; }\n";
+	static const float v[] = { -0.5f, 0, 1, 0, 0, 1, 4,	0.5f, 0, 0, 1, 0, 1, 12 };
+	GLuint p = glCreateProgram();
+	int ok;
+
+	glAttachShader(p, compile(GL_VERTEX_SHADER, vs));
+	glAttachShader(p, compile(GL_FRAGMENT_SHADER, fs_src));
+	glBindAttribLocation(p, 0, "a_pos");
+	glBindAttribLocation(p, 1, "a_color");
+	glBindAttribLocation(p, 2, "a_size");
+	glLinkProgram(p);
+	glUseProgram(p);
+	begin();
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 7 * sizeof(float), v);
+	glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 7 * sizeof(float), v + 2);
+	glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 7 * sizeof(float), v + 6);
+	glDrawArrays(GL_POINTS, 0, 2);
+	glDisableVertexAttribArray(2);
+	ok = is(16, 32, 255, 0, 0, why, 200) && is(17, 31, 255, 0, 0, why, 200) && is(21, 32, 0, 0, 0, why, 200) &&
+	     is(48, 32, 0, 255, 0, why, 200) && is(53, 32, 0, 255, 0, why, 200) && is(55, 32, 0, 0, 0, why, 200);
+	glUseProgram(prog);
+	glDeleteProgram(p);
+	return ok;
+}
+
 static int t_line(char *why)
 {
 	/* a green horizontal line at y = -0.5 (pixel row 16), width 4, from x = -0.75 to 0.75 (pixels 8 to 56) */
@@ -1391,6 +1424,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "tex_565", t_tex_565 },
 	{ "tex_4444", t_tex_4444 },
 	{ "point", t_point },
+	{ "point_sizes", t_point_sizes },
 	{ "line", t_line },
 	{ "line_strip", t_line_strip },
 	{ "lines_restart", t_lines_restart },

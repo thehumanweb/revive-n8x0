@@ -87,9 +87,9 @@ struct mbx_vgp_program {
 	uint32_t tex_c[MBX_MAX_TEX];	/* their combiners (texture word C) */
 	int tex_scale_slot[MBX_MAX_TEX];	/* the uniform slot holding each texture's (width / padded width, height / padded height) */
 	/* gl_PointSize: the TA takes one size for the object, so only a constant or a uniform works */
-	enum { MBX_PSIZE_STATE, MBX_PSIZE_IMM, MBX_PSIZE_UNIFORM } psize_kind;
+	enum { MBX_PSIZE_STATE, MBX_PSIZE_IMM, MBX_PSIZE_UNIFORM, MBX_PSIZE_INPUT } psize_kind;
 	float psize;			/* MBX_PSIZE_IMM */
-	unsigned psize_slot, psize_lane;	/* MBX_PSIZE_UNIFORM: the constant buffer's vec4 and lane */
+	unsigned psize_slot, psize_lane;	/* MBX_PSIZE_UNIFORM: the constant buffer's vec4 and lane; MBX_PSIZE_INPUT: the vertex element and its component */
 	struct mbx_vgp_program *next;
 };
 

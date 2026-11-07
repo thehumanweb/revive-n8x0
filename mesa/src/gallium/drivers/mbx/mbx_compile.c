@@ -726,8 +726,12 @@ bool mbx_compile_vs(nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp
 			prog->psize_kind = MBX_PSIZE_UNIFORM;
 			prog->psize_slot = ps.idx;
 			prog->psize_lane = ps.lane;
+		} else if (ps.kind == V_INPUT) {
+			prog->psize_kind = MBX_PSIZE_INPUT;	/* per vertex, from an attribute: one object per point */
+			prog->psize_slot = ps.idx;
+			prog->psize_lane = ps.lane;
 		} else if (ps.kind != V_NONE) {
-			mesa_logw_once("mbx: gl_PointSize that varies per vertex is not supported (one size per draw)");
+			mesa_logw_once("mbx: gl_PointSize computed in the shader (not an attribute, constant or uniform) is not supported (one size per draw)");
 		}
 	}
 
