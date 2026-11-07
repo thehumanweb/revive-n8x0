@@ -877,6 +877,94 @@ static int t_depth_cpu_cpu(char *why)
 	return 1;
 }
 
+/* stencil (README assumption 49): a framebuffer with a packed depth-stencil renderbuffer; a clip shape written with REPLACE (colour
+ * off), content drawn where the stencil is 1, then INCR twice and a test for 2 */
+static int stencil_run(char *why, int packed)
+{
+	GLuint fbo, rb, ds;
+	GLint bits = 0;
+	static const float shape[] = { -1, -1, 1, 1, 1, 1,	0.6f, -1, 1, 1, 1, 1,	-1, 0.6f, 1, 1, 1, 1 };
+	static const float full[] = { -1, -1, 0, 1, 0, 1,	1, -1, 0, 1, 0, 1,	-1, 1, 0, 1, 0, 1,	1, -1, 0, 1, 0, 1,	1, 1, 0, 1, 0, 1,	-1, 1, 0, 1, 0, 1 };
+	int ok = 1;
+
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+	glGenRenderbuffers(1, &rb);
+	glBindRenderbuffer(GL_RENDERBUFFER, rb);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_OES, W, H);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+	glGenRenderbuffers(1, &ds);
+	glBindRenderbuffer(GL_RENDERBUFFER, ds);
+	glRenderbufferStorage(GL_RENDERBUFFER, packed ? 0x88F0 /* GL_DEPTH24_STENCIL8_OES */ : GL_STENCIL_INDEX8, W, H);
+	if (packed)
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ds);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, ds);
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		snprintf(why, 200, "the depth-stencil framebuffer is incomplete (%x)", glCheckFramebufferStatus(GL_FRAMEBUFFER));
+		ok = 0;
+		goto out;
+	}
+	glGetIntegerv(GL_STENCIL_BITS, &bits);
+	if (bits < 8) {
+		snprintf(why, 200, "stencil bits %d", bits);
+		ok = 0;
+		goto out;
+	}
+	glViewport(0, 0, W, H);
+	begin();
+	glClearColor(0, 0, 0, 1);
+	glClearStencil(0);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	glEnable(GL_STENCIL_TEST);
+	glStencilFunc(GL_ALWAYS, 1, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+	glColorMask(0, 0, 0, 0);
+	draw(GL_TRIANGLES, shape, 3);
+	glColorMask(1, 1, 1, 1);
+	glStencilFunc(GL_EQUAL, 1, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+	draw(GL_TRIANGLES, full, 6);
+	if (!is(8, 8, 0, 255, 0, why, 200) || !is(56, 56, 0, 0, 0, why, 200) || !is(56, 8, 0, 0, 0, why, 200)) {
+		ok = 0;
+		goto out;
+	}
+	/* counting: the shape drawn twice with INCR is 2 inside, so a test for 2 draws red there (and 1 elsewhere in the shape stays) */
+	glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	glStencilFunc(GL_ALWAYS, 0, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_INCR);
+	glColorMask(0, 0, 0, 0);
+	draw(GL_TRIANGLES, shape, 3);
+	draw(GL_TRIANGLES, shape, 3);
+	glColorMask(1, 1, 1, 1);
+	glStencilFunc(GL_EQUAL, 2, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+	draw(GL_TRIANGLES, full, 6);
+	if (!is(8, 8, 0, 255, 0, why, 200) || !is(56, 56, 0, 0, 0, why, 200))
+		ok = 0;
+	glStencilFunc(GL_EQUAL, 1, 0xff);	/* nothing is 1 now: nothing is drawn */
+	glClear(GL_COLOR_BUFFER_BIT);
+	draw(GL_TRIANGLES, full, 6);
+	if (ok && !is(8, 8, 0, 0, 0, why, 200))
+		ok = 0;
+out:
+	glDisable(GL_STENCIL_TEST);
+	glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+	glDeleteFramebuffers(1, &fbo);
+	glDeleteRenderbuffers(1, &rb);
+	glDeleteRenderbuffers(1, &ds);
+	return ok;
+}
+
+static int t_stencil(char *why)
+{
+	return stencil_run(why, 1);
+}
+
+static int t_stencil_only(char *why)
+{
+	return stencil_run(why, 0);
+}
+
 static int t_scissor_clear(char *why)
 {
 	begin();
@@ -1659,6 +1747,8 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },
+	{ "stencil", t_stencil },
+	{ "stencil_only", t_stencil_only },
 	{ "depth_cpu_cpu", t_depth_cpu_cpu },
 	{ "depth_chip_cpu", t_depth_chip_cpu },
 	{ "depth_chip_cpu_chip", t_depth_chip_cpu_chip },

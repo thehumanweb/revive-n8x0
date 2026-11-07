@@ -172,7 +172,7 @@ void mbx_job_flush(struct mbx_context *ctx)
 	struct drm_mbx_submit_bo bo[2 + MBX_MAX_TEX];
 	unsigned nbo = 0;
 	struct mbx_resource *color = job->color;
-	bool flat, zstored = false;
+	bool flat, zstored = false, use_ext;
 	uint32_t zclear;
 	float z = job->clear_depth;
 	int ret;
@@ -202,9 +202,12 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.r_stride = color->stride / 4;		/* words */
 	memcpy(&zclear, &z, 4);
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
-	if (job->zuse && job->zr && !(job->zload || ctx->zkeep))
+	/* a job that loads must load whether or not it tests depth (its clear object no longer writes depth: without the load the tile's
+	 * depth is NaN and nothing draws); one that only tests stores when something needs the depth afterwards */
+	use_ext = job->zr && (job->zload || (job->zuse && ctx->zkeep));
+	if (job->zuse && job->zr && !use_ext)
 		job->zr->zvalid = false;	/* the depth stays on chip and is gone with the job: the memory no longer matches */
-	if (job->zuse && job->zr && (job->zload || ctx->zkeep) && !getenv("MBX_NO_ZCARRY") && mbx_z_ensure(ctx, job->zr)) {
+	if (use_ext && !getenv("MBX_NO_ZCARRY") && mbx_z_ensure(ctx, job->zr)) {
 		/* the depth goes to memory after the render (ctl bit 1), and comes from it first when it is current (bit 0 and the
 		 * region entries' bit 29): chip and CPU draws and later jobs then share one depth buffer (README assumption 7) */
 		unsigned stride_px = align(ctx->fb.width, 16);
@@ -303,6 +306,7 @@ bool mbx_z_ensure(struct mbx_context *ctx, struct mbx_resource *zr)
 		zr->zbo = NULL;
 		zr->zvalid = false;
 		pipe_resource_reference(&zr->sp_twin, NULL);	/* it wrapped the old memory */
+		pipe_resource_reference(&zr->zs_twin, NULL);	/* and the stencil plane belongs to the old size */
 	}
 	if (!zr->zbo) {
 		zr->zbo = mbx_bo_create(ctx->screen, align64((uint64_t)align(w, 16) * align(h, 16) * 4, 4096));

@@ -118,7 +118,9 @@ static bool mbx_screen_is_format_supported(struct pipe_screen *pscreen, enum pip
 
 	if (usage & PIPE_BIND_DEPTH_STENCIL) {
 		/* depth is kept on chip for a render: there is no memory behind it */
-		if (format != PIPE_FORMAT_Z16_UNORM && format != PIPE_FORMAT_Z24X8_UNORM)
+		/* (with a stencil plane the CPU holds it: README assumption 49) */
+		if (format != PIPE_FORMAT_Z16_UNORM && format != PIPE_FORMAT_Z24X8_UNORM &&
+		    format != PIPE_FORMAT_Z24_UNORM_S8_UINT && format != PIPE_FORMAT_S8_UINT)
 			return false;
 		usage &= ~PIPE_BIND_DEPTH_STENCIL;
 	}

@@ -13,7 +13,10 @@ static void mbx_set_blend_color(struct pipe_context *pctx, const struct pipe_ble
 	mbx_context(pctx)->blend_color = *color;
 }
 
-static void mbx_set_stencil_ref(struct pipe_context *pctx, const struct pipe_stencil_ref ref) { }
+static void mbx_set_stencil_ref(struct pipe_context *pctx, const struct pipe_stencil_ref ref)
+{
+	mbx_context(pctx)->stencil_ref = ref;
+}
 static void mbx_set_sample_mask(struct pipe_context *pctx, unsigned mask) { }
 static void mbx_set_polygon_stipple(struct pipe_context *pctx, const struct pipe_poly_stipple *s) { }
 

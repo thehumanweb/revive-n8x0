@@ -63,6 +63,7 @@ struct mbx_context {
 	struct pipe_context base;
 	struct mbx_screen *screen;
 
+	struct pipe_stencil_ref stencil_ref;
 	bool zkeep;			/* the job being flushed must leave its depth in memory: a CPU draw or a framebuffer switch follows */
 	struct pipe_framebuffer_state fb;
 	struct pipe_viewport_state viewport;

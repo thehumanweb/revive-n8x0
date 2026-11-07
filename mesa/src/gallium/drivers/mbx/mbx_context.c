@@ -149,6 +149,10 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 		if (ctx->fb.zsbuf.texture)	/* the memory (if any) no longer holds the depth: the next job starts from the clear, the CPU fills it */
 			mbx_resource(ctx->fb.zsbuf.texture)->zvalid = false;
 	}
+	if ((buffers & PIPE_CLEAR_STENCIL) && ctx->fb.zsbuf.texture) {
+		mbx_job_flush(ctx);		/* the clear comes after what was drawn */
+		mbx_fallback_clear_stencil(ctx, stencil);
+	}
 	if ((buffers & PIPE_CLEAR_COLOR0) && ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture) {
 		struct mbx_resource *rsc = mbx_resource(ctx->fb.cbufs[0].texture);
 		unsigned x0 = 0, y0 = 0, x1 = ctx->fb.width, y1 = ctx->fb.height;

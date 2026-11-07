@@ -225,6 +225,7 @@ static struct pipe_resource *twin_texture(struct mbx_context *ctx, struct mbx_re
 void mbx_fallback_resource_destroy(struct mbx_resource *rsc)
 {
 	pipe_resource_reference(&rsc->sp_twin, NULL);
+	pipe_resource_reference(&rsc->zs_twin, NULL);
 }
 
 /* --- the state, replayed --- */
@@ -265,6 +266,28 @@ static void *buffer_ptr(const struct pipe_vertex_buffer *vb)
 	return NULL;
 }
 
+/* --- depth and stencil on the CPU: softpipe's combined twin, its depth a copy of the Z memory around each CPU draw --- */
+
+static bool zs_has_stencil(struct mbx_resource *zr)
+{
+	return util_format_has_stencil(util_format_description(zr->base.format));
+}
+
+static struct pipe_resource *zs_twin(struct mbx_context *ctx, struct mbx_resource *zr)
+{
+	struct pipe_screen *sps = ctx->sp->screen;
+	struct pipe_resource t = zr->base;
+
+	if (zr->zs_twin)
+		return zr->zs_twin;
+	t.next = NULL;
+	t.screen = sps;
+	t.last_level = 0;
+	zr->zs_twin = sps->resource_create(sps, &t);
+	zr->sp_fresh = true;		/* a new stencil plane holds nothing: cleared to zero at its first use */
+	return zr->zs_twin;
+}
+
 static void sync_framebuffer(struct mbx_context *ctx)
 {
 	struct pipe_context *sp = ctx->sp;
@@ -282,7 +305,11 @@ static void sync_framebuffer(struct mbx_context *ctx)
 		struct mbx_resource *zr = mbx_resource(ctx->fb.zsbuf.texture);
 
 		/* the chip's jobs and softpipe share one depth buffer in memory: current before the CPU draws into it */
-		if (mbx_z_ensure(ctx, zr)) {
+		if (zs_has_stencil(zr)) {
+			/* a stencil plane lives only in softpipe's combined twin, and so does its depth: depth does not carry between chip
+			 * and CPU draws in a framebuffer with stencil (README assumption 49) */
+			fb.zsbuf.texture = zs_twin(ctx, zr);
+		} else if (mbx_z_ensure(ctx, zr)) {
 			mbx_resource_wait(ctx->screen, zr);
 			mbx_z_fill_if_stale(ctx, zr);
 			fb.zsbuf.texture = twin_zshared(ctx, zr);
@@ -299,6 +326,10 @@ static void sync_framebuffer(struct mbx_context *ctx)
 		sp->set_framebuffer_state(sp, &none);
 	}
 	sp->set_framebuffer_state(sp, &fb);
+	if (ctx->fb.zsbuf.texture && mbx_resource(ctx->fb.zsbuf.texture)->sp_fresh && mbx_resource(ctx->fb.zsbuf.texture)->zs_twin) {
+		mbx_resource(ctx->fb.zsbuf.texture)->sp_fresh = false;
+		sp->clear(sp, PIPE_CLEAR_DEPTHSTENCIL, 0, 0xff, NULL, NULL, ctx->next_clear_depth, 0);
+	}
 }
 
 bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *info, unsigned drawid_offset,
@@ -327,7 +358,18 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 
 	blend = sp->create_blend_state(sp, ctx->blend);
 	rast = sp->create_rasterizer_state(sp, ctx->rast);
-	dsa = sp->create_depth_stencil_alpha_state(sp, ctx->dsa);
+	{
+		/* softpipe's stencil path reads the depth function even when the depth test is off (gallium leaves it NEVER there): say
+		 * "always, no write" explicitly */
+		struct pipe_depth_stencil_alpha_state d = *ctx->dsa;
+
+		if (!d.depth_enabled) {
+			d.depth_enabled = true;
+			d.depth_func = PIPE_FUNC_ALWAYS;
+			d.depth_writemask = false;
+		}
+		dsa = sp->create_depth_stencil_alpha_state(sp, &d);
+	}
 	velems = sp->create_vertex_elements_state(sp, ctx->velems->count, ctx->velems->e);
 	sp->bind_blend_state(sp, blend);
 	sp->bind_rasterizer_state(sp, rast);
@@ -377,8 +419,11 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 		di.index.user = mbx_bo_map(mbx_resource(info->index.resource)->bo);
 		di.has_user_indices = true;
 	}
+	sp->bind_depth_stencil_alpha_state(sp, dsa);
+	sp->set_stencil_ref(sp, ctx->stencil_ref);
 	sp->draw_vbo(sp, &di, drawid_offset, NULL, draws, num_draws);
 	sp->flush(sp, NULL, 0);		/* softpipe's tiles are written back to the memory */
+
 	if (mbx_resource(ctx->fb.cbufs[0].texture)->twiddled) {
 		struct pipe_box box = { .width = ctx->fb.width, .height = ctx->fb.height, .depth = 1 };
 
@@ -470,11 +515,23 @@ void mbx_fallback_clear_depth(struct mbx_context *ctx, double depth)
 {
 	struct pipe_context *sp = ctx->sp;
 
-	if (!sp || !ctx->fb.zsbuf.texture || !mbx_resource(ctx->fb.zsbuf.texture)->sp_twin)
+	if (!sp || !ctx->fb.zsbuf.texture ||
+	    !(mbx_resource(ctx->fb.zsbuf.texture)->sp_twin || mbx_resource(ctx->fb.zsbuf.texture)->zs_twin))
 		return;		/* softpipe has not drawn here: nothing to clear */
 	sync_framebuffer(ctx);
 	sp->clear(sp, PIPE_CLEAR_DEPTH, 0, 0, NULL, NULL, depth, 0);
 	sp->flush(sp, NULL, 0);		/* into the shared memory now: a later flush of its tile cache would overwrite what the chip stores */
+}
+
+void mbx_fallback_clear_stencil(struct mbx_context *ctx, unsigned stencil)
+{
+	struct pipe_context *sp = fb_context(ctx);
+
+	if (!sp || !ctx->fb.zsbuf.texture || !zs_has_stencil(mbx_resource(ctx->fb.zsbuf.texture)))
+		return;
+	sync_framebuffer(ctx);
+	sp->clear(sp, PIPE_CLEAR_STENCIL, 0, 0xff, NULL, NULL, 0.0, stencil);
+	sp->flush(sp, NULL, 0);
 }
 
 void mbx_fallback_context_destroy(struct mbx_context *ctx)
