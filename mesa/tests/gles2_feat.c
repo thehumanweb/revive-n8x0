@@ -1041,6 +1041,53 @@ out:
 	return ok;
 }
 
+/* the stencil test on the chip (README assumption 53) with a depth test: a clip (the left half, written on the CPU), two draws tested against
+ * it and against depth (the second behind the first), then a draw with no stencil: the rejected pixels' depth must be back as it was */
+static int t_stencil_chip(char *why)
+{
+	static const float left[] = { -1, -1, 1, 1, 1, 1,	0, -1, 1, 1, 1, 1,	-1, 1, 1, 1, 1, 1,	0, -1, 1, 1, 1, 1,	0, 1, 1, 1, 1, 1,	-1, 1, 1, 1, 1, 1 };
+	GLuint fbo, rb, ds;
+	int ok = 1;
+
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+	glGenRenderbuffers(1, &rb);
+	glBindRenderbuffer(GL_RENDERBUFFER, rb);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_OES, W, H);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+	glGenRenderbuffers(1, &ds);
+	glBindRenderbuffer(GL_RENDERBUFFER, ds);
+	glRenderbufferStorage(GL_RENDERBUFFER, 0x88F0 /* GL_DEPTH24_STENCIL8_OES */, W, H);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ds);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, ds);
+	glViewport(0, 0, W, H);
+	begin();
+	glClearStencil(0);
+	glClear(GL_STENCIL_BUFFER_BIT);
+	glEnable(GL_STENCIL_TEST);
+	glStencilFunc(GL_ALWAYS, 1, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+	glColorMask(0, 0, 0, 0);
+	draw(GL_TRIANGLES, left, 6);			/* the clip, on the CPU */
+	glColorMask(1, 1, 1, 1);
+	glStencilFunc(GL_EQUAL, 1, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+	tri_z(0.6f, 0, 1, 0, 1, 0);			/* tested draws, on the chip: green inside the clip only */
+	tri_z(0.8f, 0, 0, 1, 1, 0);			/* blue behind the green, and outside the clip: nowhere */
+	glDisable(GL_STENCIL_TEST);
+	tri_z(0.7f, 1, 0, 0, 1, 0);			/* red: behind the green, but in front of the cleared depth the clip rejected */
+	if (!is(16, 16, 0, 255, 0, why, 200) || !is(48, 16, 255, 0, 0, why, 200))
+		ok = 0;
+	glDisable(GL_DEPTH_TEST);
+	glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+	glDeleteFramebuffers(1, &fbo);
+	glDeleteRenderbuffers(1, &rb);
+	glDeleteRenderbuffers(1, &ds);
+	return ok;
+}
+
 static int t_scissor_clear(char *why)
 {
 	begin();
@@ -1827,6 +1874,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "stencil", t_stencil },
 	{ "stencil_only", t_stencil_only },
 	{ "stencil_depth", t_stencil_depth },
+	{ "stencil_chip", t_stencil_chip },
 	{ "depth_cpu_cpu", t_depth_cpu_cpu },
 	{ "depth_chip_cpu", t_depth_chip_cpu },
 	{ "depth_chip_cpu_chip", t_depth_chip_cpu_chip },

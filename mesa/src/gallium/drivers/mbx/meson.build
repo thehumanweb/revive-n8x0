@@ -20,6 +20,7 @@ files_libmbx = files(
   'mbx_screen.c',
   'mbx_screen.h',
   'mbx_state.c',
+  'mbx_stencil.c',
 )
 
 libmbx = static_library(

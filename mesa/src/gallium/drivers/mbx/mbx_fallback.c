@@ -644,6 +644,32 @@ void mbx_fallback_clear_stencil(struct mbx_context *ctx, unsigned stencil)
 	zs_fill(ctx, zr, false, 0.0f, true, stencil);
 }
 
+bool mbx_fallback_read_stencil(struct mbx_context *ctx, uint8_t *out)
+{
+	struct pipe_context *sp = fb_context(ctx);
+	struct mbx_resource *zr = ctx->fb.zsbuf.texture ? mbx_resource(ctx->fb.zsbuf.texture) : NULL;
+	struct pipe_transfer *xfer;
+	uint8_t *p;
+
+	if (!sp || !zr || !zs_has_stencil(zr))
+		return false;
+	zs_twin(ctx, zr);
+	zs_unbind(ctx);
+	if (zr->sp_fresh) {
+		zr->sp_fresh = false;
+		zs_fill(ctx, zr, true, ctx->next_clear_depth, true, 0);
+	}
+	p = zs_map(ctx, zr, PIPE_MAP_READ, &xfer);
+	if (!p)
+		return false;
+	for (unsigned y = 0; y < ctx->fb.height && y < zr->base.height0; y++)
+		for (unsigned x = 0; x < ctx->fb.width && x < zr->base.width0; x++)
+			out[(size_t)y * ctx->fb.width + x] = zr->base.format == PIPE_FORMAT_Z24_UNORM_S8_UINT ?
+				(uint8_t)(((uint32_t *)(p + (size_t)y * xfer->stride))[x] >> 24) : p[(size_t)y * xfer->stride + x];
+	sp->texture_unmap(sp, xfer);
+	return true;
+}
+
 void mbx_fallback_context_destroy(struct mbx_context *ctx)
 {
 	if (ctx->sp)

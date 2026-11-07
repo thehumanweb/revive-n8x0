@@ -100,7 +100,7 @@ int main(int argc, char **argv)
 	uint32_t tex_a_or = 0;	/* -L: bits ORed into texture word A */
 	uint32_t tex2_b_bits = 0, flat_colour = 0;
 	int flat_bg = 0;	/* -f colour: the background pass paints this ARGB8888 colour (MBX_SUBMIT_FLAT_BG) */
-	uint32_t s_damage = 0;
+	uint32_t s_damage = 0, s_zload = 0;
 	const char *zfile = NULL;
 	uint32_t zfill = 0xdeadbee1;
 	uint32_t ta_extra = 0;
@@ -123,7 +123,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:j:q:g:k:w:T:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:j:q:g:k:w:eT:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -151,6 +151,7 @@ int main(int argc, char **argv)
 		else if (o == 'j') sscanf(optarg, "%u,%u,%u", &tri_va[0], &tri_va[1], &tri_va[2]);
 		else if (o == 'k') zfill = (uint32_t)strtoul(optarg, NULL, 0);	/* -k word: what the external Z buffer holds before the job */
 		else if (o == 'w') { unsigned a, b, c, d; if (sscanf(optarg, "%u,%u,%u,%u", &a, &b, &c, &d) == 4) s_damage = a | b << 8 | c << 16 | d << 24; }	/* -w x0,y0,x1,y1: tiles rendered */
+		else if (o == 'e') s_zload = 1;		/* -e: MBX_SUBMIT_ZLOAD (region entries get bit 29: the render loads the external Z) */
 		else if (o == 'q') zfile = optarg;	/* -q file: an external Z buffer (0x674), dumped to file after the job */
 		else if (o == 'g') ta_extra = (uint32_t)strtoul(optarg, NULL, 0);	/* -g bits: ORed into the TA config (0x85c) */
 		else if (o == 'B') tri_clear_alpha = (uint32_t)strtoul(optarg, NULL, 0);
@@ -234,6 +235,8 @@ int main(int argc, char **argv)
 	}
 	s.stream = (uintptr_t)stream;
 	s.damage = s_damage;
+	if (s_zload)
+		s.flags |= MBX_SUBMIT_ZLOAD;
 	s.ta_config = 0x80 | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10 | ta_extra;
 	if (zfile)
 		s.r_zbuf = zb.va;

@@ -42,8 +42,9 @@ Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` c
 
 ## Other open items
 
-- Fast stencil on the chip with the depth tricks the stock stack uses (clip masks as depth-ALWAYS quads, each-pixel-once as a depth test),
-  with the external Z load and store (README assumption 7); stencil works on the CPU only (assumption 49).
+- Fast stencil, stage 2: the stencil WRITES on the chip (README assumption 53 has the tests): render the draw's coverage into a mask target on the chip
+  with a white fragment shader, merge it into the CPU stencil plane (REPLACE, ZERO; INCR/DECR/INVERT need counts); the clip write on the CPU is
+  most of the remaining time of `gles2_fps stencil`. Also batching consecutive draws under one stencil state (each is its own job now).
 - The per-point size word inside one list draw (untested; one object per point today).
 - PVRTC textures, the 2D core for blits and `glGenerateMipmap`, constant-colour blend (no factor code on the chip).
 - A frame-diff fallback (`mbx_frame_damage`) for apps that give no damage.

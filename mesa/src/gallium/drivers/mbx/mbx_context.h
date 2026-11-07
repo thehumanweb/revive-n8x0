@@ -64,6 +64,14 @@ struct mbx_context {
 	struct mbx_screen *screen;
 
 	struct pipe_stencil_ref stencil_ref;
+	/* a draw whose stencil test is baked into the external Z (mbx_stencil.c) */
+	struct {
+		bool active, override;		/* override: the draw's own depth test was off and is run as LESS without writes */
+		struct mbx_resource *zr;
+		unsigned w, h;
+		uint32_t *backup;		/* the Z memory as it was */
+		uint8_t *fail;			/* the pixels the stencil rejected */
+	} smask;
 	bool zkeep;			/* the job being flushed must leave its depth in memory: a CPU draw or a framebuffer switch follows */
 	struct pipe_framebuffer_state fb;
 	struct pipe_viewport_state viewport;
@@ -119,6 +127,10 @@ void mbx_job_fini(struct mbx_context *ctx);
 void mbx_job_use_texture(struct mbx_context *ctx, struct mbx_resource *rsc);
 /* the pending clear, done on the CPU (before the CPU or softpipe touches the target); mbx_clear_settle also renders what is recorded */
 void mbx_clear_materialize(struct mbx_context *ctx);
+/* The stencil test on the chip (mbx_stencil.c) */
+bool mbx_stencil_chip_ok(struct mbx_context *ctx);
+bool mbx_stencil_begin(struct mbx_context *ctx);
+void mbx_stencil_end(struct mbx_context *ctx);
 /* The depth buffer's external Z memory for the framebuffer's size (allocated, or dropped when the size changed) */
 bool mbx_z_ensure(struct mbx_context *ctx, struct mbx_resource *zr);
 /* Fill it with the clear depth when it holds nothing current (before the CPU reads it) */

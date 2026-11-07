@@ -108,8 +108,9 @@ static bool state_needs_fallback(struct mbx_context *ctx)
 	}
 	if (ctx->rast && ctx->rast->offset_tri && (ctx->rast->offset_units != 0 || ctx->rast->offset_scale != 0))
 		return true;			/* polygon offset (the primitive word has a bias; not used yet) */
-	if (ctx->dsa && (ctx->dsa->stencil[0].enabled || ctx->dsa->stencil[1].enabled))
-		return true;			/* no stencil on the chip */
+	if (ctx->dsa && ctx->fb.zsbuf.texture && (ctx->dsa->stencil[0].enabled || ctx->dsa->stencil[1].enabled) &&
+	    !mbx_stencil_chip_ok(ctx))
+		return true;			/* no stencil on the chip: only a test is baked into the depth (mbx_stencil.c) */
 	if (ctx->dsa && ctx->dsa->alpha_enabled)
 		return true;
 	for (unsigned u = 0; u < MBX_MAX_SAMPLERS; u++)
@@ -136,7 +137,10 @@ static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_prog
 	st |= 1u << 25;		/* with the alpha word ALWAYS (0xe0000000): the colour is exact; without bit 25 it is ANDed with the target */
 	if (prog->gouraud)
 		st |= ST_GOURAUD;
-	if (dsa && dsa->depth_enabled) {
+	if (ctx->smask.active && ctx->smask.override) {
+		func = PIPE_FUNC_LESS;	/* the stencil mask is in the depth: 2.0 where it passes, 0.0 where it does not */
+		st |= ST_NODEPTHWRITE;
+	} else if (dsa && dsa->depth_enabled) {
 		func = dsa->depth_func;	/* PIPE_FUNC_* has the hardware's numbering */
 		if (!dsa->depth_writemask)
 			st |= ST_NODEPTHWRITE;
@@ -600,11 +604,19 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 			return;
 		}
 	}
-	if (!mbx_job_begin(ctx)) {
-		mbx_dbg("no job: framebuffer has %u colour buffers", ctx->fb.nr_cbufs);
+	if (ctx->dsa && ctx->fb.zsbuf.texture && (ctx->dsa->stencil[0].enabled || ctx->dsa->stencil[1].enabled) &&
+	    !mbx_stencil_begin(ctx)) {
+		mbx_dbg("the stencil mask could not be made: the draw goes to the CPU");
+		if (!mbx_fallback_draw(ctx, info, drawid_offset, draws, num_draws))
+			mesa_loge("mbx: a draw with stencil could not be drawn; skipped");
 		return;
 	}
-	if (ctx->dsa && ctx->dsa->depth_enabled)
+	if (!mbx_job_begin(ctx)) {
+		mbx_dbg("no job: framebuffer has %u colour buffers", ctx->fb.nr_cbufs);
+		mbx_stencil_end(ctx);
+		return;
+	}
+	if ((ctx->dsa && ctx->dsa->depth_enabled) || ctx->smask.active)
 		ctx->job.zuse = true;
 	mbx_dbg("program: %u instructions, %u uniform slots, %u constants", prog->ninsn, prog->nuniform, prog->nconst);
 	layout = vertex_layout(ctx, prog, comps);
@@ -784,6 +796,7 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		mbx_dbg("draw %u: done, stream %u words", d, ctx->job.n);
 		ctx->job.ndraws++;
 	}
+	mbx_stencil_end(ctx);	/* a stencil-tested draw is rendered now and the depth of the rejected pixels put back */
 }
 
 void mbx_draw_init(struct pipe_context *pctx)

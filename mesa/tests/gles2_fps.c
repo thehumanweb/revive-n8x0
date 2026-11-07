@@ -74,7 +74,7 @@ static const float quad[] = {
 int main(int argc, char **argv)
 {
 	int w = 400, h = 240, frames = 30, o, i, f;
-	static const char *all[] = { "flat", "fill", "tex", "mod", "many", "cpu", "grid", "depth" };
+	static const char *all[] = { "flat", "fill", "tex", "mod", "many", "cpu", "grid", "depth", "stencil" };
 	PFNEGLGETPLATFORMDISPLAYEXTPROC gd = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
 	EGLDisplay d = gd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
 	static const EGLint ca[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE, 0, EGL_NONE };
@@ -104,8 +104,10 @@ int main(int argc, char **argv)
 	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
 	glGenRenderbuffers(1, &db);
 	glBindRenderbuffer(GL_RENDERBUFFER, db);
-	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h);
+	glRenderbufferStorage(GL_RENDERBUFFER, getenv("FPS_STENCIL") ? 0x88F0 /* GL_DEPTH24_STENCIL8_OES */ : GL_DEPTH_COMPONENT16, w, h);
 	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, db);
+	if (getenv("FPS_STENCIL"))
+		glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, db);
 	glViewport(0, 0, w, h);
 	prog[0] = link_prog(fs_flat);
 	prog[1] = link_prog(fs_tex);
@@ -138,7 +140,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	for (i = 0; i < 8; i++) {
+	for (i = 0; i < 9; i++) {
 		double t0 = 0, t1;
 		int want = argc - optind == 0, nf = frames;
 
@@ -147,7 +149,7 @@ int main(int argc, char **argv)
 				want = 1;
 		if (!want)
 			continue;
-		if (i == 5)
+		if (i == 5 || (i == 8 && getenv("MBX_CPU_STENCIL")))
 			nf = frames > 6 ? 6 : frames;	/* the CPU is slow */
 		for (f = -1; f < nf; f++) {		/* the first frame warms up (program, buffers) and is not timed */
 			if (f == 0) {
@@ -166,6 +168,26 @@ int main(int argc, char **argv)
 			case 4: glUseProgram(prog[0]); draw_verts(many, 400 * 3); break;
 			case 5: glUseProgram(prog[3]); draw_verts(quad, 6); break;
 			case 6: glUseProgram(prog[4]); draw_verts(quad, 6); break;
+			case 8: {
+				/* a clip (the left half, written to the stencil plane) and a full-screen quad tested against it (FPS_STENCIL=1 gives the framebuffer a stencil plane) */
+				static const float half[] = { -1, -1, 0, 0, 1, 1, 1, 1,	0, -1, 0, 0, 1, 1, 1, 1,	-1, 1, 0, 0, 1, 1, 1, 1,
+							      0, -1, 0, 0, 1, 1, 1, 1,	0, 1, 0, 0, 1, 1, 1, 1,	-1, 1, 0, 0, 1, 1, 1, 1 };
+
+				glClearStencil(0);
+				glClear(GL_STENCIL_BUFFER_BIT);
+				glEnable(GL_STENCIL_TEST);
+				glUseProgram(prog[0]);
+				glStencilFunc(GL_ALWAYS, 1, 0xff);
+				glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+				glColorMask(0, 0, 0, 0);
+				draw_verts(half, 6);
+				glColorMask(1, 1, 1, 1);
+				glStencilFunc(GL_EQUAL, 1, 0xff);
+				glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+				draw_verts(quad, 6);
+				glDisable(GL_STENCIL_TEST);
+				break;
+			}
 			case 7: glEnable(GL_DEPTH_TEST); glUseProgram(prog[0]); draw_verts(quad, 6); glDisable(GL_DEPTH_TEST); break;
 			}
 			glFinish();
