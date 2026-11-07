@@ -619,6 +619,8 @@ circuit.
     with 9 the chip picks the level the model does at every scale tried (1 to 24, 0 differing pixels), alone and with the
     bilinear bit (`0xb2000000`). The chip's level is `floor(lod + field / 4 - c)` with c a little under 1.83. **Bit 30
     (trilinear) hangs the job unless bit 29 is set too, and with both set (`0x6e000000`, `0xee000000`, any field 7-10) the
-    chip samples level 0 at every scale**: the trilinear mode needs something not found yet, so the driver uses the nearest
-    level for the `_MIPMAP_LINEAR` filters. A texture that is both mipmapped and a render target is twiddled and the chip cannot
+    chip samples level 0 at every scale**, for every level-bias field 0-15 and at three scales; also level 0 with any single state
+    word bit 20-21 or 23-28 added, any single word A bit 1-8 added, and a hang with state bit 19: the trilinear mode needs something
+    not found yet (a second texture word or unit is the untried guess), so the driver uses the nearest level for the
+    `_MIPMAP_LINEAR` filters. A texture that is both mipmapped and a render target is twiddled and the chip cannot
     render into it (the driver draws to it on the CPU).

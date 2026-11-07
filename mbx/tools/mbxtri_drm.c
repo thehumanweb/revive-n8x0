@@ -97,6 +97,7 @@ static void reg_dump(int fd, const char *prefix, const char *when)
 int main(int argc, char **argv)
 {
 	uint32_t tails_bytes = 65536, tex_b_bits = 0x0e000000, tex_pitch = 8, tex_bw = 0, tex_lo = 0xff000000, tex_hi = 0xffffffff, tex_fmt = 6;
+	uint32_t tex_a_or = 0;	/* -L: bits ORed into texture word A */
 	int mip_lw = 0;	/* -U: a twiddled mipmapped 2^n square texture */
 	char *endp;
 	struct bo tex = { 0 };	/* -T: the tail buffer's size (the driver zeroes tails_zero bytes of it) */
@@ -114,7 +115,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:J:Q:V:U:u:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:J:Q:V:U:u:L:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -125,6 +126,7 @@ int main(int argc, char **argv)
 		else if (o == 'W') rawfile = optarg;
 		else if (o == 'N') { tri_tex = 1; tri_tex_mode = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'Y') tri_tex_c = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'L') tex_a_or = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'U') mip_lw = (int)strtoul(optarg, NULL, 0);
 		else if (o == 'u') tri_uvscale = (float)atof(optarg);
 		else if (o == 'V') tex_fmt = (uint32_t)strtoul(optarg, NULL, 0);
@@ -182,6 +184,7 @@ int main(int argc, char **argv)
 		tri_tex_a = 1u << 31 | 1u << 29 | tex_fmt << 14 | (tex_pitch / 8 & 1);
 		tri_tex_b = tex_b_bits | (tex_pitch / 8 >> 1) << 18 | tex.va >> 7;
 	}
+	tri_tex_a |= tex_a_or;
 	px = surf.map;
 	for (i = 0; i < TRI_W * TRI_H * (dbl ? 2 : 1); i++)
 		px[i] = gradient ? 0xff000000u | (uint32_t)i : fill;	/* -G: every pixel its own value */

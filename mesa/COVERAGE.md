@@ -67,8 +67,9 @@ the CPU fallback. Non-power-of-two and render-to-texture-only textures stay line
 
 ## Hardware limits found on the unit (texturing)
 
-- Bilinear filtering is skipped next to a texel whose R, G and B are all zero: a black-to-light edge is a step. The driver does not
-  work around it yet (an option: nudge pure-black texels to colour 1 on upload, exact for ARGB8888 up to 1/255).
+- Bilinear filtering is skipped next to a texel whose R, G and B are all zero: a black-to-light edge is a step. The driver writes
+  a black texel as colour 1 on upload for ARGB8888 and LA88 (1/255 off; `bilinear_black` tests it); the 16-bit formats keep
+  their zeros (a nudge would be 3-6 per cent), and texels the chip renders itself cannot be nudged.
 - 16-bit texel colour fields are shifted, not replicated (white 565 is 248, 252, 248).
 - One texture unit is state bits 16-18 = 2; textures are linear power-of-two with a stride (README assumptions 38 and 39).
 

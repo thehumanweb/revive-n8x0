@@ -342,6 +342,34 @@ static void *mbx_transfer_map(struct pipe_context *pctx, struct pipe_resource *p
 	       (uint64_t)(box->x / util_format_get_blockwidth(prsc->format)) * util_format_get_blocksize(prsc->format);
 }
 
+/*
+ * The chip does not filter next to a texel whose R, G and B are all zero (README assumption 39), so a black texel
+ * is written as colour 1 where that is invisible: ARGB8888 (blue 1) and LA88 (luminance 1), 1/255 off. (The
+ * 16-bit formats would be 3 to 6 per cent off, which shows on black, so they keep their zeros.)
+ */
+static void nudge_black(enum pipe_format format, uint8_t *p, unsigned stride, unsigned w, unsigned h)
+{
+	unsigned x, y;
+
+	if (format == PIPE_FORMAT_B8G8R8A8_UNORM) {
+		for (y = 0; y < h; y++)
+			for (x = 0; x < w; x++) {
+				uint8_t *t = p + (uint64_t)y * stride + (uint64_t)x * 4;
+
+				if (!(t[0] | t[1] | t[2]))
+					t[0] = 1;
+			}
+	} else if (format == PIPE_FORMAT_L8A8_UNORM) {
+		for (y = 0; y < h; y++)
+			for (x = 0; x < w; x++) {
+				uint8_t *t = p + (uint64_t)y * stride + (uint64_t)x * 2;
+
+				if (!t[0])
+					t[0] = 1;
+			}
+	}
+}
+
 /* The texture's padding repeats its edge texels, so clamping to the padded size is clamping to the edge (NPOT) */
 static void tex_fill_padding(struct mbx_resource *rsc, struct pipe_transfer *t)
 {
@@ -372,14 +400,24 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 	struct mbx_transfer *mt = (struct mbx_transfer *)ptrans;
 
 	if (mt->staging) {
-		if (ptrans->usage & PIPE_MAP_WRITE)
+		if (ptrans->usage & PIPE_MAP_WRITE) {
+			nudge_black(rsc->base.format, mt->staging, ptrans->stride, ptrans->box.width, ptrans->box.height);
 			mbx_tex_twiddle(rsc, ptrans->level, &ptrans->box, mt->staging, ptrans->stride, true);
+		}
 		free(mt->staging);
 	}
 	if (ptrans->usage & PIPE_MAP_WRITE)
 		rsc->sp_dirty = true;
-	if (rsc->tex && !rsc->twiddled && (ptrans->usage & PIPE_MAP_WRITE))
+	if (rsc->tex && !rsc->twiddled && (ptrans->usage & PIPE_MAP_WRITE)) {
+		uint8_t *bp = mbx_bo_map(rsc->bo);
+
+		if (bp)
+			nudge_black(rsc->base.format, bp + rsc->level_off[ptrans->level] +
+				    (uint64_t)ptrans->box.y * rsc->level_stride[ptrans->level] +
+				    (uint64_t)ptrans->box.x * util_format_get_blocksize(rsc->base.format),
+				    rsc->level_stride[ptrans->level], ptrans->box.width, ptrans->box.height);
 		tex_fill_padding(rsc, ptrans);
+	}
 	pipe_resource_reference(&ptrans->resource, NULL);
 	FREE(ptrans);
 }

@@ -1077,7 +1077,43 @@ static int t_mip_chip(char *why)
 	return ok;
 }
 
+static int t_bilinear_black(char *why)
+{
+	/* a black-to-white edge filtered: the chip skips the filter next to an all-zero texel, so the driver writes black as
+	 * colour 1 and the seam is a ramp */
+	unsigned char px[8 * 8 * 4];
+	GLuint t;
+	int ok = 1;
+	struct px a;
+
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++) {
+			unsigned char c = x >= 4 ? 255 : 0;
+
+			px[4 * (y * 8 + x)] = px[4 * (y * 8 + x) + 1] = px[4 * (y * 8 + x) + 2] = c;
+			px[4 * (y * 8 + x) + 3] = 255;
+		}
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_LINEAR, GL_CLAMP_TO_EDGE);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	a = probe(32, 32);
+	if (a.c[0] < 60 || a.c[0] > 200) {
+		snprintf(why, 200, "the seam (32,32) is %d: a mixed value expected between black and white", a.c[0]);
+		ok = 0;
+	}
+	if (ok && probe(10, 32).c[0] > 8) {
+		snprintf(why, 200, "the black side is %d", probe(10, 32).c[0]);
+		ok = 0;
+	}
+	glDeleteTextures(1, &t);
+	glUseProgram(prog);
+	return ok;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "bilinear_black", t_bilinear_black },
 	{ "mip_chip", t_mip_chip },
 	{ "copy_tex", t_copy_tex },
 	{ "tex_subimage", t_tex_subimage },
