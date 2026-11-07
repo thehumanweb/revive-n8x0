@@ -376,7 +376,38 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	}
 	for (i = 0; i < 8; i++)
 		rw(R_MMU_TABLE(i), (uint32_t)f->pt[i]->mem_addr);
+	/* the stock MMU protocol (found during device testing, as the driver does it): disable, wait, enable, wait, then a TLB
+	 * load for each page the job may use */
+	rw(R_MMU_CTRL, 0);
 	rw(R_MMU_CTRL, 1);
+	{
+		struct sim_map *m;
+		uint32_t pg, last;
+
+		for (m = f->maps; m; m = m->next)
+			for (pg = m->va >> 12, last = pg + m->pages; pg < last; pg++) {
+				uint32_t *pt = (uint32_t *)(sim.mem + f->pt[pg >> 10]->mem_addr);
+
+				rw(0x1024, pg);
+				rw(0x1028, pt[pg & 1023] >> 12);
+				rw(R_MMU_CTRL, 1u << 8 | 1);
+			}
+		/* the parameter buffer, its table and the contexts are mapped in every space */
+		for (pg = 0; pg < PB_PAGES; pg++) {
+			uint32_t *pt = (uint32_t *)(sim.mem + f->pt[pg >> 10]->mem_addr);
+
+			rw(0x1024, pg);
+			rw(0x1028, pt[pg & 1023] >> 12);
+			rw(R_MMU_CTRL, 1u << 8 | 1);
+		}
+		for (pg = PB_TABLE_VA >> 12; pg < (CTX_VA + CTX_SIZE) >> 12; pg++) {
+			uint32_t *pt = (uint32_t *)(sim.mem + f->pt[pg >> 10]->mem_addr);
+
+			rw(0x1024, pg);
+			rw(0x1028, pt[pg & 1023] >> 12);
+			rw(R_MMU_CTRL, 1u << 8 | 1);
+		}
+	}
 	sim.active = f;
 	rw(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE | I_TA_OFLOW | I_TA_STREAM);
 	rw(R_INT_CLEAR, 0x7fff);

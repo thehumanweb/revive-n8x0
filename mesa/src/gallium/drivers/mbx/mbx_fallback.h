@@ -18,6 +18,7 @@ struct mbx_screen;
 
 bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *info, unsigned drawid_offset,
 		       const struct pipe_draw_start_count_bias *draws, unsigned num_draws);
+bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *info);
 void mbx_fallback_clear_depth(struct mbx_context *ctx, double depth);
 /* a shader's softpipe twin and the NIR kept for it */
 void mbx_fallback_shader_delete(struct mbx_context *ctx, struct mbx_shader *so);

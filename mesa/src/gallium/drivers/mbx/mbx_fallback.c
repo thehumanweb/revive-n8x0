@@ -345,6 +345,63 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 	return true;
 }
 
+/* After softpipe wrote a texture it holds privately, the MBX's memory gets the texels too */
+static void twin_readback(struct mbx_context *ctx, struct mbx_resource *rsc, unsigned level, const struct pipe_box *box)
+{
+	struct pipe_context *sp = ctx->sp;
+	struct pipe_transfer *xfer;
+	unsigned bpp = util_format_get_blocksize(rsc->base.format), y;
+	uint8_t *dst = mbx_bo_map(rsc->bo), *src;
+
+	if (!dst || !rsc->tex)
+		return;
+	src = sp->texture_map(sp, rsc->sp_twin, level, PIPE_MAP_READ, box, &xfer);
+	if (!src)
+		return;
+	for (y = 0; y < (unsigned)box->height; y++)
+		memcpy(dst + rsc->level_off[level] + (uint64_t)(box->y + y) * rsc->level_stride[level] + (uint64_t)box->x * bpp,
+		       src + (uint64_t)y * xfer->stride, (uint64_t)box->width * bpp);
+	sp->texture_unmap(sp, xfer);
+	rsc->sp_dirty = false;
+}
+
+bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *info)
+{
+	struct pipe_context *sp = fb_context(ctx);
+	struct mbx_resource *src = mbx_resource(info->src.resource), *dst = mbx_resource(info->dst.resource);
+	struct pipe_blit_info b = *info;
+	bool shared_dst;
+
+	if (!sp || info->scissor_enable || info->render_condition_enable)
+		return false;
+	mbx_dbg("fallback: a blit on the CPU (softpipe)");
+	mbx_job_flush(ctx);
+	mbx_resource_wait(ctx->screen, src);
+	mbx_resource_wait(ctx->screen, dst);
+	b.src.resource = twin_texture(ctx, src);
+	shared_dst = dst->bind_rt || dst->scanout;
+	b.dst.resource = shared_dst ? twin_shared(ctx, dst) : twin_texture(ctx, dst);
+	if (!b.src.resource || !b.dst.resource)
+		return false;
+	dst->sp_dirty = false;		/* softpipe's copy is the newer one from here (read back below) */
+	sp->blit(sp, &b);
+	sp->flush(sp, NULL, 0);
+	if (!shared_dst) {
+		struct pipe_box box = { info->dst.box.x, info->dst.box.y, 0, info->dst.box.width, info->dst.box.height, 1 };
+
+		if (box.width < 0) {
+			box.x += box.width;
+			box.width = -box.width;
+		}
+		if (box.height < 0) {
+			box.y += box.height;
+			box.height = -box.height;
+		}
+		twin_readback(ctx, dst, info->dst.level, &box);
+	}
+	return true;
+}
+
 void mbx_fallback_clear_depth(struct mbx_context *ctx, double depth)
 {
 	struct pipe_context *sp = ctx->sp;

@@ -49,12 +49,12 @@ the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 What the chip cannot do is drawn by Mesa's softpipe into the same buffers, so every GLES2 program runs: a fragment shader that is
 not a product of a texel, a varying, a uniform and constants (any arithmetic, `discard`, `gl_FragDepthEXT`, two or more
 textures, `gl_PointCoord`), a partial colour mask, separate / subtract / constant-colour blending, polygon offset, stencil, a draw
-without vertex attributes. The pending MBX job finishes first (its render is waited for), softpipe draws into the render
+without vertex attributes. Blits that are not plain copies (`glGenerateMipmap`, scaling, format conversion) go the same way (softpipe's blit, read back into the MBX's memory for a texture only softpipe holds). The pending MBX job finishes first (its render is waited for), softpipe draws into the render
 target's memory through a small software winsys (a display target is an MBX buffer, mapped), and later MBX jobs start from
 what it left (the background object is the target). Textures are copied to softpipe when the CPU wrote them (render
 targets are shared in place); vertex, index and constant buffers are read through user pointers; the shaders are softpipe's
 own (a copy of the NIR from before our lowering). Limits: the MBX keeps depth on chip and never in memory, so depth does not
-carry between MBX and CPU draws of one frame (a frame of either kind is right); mipmaps of a render target are not shared; it
+carry between MBX and CPU draws of one frame (a frame of either kind is right); mipmaps of a render target are not shared; mipmapped sampling is the CPU's only (the chip reads linear textures, level 0 only: on-chip mipmaps need twiddled storage); it
 is slow (softpipe on the 330 MHz ARM1136), a path for correctness.
 
 ## Hardware limits found on the unit (texturing)

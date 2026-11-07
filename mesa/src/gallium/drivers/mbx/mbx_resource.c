@@ -317,8 +317,8 @@ static void mbx_flush_resource(struct pipe_context *pctx, struct pipe_resource *
 /* Same-format, unscaled copies only, through the CPU; the rest is not done yet */
 static void mbx_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
-	if (!util_try_blit_via_copy_region(pctx, info, false))
-		mesa_loge("mbx: a blit that is not a plain copy (scaling, conversion, masks) is not supported yet");
+	if (!util_try_blit_via_copy_region(pctx, info, false) && !mbx_fallback_blit(mbx_context(pctx), info))
+		mesa_loge("mbx: a blit that is not a plain copy (scaling, conversion, masks) could not be done");
 }
 
 void mbx_resource_screen_init(struct pipe_screen *pscreen)

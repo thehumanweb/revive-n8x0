@@ -31,6 +31,7 @@ static const char *fs_src =
 	"varying vec4 v_color;\n"
 	"void main() { gl_FragColor = v_color; }\n";
 
+static GLuint main_fbo;
 static GLuint prog_two, prog, prog_tex, prog_mod, prog_uni, prog_vu, prog_tu, prog_z, prog_fba, prog_fbt, prog_fbz;
 static int failures;
 
@@ -904,7 +905,139 @@ static int t_fb_two_tex(char *why)
 	return ok;
 }
 
+static int t_mipmap(char *why)
+{
+	/* a 16 x 16 checker of black and white texels, mipmaps generated: drawn minified (16 -> 4 pixels) with a trilinear
+	 * filter, the texels average to grey; with a shader the chip cannot do, so the CPU samples the levels */
+	unsigned char px[16 * 16 * 4];
+	GLuint t;
+	int ok = 1;
+	struct px a, b;
+
+	for (int y = 0; y < 16; y++)
+		for (int x = 0; x < 16; x++) {
+			unsigned char c = ((x ^ y) & 1) ? 255 : 0;
+
+			px[4 * (y * 16 + x)] = px[4 * (y * 16 + x) + 1] = px[4 * (y * 16 + x) + 2] = c;
+			px[4 * (y * 16 + x) + 3] = 255;
+		}
+	begin();
+	t = make_tex(16, 16, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_LINEAR_MIPMAP_NEAREST, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glGenerateMipmap(GL_TEXTURE_2D);
+	glUseProgram(prog_fbt);
+	glUniform1i(glGetUniformLocation(prog_fbt, "u_tex"), 0);
+	rect(-1, -1, -0.875f, -0.875f, 1, 1, 1);	/* 4 x 4 pixels at the bottom left */
+	/* fs_tex_arith: texel * .5 + .25: a grey texel g gives g * .5 + .25 (checker would give .25 and .75) */
+	a = probe(1, 1);
+	b = probe(2, 2);
+	if (abs(a.c[0] - b.c[0]) > 24 || a.c[0] < 100 || a.c[0] > 156) {
+		snprintf(why, 200, "minified checker not averaged: (1,1) %d, (2,2) %d (a mid-grey 128 expected)", a.c[0], b.c[0]);
+		ok = 0;
+	}
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_copy_tex(char *why)
+{
+	/* copy the framebuffer's lower left 8 x 8 (green) into a texture, clear, draw the texture: green again */
+	static const float g[] = { -1, -1, 0, 1, 0, 1, 1, -1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1,
+				   -1, -1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, -1, 1, 0, 1, 0, 1 };
+	GLuint t;
+	int ok;
+
+	begin();
+	draw(GL_TRIANGLES, g, 6);
+	glGenTextures(1, &t);
+	glBindTexture(GL_TEXTURE_2D, t);
+	glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, 8, 8, 0);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	begin();
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = is(32, 32, 0, 255, 0, why, 200) && is(5, 60, 0, 255, 0, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_subimage(char *why)
+{
+	/* an 8 x 8 red texture with a 4 x 4 green block written over its lower left quarter */
+	unsigned char red[8 * 8 * 4], green[4 * 4 * 4];
+	GLuint t;
+	int ok;
+
+	for (int i = 0; i < 64; i++) {
+		red[4 * i] = 255; red[4 * i + 1] = 0; red[4 * i + 2] = 0; red[4 * i + 3] = 255;
+	}
+	for (int i = 0; i < 16; i++) {
+		green[4 * i] = 0; green[4 * i + 1] = 255; green[4 * i + 2] = 0; green[4 * i + 3] = 255;
+	}
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, red, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, green);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = is(16, 16, 0, 255, 0, why, 200) && is(48, 16, 255, 0, 0, why, 200) && is(16, 48, 255, 0, 0, why, 200) &&
+	     is(48, 48, 255, 0, 0, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_render_to_texture(char *why)
+{
+	/* an orange clear into a 32 x 32 texture through its own framebuffer, then the texture drawn into the main one */
+	GLuint t, f;
+	int ok = 1;
+
+	glGenTextures(1, &t);
+	glBindTexture(GL_TEXTURE_2D, t);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 32, 32, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glGenFramebuffers(1, &f);
+	glBindFramebuffer(GL_FRAMEBUFFER, f);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+		snprintf(why, 200, "the texture framebuffer is incomplete");
+		ok = 0;
+	} else {
+		glViewport(0, 0, 32, 32);
+		glClearColor(1, 0.5f, 0, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+		glViewport(0, 0, W, H);
+		begin();
+		glBindTexture(GL_TEXTURE_2D, t);
+		glUseProgram(prog_tex);
+		glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+		quad(0, 0, 1, 1, 1, 1, 1);
+		ok = is(32, 32, 255, 128, 0, why, 200) && is(3, 3, 255, 128, 0, why, 200);
+		glUseProgram(prog);
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+	glViewport(0, 0, W, H);
+	glDeleteFramebuffers(1, &f);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "copy_tex", t_copy_tex },
+	{ "tex_subimage", t_tex_subimage },
+	{ "render_to_texture", t_render_to_texture },
+	{ "mipmap", t_mipmap },
 	{ "fb_two_tex", t_fb_two_tex },
 	{ "colormask", t_colormask },
 	{ "blend_constant", t_blend_constant },
@@ -963,6 +1096,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	glGenFramebuffers(1, &fbo);
+	main_fbo = fbo;
 	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 	glGenRenderbuffers(1, &rb);
 	glBindRenderbuffer(GL_RENDERBUFFER, rb);
