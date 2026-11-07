@@ -40,6 +40,14 @@ Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` c
 (ring trace, `omapdrm.trace_updates` 1 records, 2 prints; apply on top of the series; build incrementally, do not re-run
 `prepare-6.18.sh`), `devmem` on the unit.
 
+## Weston
+
+Runs on the unit with the GL renderer, every draw on the chip (JOURNEY.md, 2026-11-07, "Weston on the unit"). Open: look at the panel
+(screenshot with `weston-screenshooter`, or by eye), touch input through libinput with the calibration rule, `weston-terminal` and
+other clients, the opaque and dmabuf shader variants, the 20 fps of `weston-simple-egl -f` (display update or render?), the cost of
+the red-blue swapped texture copy (write-combined reads; track the dirty box instead of the whole texture), a client memory budget
+(two GL clients plus Weston on 123 MB), piglit against the specialisation changes, and a Weston start script in the image.
+
 ## Other open items
 
 - Fast stencil, stage 2: the stencil WRITES on the chip (README assumption 53 has the tests): render the draw's coverage into a mask target on the chip
