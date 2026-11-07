@@ -48,6 +48,13 @@ other clients, the opaque and dmabuf shader variants, the 20 fps of `weston-simp
 the red-blue swapped texture copy (write-combined reads; track the dirty box instead of the whole texture), a client memory budget
 (two GL clients plus Weston on 123 MB), piglit against the specialisation changes, and a Weston start script in the image.
 
+- The client's `DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied` (Mesa's `renderonly.c`, so our scanout path): the wayland EGL
+  platform asks for scanout-capable buffers, the client has no right to create dumb buffers on the KMS device, and the buffer then
+  arrives anyway (dmabuf, confirmed in Weston's log), which suggests the state tracker retries without the scanout bind. Not
+  verified, harmless so far; a quiet fix is to skip the renderonly path in a process that is not the display owner.
+- `weston-simple-egl -f` at about 20 fps is consistent with the display update (a whole-frame manual update took 75 ms in `gbm_damage`),
+  not the render; unmeasured for Weston itself.
+
 ## Other open items
 
 - Fast stencil, stage 2: the stencil WRITES on the chip (README assumption 53 has the tests): render the draw's coverage into a mask target on the chip
