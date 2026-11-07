@@ -42,6 +42,14 @@ Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` c
 
 ## Weston
 
+- Pipeline (client to screen), measured 2026-11-07: the panel runs at 40 Hz by default (user), so a small update costs one 25 ms period and
+  a client can reach 40 fps; the DRM mode still says 51 Hz, so Weston expected a refresh every 19.6 ms and started its repaints too late
+  (`repaint-window=16` in the image's `weston.ini` fixes the timing: 26.6 -> 40 fps for a windowed client). A cleaner fix is for the
+  mode to report the real rate (the panel timings the omapdrm mode is made from), so Weston's defaults, the clients' frame callbacks and
+  the presentation timestamps agree. Fullscreen is still 20 fps (a client that redraws everything: 8 ms of chip time for 1500 tiles, and
+  Weston's 416-tile textured draw 6.7 ms, each job with 1-3 ms of kernel CPU on the one core); `MBX_PROF=1` (per process) and the module
+  parameter `mbx.prof=1` (per phase, in dmesg) measure it.
+
 Runs on the unit with the GL renderer, every draw on the chip, shm and dmabuf clients both verified by screenshot (JOURNEY.md,
 2026-11-07, "Weston on the unit" and "A Wayland client in Weston"; `docs/weston-simple-egl.png`). Touch input works (user, by hand on the unit, with the calibration rule). Weston starts at boot (`S90weston`, `--idle-time=0`; `touch /etc/noweston` skips it). `weston-terminal` next to `weston-simple-egl` fits easily: 41 MB used before, 45 MB with the terminal (47 MB free of 123; measured, not yet looked at by eye). Open: other clients, the frame rate of Weston
 itself against the display update, the cost of the red-blue swapped texture copy (write-combined reads; track the dirty box instead

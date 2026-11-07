@@ -176,6 +176,36 @@ static unsigned int ta_extra;
 module_param(ta_extra, uint, 0644);
 MODULE_PARM_DESC(ta_extra, "debug: bits ORed into TA_CONFIG (0x85c)");
 
+static bool prof;
+module_param(prof, bool, 0644);
+MODULE_PARM_DESC(prof, "print the average time of each phase of a job every two seconds");
+
+/* Time spent in each phase of the jobs since the last print (the prof parameter) */
+static struct {
+	u64 n, build, ta, bit30, render, started;
+} pstat;
+
+static void mbx_prof_add(u64 build, u64 ta, u64 bit30, u64 render)
+{
+	u64 now = ktime_get_ns();
+
+	if (!pstat.started)
+		pstat.started = now;
+	pstat.n++;
+	pstat.build += build;
+	pstat.ta += ta;
+	pstat.bit30 += bit30;
+	pstat.render += render;
+	if (now - pstat.started >= 2 * NSEC_PER_SEC) {
+		u64 n = pstat.n;
+
+		pr_info("mbx prof: %llu jobs in 2 s; per job: build+region init %llu us, TA (feed and wait) %llu us, bit 30 pass %llu us, render %llu us\n",
+			n, div64_u64(pstat.build, n * 1000), div64_u64(pstat.ta, n * 1000), div64_u64(pstat.bit30, n * 1000),
+			div64_u64(pstat.render, n * 1000));
+		memset(&pstat, 0, sizeof(pstat));
+	}
+}
+
 /* The frame, on the hardware: with the job lock held, in the job's address space */
 static int mbx_job_run(struct mbx_job *job)
 {
@@ -183,10 +213,13 @@ static int mbx_job_run(struct mbx_job *job)
 	struct drm_mbx_submit *a = &job->a;
 	unsigned long ms = job->ms;
 	ktime_t t_ta = 0, t_render = 0;
+	u64 p0 = 0, p1 = 0, p2 = 0, p3 = 0;
 	u32 ctx, i;
 	int ret;
 
 	mutex_lock(&m->job_lock);
+	if (prof)
+		p0 = ktime_get_ns();
 	if (m->active_vm != job->vm || job->vm->dirty)	/* the MMU takes the address space again when it changed (another client, new or removed mappings) */
 		mbx_vm_activate(job->vm);
 	spin_lock_irq(&m->irq_lock);
@@ -226,6 +259,8 @@ static int mbx_job_run(struct mbx_job *job)
 		if (unlikely(mbx_trace))
 			printk(KERN_DEBUG "mbx: S after the TA context reset (%u polls) %08x\n", i, mbx_read(m, MBX_REG_INT_STATUS));
 	}
+	if (prof)
+		p1 = ktime_get_ns();
 	t_ta = ktime_get();
 	mbx_write(m, MBX_REG_TA_START, 1);
 	mbx_feed(m, job->stream, a->stream_words);
@@ -240,9 +275,13 @@ static int mbx_job_run(struct mbx_job *job)
 	if (kick_delay_us)
 		usleep_range(kick_delay_us, kick_delay_us + 200);
 
+	if (prof)
+		p2 = ktime_get_ns();
 	ret = mbx_job_region_bit30(job->vm, a, a->flags & MBX_SUBMIT_ZLOAD ? 0x20000000 : 0);
 	if (ret)
 		goto reset;
+	if (prof)
+		p3 = ktime_get_ns();
 	{
 		u32 tx, ty;
 
@@ -284,6 +323,8 @@ static int mbx_job_run(struct mbx_job *job)
 		       ktime_to_us(ktime_sub(ktime_get(), t_render)));
 	if (ret)
 		goto reset;
+	if (prof)
+		mbx_prof_add(p1 - p0, p2 - p1, p3 - p2, ktime_get_ns() - p3);
 	mutex_unlock(&m->job_lock);
 	return 0;
 reset:
