@@ -206,7 +206,7 @@ int mbx_vm_unmap(struct mbx_vm *vm, struct drm_gem_object *obj)
 static int mmu_seq = 1;	/* the stock daemon's handshake: without it the TLB keeps the previous client's pages (found on the unit with two clients) */
 module_param(mmu_seq, int, 0644);
 MODULE_PARM_DESC(mmu_seq, "debug: 1 does the stock daemon's MMU enable handshake");
-static int tlb_mode = 1;	/* default: the TLB is loaded with the client's pages at every address-space switch (found on the unit: without it a new process's first textured job read the previous process's texels) */
+static int tlb_mode = 3;	/* default: the TLB is flushed at every address-space switch by 256 loads (found on the unit: without a flush a new process's first textured job read the previous process's texels; mode 1 loaded every page of every buffer, 2.5-4 ms a switch with Weston and a client taking turns) */
 module_param(tlb_mode, int, 0644);
 MODULE_PARM_DESC(tlb_mode, "debug: 1 loads the TLB for the client's pages, 2 also for the whole parameter buffer, 3 only flushes it (256 loads)");
 
