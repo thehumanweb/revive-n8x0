@@ -49,9 +49,10 @@ Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` c
   the last flip, and with the default window of 7 ms the windowed client got 20 fps; it needs a window of 16 ms or more for 40 fps, the same
   as with the 51 Hz mode (where 12 already works, the wrong period giving Weston extra margin). So the mode change buys nothing for speed and
   touches the panel driver: not done. The setting that matters is `repaint-window` against the 10-12 ms a repaint takes.
-  Fullscreen is still 20 fps (a client that redraws everything: 8 ms of chip time for 1500 tiles, and
-  Weston's 416-tile textured draw 6.7 ms, each job with 1-3 ms of kernel CPU on the one core); `MBX_PROF=1` (per process) and the module
-  parameter `mbx.prof=1` (per phase, in dmesg) measure it.
+  Fullscreen is still 20 fps (JOURNEY.md, "the client-to-screen pipeline"): the update of Weston's 416 x 256 damage takes about 14 ms
+  and the repaint after the flip 10-12 ms, over one 25 ms scan. Ideas, none done: nearest-neighbour sampling for a 1:1 blit (the chip's
+  bilinear costs render time), Weston's own CPU time, direct scanout of a fullscreen client (contiguous buffers: a kernel allocation flag
+  and Mesa), a faster bus. `MBX_PROF=1` (per process) and the module parameter `mbx.prof=1` (per phase, in dmesg) measure it.
 
 Runs on the unit with the GL renderer, every draw on the chip, shm and dmabuf clients both verified by screenshot (JOURNEY.md,
 2026-11-07, "Weston on the unit" and "A Wayland client in Weston"; `docs/weston-simple-egl.png`). Touch input works (user, by hand on the unit, with the calibration rule). Weston starts at boot (`S90weston`, `--idle-time=0`; `touch /etc/noweston` skips it). `weston-terminal` next to `weston-simple-egl` fits easily: 41 MB used before, 45 MB with the terminal (47 MB free of 123; measured, not yet looked at by eye). Open: other clients, the frame rate of Weston
