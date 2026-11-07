@@ -105,16 +105,17 @@ int main(int argc, char **argv)
 	uint32_t stream[128], words, status, tex_b_bits = 0x0e000000, tex_pitch = 8, tex_bw = 0, tex_lo = 0xff000000, tex_hi = 0xffffffff, tex_fmt = 6;
 	uint32_t tex2_b_bits = 0, flat_colour = 0;
 	int flat_bg = 0;
-	int mip_lw = 0;
+	int mip_lw = 0, maxlev = -1;	/* -m: word A bits 9-12 (default: the chain's last level) */
 	char *endp;
 	int i, x, y;
 
-	while ((o = getopt(argc, argv, "a:vA:j:o:N:Y:H:J:Q:V:U:u:y:z:Of:")) != -1) {
+	while ((o = getopt(argc, argv, "a:vA:j:m:o:N:Y:H:J:Q:V:U:u:y:z:Of:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'N') { tri_tex = 1; tri_tex_mode = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'A') tri_alpha_word = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'j') sscanf(optarg, "%u,%u,%u", &tri_va[0], &tri_va[1], &tri_va[2]);
 		else if (o == 'Y') tri_tex_c = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'm') maxlev = (int)strtoul(optarg, NULL, 0);
 		else if (o == 'U') mip_lw = (int)strtoul(optarg, NULL, 0);
 		else if (o == 'u') tri_uvscale = (float)atof(optarg);
 		else if (o == 'y') { tri_tex2 = 1; tex2_b_bits = (uint32_t)strtoul(optarg, NULL, 0); }
@@ -194,7 +195,7 @@ int main(int argc, char **argv)
 
 			tri_fill_mips(chain, mip_lw);
 			memcpy(ram + texva, chain, (size_t)(1u << 20) < sizeof(chain) ? (1u << 20) : sizeof(chain));
-			tri_tex_a = 1u << 31 | 1u << 29 | (uint32_t)(mip_lw - 3) << 24 | (uint32_t)(mip_lw - 3) << 20 | 6u << 14 | (uint32_t)mip_lw << 9;
+			tri_tex_a = 1u << 31 | 1u << 29 | (uint32_t)(mip_lw - 3) << 24 | (uint32_t)(mip_lw - 3) << 20 | 6u << 14 | (uint32_t)(maxlev >= 0 ? maxlev : mip_lw) << 9;
 		} else
 		tri_tex_a = 1u << 31 | 1u << 29 | tex_fmt << 14 | (tex_pitch / 8 & 1);
 		tri_tex_b = tex_b_bits | (tex_pitch / 8 >> 1) << 18 | texva >> 7;

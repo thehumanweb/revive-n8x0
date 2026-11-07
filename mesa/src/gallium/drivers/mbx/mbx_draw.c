@@ -123,6 +123,8 @@ static bool state_needs_fallback(struct mbx_context *ctx)
 	return false;
 }
 
+static bool want_trilinear(struct mbx_context *ctx, const struct mbx_vgp_program *prog);
+
 static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_program *prog)
 {
 	uint32_t st = prog->st_extra;
@@ -140,6 +142,8 @@ static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_prog
 		st |= ST_NODEPTHWRITE;
 	}
 	st |= func << 9;
+	if (want_trilinear(ctx, prog))
+		st = (st & ~(7u << 16)) | 4u << 16;	/* two-pass trilinear */
 	st |= hw_blend_bits(ctx);
 	if (ctx->fs && ctx->fs->fs_info.kind == MBX_FS_MATCHED && ctx->fs->fs_info.alpha_word)
 		st |= ST_ALPHATEST;		/* the alpha function takes effect only with bit 14 (found during device testing, README assumption 45) */
@@ -187,7 +191,17 @@ static uint32_t vertex_layout(struct mbx_context *ctx, const struct mbx_vgp_prog
 }
 
 /* Texture words A and B of unit 0 from the bound view and sampler: a linear power-of-two texture with a stride */
-static bool tex_words(struct mbx_context *ctx, unsigned unit, uint32_t *a, uint32_t *b)
+/* Trilinear: the chip's two-pass mode (state bits 16-18 = 4, word B 0x4e000000, README assumption 47) takes one texture unit and a twiddled chain */
+static bool want_trilinear(struct mbx_context *ctx, const struct mbx_vgp_program *prog)
+{
+	const struct pipe_sampler_state *smp = ctx->samplers[0];
+	struct pipe_sampler_view *view = ctx->views[0];
+
+	return prog->ntex == 1 && smp && view && view->texture && mbx_resource(view->texture)->twiddled &&
+	       view->texture->last_level > 0 && smp->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR;
+}
+
+static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, uint32_t *a, uint32_t *b)
 {
 	struct pipe_sampler_view *view = ctx->views[unit];
 	const struct pipe_sampler_state *smp = ctx->samplers[unit];
@@ -209,8 +223,9 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, uint32_t *a, uint3
 		clamp_t = smp->wrap_t != PIPE_TEX_WRAP_REPEAT && smp->wrap_t != PIPE_TEX_WRAP_MIRROR_REPEAT;
 		bilinear = mip ? smp->min_img_filter == PIPE_TEX_FILTER_LINEAR : smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
 		*a = (clamp_s ? 1u << 31 : 0) | (clamp_t ? 1u << 29 : 0) | (uint32_t)(tr->tex_lw - 3) << 24 |
-		     (uint32_t)(tr->tex_lh - 3) << 20 | fmt << 14 | (mip ? (uint32_t)tr->base.last_level << 9 : 0);
-		*b = (mip ? 0x32000000u : 0x0e000000u) | (bilinear ? 1u << 31 : 0) | tr->bo->va >> 7;
+		     (uint32_t)(tr->tex_lh - 3) << 20 | fmt << 14 |
+		     (trilinear ? 0xbu << 9 : mip ? (uint32_t)tr->base.last_level << 9 : 0);	/* trilinear: the whole chain (0xb) */
+		*b = (trilinear ? 0x4e000000u : mip ? 0x32000000u : 0x0e000000u) | (bilinear ? 1u << 31 : 0) | tr->bo->va >> 7;
 		return true;
 	}
 	stride_px = tr->level_stride[0] / util_format_get_blocksize(tr->base.format);
@@ -244,7 +259,7 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 	for (u = 0; u < prog->ntex; u++) {
 		if (u == 0 && !(prog->units & 1))
 			continue;	/* unit 1 alone: unit 0's block is a copy of unit 1's (below) */
-		if (!tex_words(ctx, u, &ta[u], &tb[u]))
+		if (!tex_words(ctx, u, u == 0 && want_trilinear(ctx, prog), &ta[u], &tb[u]))
 			ta[u] = tb[u] = 0;
 	}
 	if (!(prog->units & 1) && prog->ntex == 2) {

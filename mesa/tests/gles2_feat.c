@@ -1239,6 +1239,44 @@ static int t_mip_chip(char *why)
 	return ok;
 }
 
+/* trilinear on the chip (README assumption 47): the same flat-colour chain, 1.5 texels per pixel is a blend of level 0 (red) and level 1 (green) */
+static int t_trilinear(char *why)
+{
+	static const unsigned char col[6][4] = { { 255, 0, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 },
+						 { 255, 255, 0, 255 }, { 0, 255, 255, 255 }, { 255, 0, 255, 255 } };
+	GLuint t;
+	struct px a;
+	int ok = 1;
+
+	glGenTextures(1, &t);
+	glBindTexture(GL_TEXTURE_2D, t);
+	for (int l = 0; l <= 5; l++) {
+		int n = 32 >> l;
+		unsigned char *lvl = malloc((size_t)n * n * 4);
+
+		for (int i = 0; i < n * n; i++)
+			memcpy(lvl + 4 * i, col[l], 4);
+		glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, lvl);
+		free(lvl);
+	}
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	begin();
+	quad(0, 0, 3, 3, 1, 1, 1);		/* 96 texels over 64 pixels */
+	a = probe(32, 32);
+	if (a.c[0] < 90 || a.c[0] > 170 || a.c[1] < 90 || a.c[1] > 170 || a.c[2] > 20) {
+		snprintf(why, 200, "(32,32) is %d %d %d, expected a red-green blend", a.c[0], a.c[1], a.c[2]);
+		ok = 0;
+	}
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static int t_bilinear_black(char *why)
 {
 	/* a black-to-white edge filtered: the chip skips the filter next to an all-zero texel, so the driver writes black as
@@ -1426,6 +1464,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "tex_alpha_only", t_tex_alpha_only },
 	{ "bilinear_black", t_bilinear_black },
 	{ "mip_chip", t_mip_chip },
+	{ "trilinear", t_trilinear },
 	{ "copy_tex", t_copy_tex },
 	{ "tex_subimage", t_tex_subimage },
 	{ "render_to_texture", t_render_to_texture },
