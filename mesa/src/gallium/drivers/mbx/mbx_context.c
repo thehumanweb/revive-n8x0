@@ -81,6 +81,7 @@ static void cpu_fill(struct mbx_context *ctx, struct mbx_resource *rsc, unsigned
 	uint8_t *map;
 
 	mbx_resource_wait(ctx->screen, rsc);
+	rsc->wver++;
 	map = mbx_bo_map(rsc->bo);
 	mbx_dbg("clear on the CPU: %ux%u, stride %u, bo size %llu, map %p", x1 - x0, y1 - y0, rsc->stride,
 		(unsigned long long)rsc->bo->size, (void *)map);

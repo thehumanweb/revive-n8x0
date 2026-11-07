@@ -799,7 +799,8 @@ bool mbx_compile_vs(nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp
 struct fsp {
 	struct mbx_fs_info *info;
 	nir_tex_instr *tex[MBX_MAX_TEX];
-	unsigned lane;		/* the lane being parsed: a texel must be this lane's component */
+	unsigned lane;		/* the lane being parsed: a texel must be this lane's component, or (red, blue) the other of the two */
+	unsigned swap_seen, plain_seen;	/* lanes 0 and 2 that read the other one's texel component / their own */
 	bool bad;
 	nir_intrinsic_instr *disc;	/* a discard / terminate under a condition */
 };
@@ -997,8 +998,15 @@ static int fs_terms(struct fsp *p, nir_scalar s, struct fs_term *out)
 	}
 	for (unsigned k = 0; k < MBX_MAX_TEX; k++)
 		if (p->tex[k] && nir_def_instr(s.def) == &p->tex[k]->instr) {
-			if (s.comp != p->lane)
-				return -1;
+			if (s.comp != p->lane) {
+				/* red from the texel's blue and the reverse: Weston's BGRA swizzle of a wl_shm buffer; the draw samples a
+				 * copy of the texture with the two swapped */
+				if (!((p->lane == 0 && s.comp == 2) || (p->lane == 2 && s.comp == 0)))
+					return -1;
+				p->swap_seen |= 1u << p->lane;
+			} else if (p->lane == 0 || p->lane == 2) {
+				p->plain_seen |= 1u << p->lane;
+			}
 			out[0] = (struct fs_term){ -1, 1u << k };
 			return 1;
 		}
@@ -1279,6 +1287,11 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		if (!fs_lane(&p, nir_scalar_resolved(store->src[0].ssa, i), &info->lane[i]))
 			return;
 
+	if (p.swap_seen) {
+		if (p.plain_seen)
+			return;			/* only the pair swapped as a whole */
+		info->swap_rb = true;
+	}
 	/* the texel units: one set for the colour lanes, one for alpha; the chain starts at unit 0 */
 	info->mc = info->lane[0].tex;
 	if (info->lane[1].tex != info->mc || info->lane[2].tex != info->mc)

@@ -74,6 +74,8 @@ static struct pipe_resource *mbx_resource_create(struct pipe_screen *pscreen,
 	struct mbx_resource *rsc;
 	uint64_t size;
 
+	mbx_dbg("resource: target %d %ux%u levels %u %s bind %x", templ->target, templ->width0, templ->height0,
+		templ->last_level + 1, util_format_name(templ->format), templ->bind);
 	if (screen->ro && (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
 	    templ->target != PIPE_BUFFER && !util_format_is_depth_or_stencil(templ->format))
 		return mbx_resource_create_scanout(pscreen, templ);
@@ -255,6 +257,7 @@ static void mbx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resour
 	if (rsc->scanout)
 		renderonly_scanout_destroy(rsc->scanout, mbx_screen(pscreen)->ro);
 	mbx_fallback_resource_destroy(rsc);
+	pipe_resource_reference(&rsc->swap, NULL);
 	mbx_bo_unref(rsc->zbo);
 	mbx_bo_unref(rsc->bo);
 	FREE(rsc);
@@ -439,8 +442,10 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 		}
 		free(mt->staging);
 	}
-	if (ptrans->usage & PIPE_MAP_WRITE)
+	if (ptrans->usage & PIPE_MAP_WRITE) {
 		rsc->sp_dirty = true;
+		rsc->wver++;
+	}
 	if (rsc->tex && !rsc->twiddled && (ptrans->usage & PIPE_MAP_WRITE)) {
 		uint8_t *bp = mbx_bo_map(rsc->bo);
 
@@ -453,6 +458,51 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 	}
 	pipe_resource_reference(&ptrans->resource, NULL);
 	FREE(ptrans);
+}
+
+/*
+ * Weston's wl_shm textures reach the shader with their red and blue exchanged (GLES2 has no texture swizzle, so its shader
+ * swaps them back with integer uniforms). The chip cannot swap channels, so the draw samples a copy with the two swapped:
+ * made at the first draw and again when the texture was written since (the CPU writes are counted in wver; a texture a
+ * job renders into is not copied).
+ */
+struct mbx_resource *mbx_texture_swapped(struct mbx_context *ctx, struct mbx_resource *rsc)
+{
+	struct mbx_screen *screen = ctx->screen;
+	struct mbx_resource *sw;
+	const uint32_t *src;
+	uint32_t *dst;
+	uint64_t n;
+
+	if (!rsc->tex || rsc->twiddled || rsc->cube || rsc->bind_rt || rsc->scanout || rsc->base.last_level ||
+	    rsc->base.format != PIPE_FORMAT_B8G8R8A8_UNORM)
+		return NULL;
+	if (!rsc->swap) {
+		struct pipe_resource t = rsc->base;
+
+		t.next = NULL;
+		rsc->swap = screen->base.resource_create(&screen->base, &t);
+		rsc->swap_wver = ~0u;
+	}
+	if (!rsc->swap)
+		return NULL;
+	sw = mbx_resource(rsc->swap);
+	if (rsc->swap_wver != rsc->wver) {
+		mbx_resource_wait(screen, rsc);
+		mbx_resource_wait(screen, sw);	/* a job may still read the older copy */
+		src = mbx_bo_map(rsc->bo);
+		dst = mbx_bo_map(sw->bo);
+		if (!src || !dst || sw->size != rsc->size)
+			return NULL;
+		n = rsc->size / 4;
+		for (uint64_t i = 0; i < n; i++) {
+			uint32_t v = src[i];
+
+			dst[i] = (v & 0xff00ff00u) | (v >> 16 & 0xffu) | (v & 0xffu) << 16;
+		}
+		rsc->swap_wver = rsc->wver;
+	}
+	return sw;
 }
 
 /* The window system is about to use a resource (a swap): what was drawn into it is rendered first */

@@ -207,6 +207,20 @@ static bool want_trilinear(struct mbx_context *ctx, const struct mbx_vgp_program
 	       view->texture->last_level > 0 && smp->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR;
 }
 
+/* The texture a unit samples: the bound one, or for a shader that swaps red and blue its copy with them swapped */
+static struct mbx_resource *unit_texture(struct mbx_context *ctx, unsigned unit)
+{
+	struct pipe_sampler_view *view = ctx->views[unit];
+	struct mbx_resource *tr;
+
+	if (!view || !view->texture)
+		return NULL;
+	tr = mbx_resource(view->texture);
+	if (ctx->fsi && ctx->fsi->swap_rb)
+		return mbx_texture_swapped(ctx, tr);
+	return tr;
+}
+
 static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, uint32_t *a, uint32_t *b)
 {
 	struct pipe_sampler_view *view = ctx->views[unit];
@@ -217,7 +231,9 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 
 	if (!view || !smp || !view->texture || !mbx_resource(view->texture)->tex)
 		return false;
-	tr = mbx_resource(view->texture);
+	tr = unit_texture(ctx, unit);
+	if (!tr)
+		return false;
 	fmt = mbx_chip_tex_format(tr->base.format);
 	if (tr->twiddled) {
 		/* a twiddled chain: no stride; mipmapped when the sampler asks (word B bit 29, with the level
@@ -606,6 +622,18 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 			return;
 		}
 	}
+	if (prog->fsi && prog->fsi->swap_rb) {
+		bool ok = true;
+
+		for (unsigned un = 0; un < prog->ntex; un++)
+			if ((prog->units >> un & 1) && !unit_texture(ctx, un))
+				ok = false;
+		if (!ok) {	/* a texture that cannot be copied with red and blue exchanged: softpipe draws it */
+			if (!mbx_fallback_draw(ctx, info, drawid_offset, draws, num_draws))
+				mesa_loge("mbx: a draw with a red-blue swizzle could not be drawn; skipped");
+			return;
+		}
+	}
 	if (ctx->dsa && ctx->fb.zsbuf.texture && (ctx->dsa->stencil[0].enabled || ctx->dsa->stencil[1].enabled) &&
 	    !mbx_stencil_begin(ctx)) {
 		mbx_dbg("the stencil mask could not be made: the draw goes to the CPU");
@@ -698,7 +726,7 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 				util_format_unpack_rgba(e->src_format, rgba, pp, 1);
 				for (unsigned un = 0; un < prog->ntex; un++)
 					if ((prog->units >> un & 1) && ctx->views[un] && ctx->views[un]->texture)
-						mbx_job_use_texture(ctx, mbx_resource(ctx->views[un]->texture));
+						mbx_job_use_texture(ctx, unit_texture(ctx, un));
 				emit_header(ctx, prog, layout);
 				emit_program(ctx, prog);
 				mbx_emit(ctx, MBX_CH_TA, prim | hw_cull_bits(ctx));
@@ -713,7 +741,7 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		mbx_dbg("draw %u: header", d);
 		for (unsigned un = 0; un < prog->ntex; un++)
 			if ((prog->units >> un & 1) && ctx->views[un] && ctx->views[un]->texture)
-				mbx_job_use_texture(ctx, mbx_resource(ctx->views[un]->texture));
+				mbx_job_use_texture(ctx, unit_texture(ctx, un));
 		emit_header(ctx, prog, layout);
 		mbx_dbg("draw %u: program", d);
 		emit_program(ctx, prog);

@@ -186,6 +186,9 @@ const struct mbx_fs_info *mbx_fs_specialize(struct mbx_context *ctx, const struc
 	mbx_variant_make(so, v);
 	v->next = so->variants;
 	so->variants = v;
+	for (unsigned k = 0; k < so->nuslot; k++)
+		mbx_dbg("  slot %u (comps %x)%s: %g %g %g %g", so->uslot[k].slot, so->uslot[k].comps, fold >> k & 1 ? " folded" : "",
+			u[so->uslot[k].slot * 4], u[so->uslot[k].slot * 4 + 1], u[so->uslot[k].slot * 4 + 2], u[so->uslot[k].slot * 4 + 3]);
 	mbx_dbg("fragment shader variant %u: fold mask %x -> %s", nvar, fold,
 		v->info.kind == MBX_FS_MATCHED ? "matched" : "still on the CPU");
 	*variant = v;

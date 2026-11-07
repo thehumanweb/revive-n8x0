@@ -34,6 +34,8 @@ struct mbx_resource {
 	bool cube;				/* six linear faces per level, sampled by the CPU fallback only (level_off: the level, 6 faces) */
 	bool twiddled;				/* the levels are one chain, each in the chip's twiddled order (power-of-two textures with mipmaps) */
 	bool bind_rt;				/* made with a render target bind (softpipe then shares its memory) */
+	uint32_t wver, swap_wver;		/* CPU writes counted; the version the red-blue swapped copy was made from */
+	struct pipe_resource *swap;		/* the texture with red and blue exchanged, for shaders that swizzle them (mbx_texture_swapped) */
 	struct pipe_resource *sp_twin;		/* the CPU fallback's view of it (mbx_fallback.c) */
 	bool sp_fresh;				/* a depth twin not yet cleared */
 	bool sp_dirty;				/* a sampled texture the CPU wrote since the twin was filled */
@@ -73,5 +75,7 @@ void mbx_resource_context_init(struct pipe_context *pctx);
 void mbx_flush_for_resource(struct mbx_context *ctx, struct mbx_resource *rsc);
 /* and wait for the job that wrote it, before the CPU reads or writes its memory */
 void mbx_resource_wait(struct mbx_screen *screen, struct mbx_resource *rsc);
+/* A copy of a linear B8G8R8A8 texture with red and blue exchanged (made again when the texture was written), or NULL */
+struct mbx_resource *mbx_texture_swapped(struct mbx_context *ctx, struct mbx_resource *rsc);
 
 #endif

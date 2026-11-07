@@ -593,6 +593,7 @@ bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *inf
 	if (!b.src.resource || !b.dst.resource)
 		return false;
 	dst->sp_dirty = false;		/* softpipe's copy is the newer one from here (read back below) */
+	dst->wver++;
 	sp->blit(sp, &b);
 	sp->flush(sp, NULL, 0);
 	if (!shared_dst) {
