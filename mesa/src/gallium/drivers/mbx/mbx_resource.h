@@ -24,6 +24,7 @@ struct mbx_resource {
 	struct mbx_bo *zbo;
 	unsigned zw, zh;
 	bool zvalid;
+	uint32_t damage;	/* the tiles the next jobs render (x0 | y0 << 8 | x1 << 16 | y1 << 24, exclusive ends), 0: all (set_damage_region, README assumption 50) */
 	struct pipe_resource *zs_twin;	/* a depth buffer with a stencil plane: softpipe's own (the chip has no stencil); its depth is copied from and to the Z memory around CPU draws */
 	uint64_t last_fence;	/* the last job that wrote it: the CPU waits for it before touching the memory */
 	struct renderonly_scanout *scanout;	/* the KMS device's buffer this is, when it is scanned out */

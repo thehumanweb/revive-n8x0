@@ -211,4 +211,22 @@ static inline void mbx_contract_prerender(const struct mbx_io *io, uint32_t regi
 	mbx_contract_prerender_or(io, regions_va, tx, ty, 0);
 }
 
+/*
+ * Only some tiles are rendered (README assumption 50): damage is x0 | y0 << 8 | x1 << 16 | y1 << 24 in tiles (x1, y1 exclusive), 0 for
+ * all. Every entry of the padded grid outside it gets bit 25, the no-list bit, after the TA: the chip skips it and the tile keeps its pixels.
+ */
+static inline void mbx_contract_prerender_damage(const struct mbx_io *io, uint32_t regions_va, uint32_t tx, uint32_t ty,
+						 uint32_t extra, uint32_t damage)
+{
+	uint32_t n = mbx_region_entries(tx, ty), k;
+
+	for (k = 0; k < n; k++) {
+		uint32_t w0 = io->rd32(io->opaque, regions_va + 8 * k) | 0x40000000 | extra, ex = w0 & 0xff, ey = w0 >> 8 & 0xff;
+
+		if (damage && (ex < (damage & 0xff) || ey < (damage >> 8 & 0xff) || ex >= (damage >> 16 & 0xff) || ey >= (damage >> 24 & 0xff)))
+			w0 |= 0x02000000;
+		io->wr32(io->opaque, regions_va + 8 * k, w0);
+	}
+}
+
 #endif

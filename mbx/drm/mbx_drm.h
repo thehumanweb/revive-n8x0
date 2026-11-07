@@ -128,7 +128,7 @@ struct drm_mbx_submit {
 	__u32 bg_colour;	/* MBX_SUBMIT_FLAT_BG: the clear colour in the target's texel format (RGB565: the low 16 bits) */
 	__u64 bos;		/* in: user pointer to struct drm_mbx_submit_bo[n_bos] */
 	__u32 n_bos;		/* at most 64 */
-	__u32 pad2;
+	__u32 damage;		/* the tiles that are rendered: x0 | y0 << 8 | x1 << 16 | y1 << 24 (x1, y1 exclusive); 0: all of them. Entries outside are dropped after the TA, so their pixels stay as they are (README assumption 50) */
 	__u64 fence;		/* out: the job's fence */
 };
 

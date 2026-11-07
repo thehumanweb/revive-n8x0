@@ -965,6 +965,35 @@ static int t_stencil_only(char *why)
 	return stencil_run(why, 0);
 }
 
+/* partial render (README assumption 50): with a damage rectangle only its tiles are rendered, the rest of the buffer keeps what it held
+ * (the driver's hook MBX_TEST_DAMAGE stands in for set_damage_region, which needs a window surface) */
+static void solid(float r, float g, float b)
+{
+	const float v[] = { -1, -1, r, g, b, 1,	1, -1, r, g, b, 1,	-1, 1, r, g, b, 1,	1, -1, r, g, b, 1,	1, 1, r, g, b, 1,	-1, 1, r, g, b, 1 };
+
+	draw(GL_TRIANGLES, v, 6);
+}
+
+static int t_damage(char *why)
+{
+	begin();
+	solid(1, 0, 0);				/* all red */
+	CHECK(32, 32, 255, 0, 0);
+	CHECK(4, 4, 255, 0, 0);
+	setenv("MBX_TEST_DAMAGE", "16,16,32,32", 1);
+	solid(0, 0, 1);				/* blue over all of it, but only the middle 2 x 2 tiles are rendered */
+	CHECK(32, 32, 0, 0, 255);
+	CHECK(20, 20, 0, 0, 255);
+	CHECK(4, 4, 255, 0, 0);
+	CHECK(4, 32, 255, 0, 0);
+	CHECK(32, 4, 255, 0, 0);
+	unsetenv("MBX_TEST_DAMAGE");
+	solid(0, 0, 1);				/* without it the whole thing */
+	CHECK(4, 4, 0, 0, 255);
+	CHECK(32, 4, 0, 0, 255);
+	return 1;
+}
+
 static int t_scissor_clear(char *why)
 {
 	begin();
@@ -1747,6 +1776,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },
+	{ "damage", t_damage },
 	{ "stencil", t_stencil },
 	{ "stencil_only", t_stencil_only },
 	{ "depth_cpu_cpu", t_depth_cpu_cpu },

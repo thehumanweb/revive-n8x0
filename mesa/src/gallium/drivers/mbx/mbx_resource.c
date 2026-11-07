@@ -6,6 +6,7 @@
  * takes no memory: the MBX keeps depth on chip for a render.
  */
 #include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <xf86drm.h>
@@ -467,8 +468,46 @@ static void mbx_blit(struct pipe_context *pctx, const struct pipe_blit_info *inf
 		mesa_loge("mbx: a blit that is not a plain copy (scaling, conversion, masks) could not be done");
 }
 
+/* The window system's damage for the next frame of a buffer (EGL_KHR_partial_update, eglSwapBuffersWithDamage): rects in pixels, origin bottom
+ * left. Tiles outside their bounding box are not rendered and keep what the buffer holds (README assumption 50). nrects 0 resets it. */
+static void mbx_set_damage_region(struct pipe_screen *pscreen, struct pipe_resource *prsc, unsigned int nrects,
+				  const struct pipe_box *rects)
+{
+	struct mbx_resource *rsc = mbx_resource(prsc);
+	int x0 = INT_MAX, y0 = INT_MAX, x1 = 0, y1 = 0, h = (int)prsc->height0, w = (int)prsc->width0;
+	unsigned tx = DIV_ROUND_UP(w, 16), ty = DIV_ROUND_UP(h, 16);
+
+	rsc->damage = 0;
+	if (!nrects || !rects || tx > 255 || ty > 255)
+		return;
+	for (unsigned i = 0; i < nrects; i++) {
+		int top = h - (rects[i].y + rects[i].height);	/* to the target's rows, top down */
+
+		if (rects[i].width <= 0 || rects[i].height <= 0)
+			continue;
+		x0 = MIN2(x0, rects[i].x);
+		y0 = MIN2(y0, top);
+		x1 = MAX2(x1, rects[i].x + rects[i].width);
+		y1 = MAX2(y1, top + rects[i].height);
+	}
+	if (x1 <= x0 || y1 <= y0) {	/* nothing damaged: one tile still goes through */
+		rsc->damage = 0 | 0 << 8 | 1 << 16 | 1u << 24;
+		return;
+	}
+	x0 = MAX2(x0, 0) / 16;
+	y0 = MAX2(y0, 0) / 16;
+	x1 = MIN2(DIV_ROUND_UP(x1, 16), (int)tx);
+	y1 = MIN2(DIV_ROUND_UP(y1, 16), (int)ty);
+	if (x0 <= 0 && y0 <= 0 && x1 >= (int)tx && y1 >= (int)ty)
+		return;			/* all of it */
+	if (x1 <= x0 || y1 <= y0)
+		return;
+	rsc->damage = (uint32_t)x0 | (uint32_t)y0 << 8 | (uint32_t)x1 << 16 | (uint32_t)y1 << 24;
+}
+
 void mbx_resource_screen_init(struct pipe_screen *pscreen)
 {
+	pscreen->set_damage_region = mbx_set_damage_region;
 	pscreen->resource_create = mbx_resource_create;
 	pscreen->resource_create_with_modifiers = mbx_resource_create_with_modifiers;
 	pscreen->resource_from_handle = mbx_resource_from_handle;

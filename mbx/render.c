@@ -1424,6 +1424,8 @@ static void tile(struct mbxemu *e, struct rctx *rc, uint32_t entry)
 	e->stats.tiles++;
 	if (x0 >= rc->w || y0 >= rc->h)
 		return;		/* padding past the screen */
+	if ((entry & 0x02000000) && !(entry & 0x80000000))
+		return;		/* no list: not rendered, the tile keeps its pixels (the entry that ends the array is rendered whatever its bits; README assumption 50) */
 	/* the background object: the target as a linear texture, texel for pixel */
 	for (j = 0; j < TILE; j++) {
 		uint8_t row[TILE * 4];

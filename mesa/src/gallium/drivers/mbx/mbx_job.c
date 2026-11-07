@@ -5,6 +5,7 @@
  * The TA's tile grid, region array, tail pointers and the background object
  * are per render-target size and kept between jobs.
  */
+#include <stdio.h>
 #include <string.h>
 #include <xf86drm.h>
 
@@ -200,6 +201,14 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.r_height = (uint32_t)(ctx->fb.height - 1) << 16;
 	s.r_addr = color->bo->va;
 	s.r_stride = color->stride / 4;		/* words */
+	s.damage = color->damage;
+	if (getenv("MBX_TEST_DAMAGE")) {	/* test hook: x,y,w,h in pixels (top down) of the only region rendered, as set_damage_region would say */
+		int dx, dy, dw, dh;
+
+		if (sscanf(getenv("MBX_TEST_DAMAGE"), "%d,%d,%d,%d", &dx, &dy, &dw, &dh) == 4)
+			s.damage = (uint32_t)(dx / 16) | (uint32_t)(dy / 16) << 8 | (uint32_t)DIV_ROUND_UP(dx + dw, 16) << 16 |
+				   (uint32_t)DIV_ROUND_UP(dy + dh, 16) << 24;
+	}
 	memcpy(&zclear, &z, 4);
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
 	/* a job that loads must load whether or not it tests depth (its clear object no longer writes depth: without the load the tile's

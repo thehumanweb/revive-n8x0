@@ -302,13 +302,30 @@ static void region_init_fn(void *priv, u32 off, u32 *w, u32 n)
 	}
 }
 
+struct bit30_arg {
+	u32 extra;
+	u32 damage;	/* packed tile rectangle (mbx_drm.h), 0: all */
+};
+
 static void or_bit30_fn(void *priv, u32 off, u32 *w, u32 n)
 {
+	const struct bit30_arg *a = priv;
 	u32 k;
 
-	for (k = 0; k < n; k++)
-		if (!((off / 4 + k) & 1))
-			w[k] |= 0x40000000 | (u32)(uintptr_t)priv;
+	for (k = 0; k < n; k++) {
+		if ((off / 4 + k) & 1)
+			continue;
+		w[k] |= 0x40000000 | a->extra;
+		if (a->damage) {
+			u32 tx = w[k] & 0xff, ty = w[k] >> 8 & 0xff;
+
+			/* a tile outside the damage is not rendered and keeps its pixels: bit 25 on an entry that has a list drops it
+			 * (measured, README assumption 50; the entry that ends the array is rendered whatever its bits) */
+			if (tx < (a->damage & 0xff) || ty < (a->damage >> 8 & 0xff) || tx >= (a->damage >> 16 & 0xff) ||
+			    ty >= (a->damage >> 24 & 0xff))
+				w[k] |= 0x02000000;
+		}
+	}
 }
 
 static void zero_fn(void *priv, u32 off, u32 *w, u32 n)
@@ -351,5 +368,7 @@ int mbx_job_prepare_buffers(struct mbx_vm *vm, const struct drm_mbx_submit *a)
 /* Bit 30 on every region entry: after the TA, before the render */
 int mbx_job_region_bit30(struct mbx_vm *vm, const struct drm_mbx_submit *a, u32 extra)
 {
-	return mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), or_bit30_fn, (void *)(uintptr_t)extra);
+	struct bit30_arg arg = { .extra = extra, .damage = a->damage };
+
+	return mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), or_bit30_fn, &arg);
 }

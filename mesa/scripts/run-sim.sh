@@ -8,5 +8,5 @@ cd "$(dirname "$0")/../.."
 L=/work/build/mesa-host-install/lib/x86_64-linux-gnu
 exec docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work -w /work \
 	-e LD_LIBRARY_PATH=$L -e LD_PRELOAD=$L/libmbx_sim_drm_shim.so \
-	-e EGL_LOG_LEVEL -e MBX_NO_ZCARRY -e MBX_DEBUG -e MBX_NIR -e MBX_SIM_TRACE -e MESA_DEBUG -e DRM_SHIM_DEBUG -e MESA_LOADER_DRIVER_OVERRIDE \
+	-e EGL_LOG_LEVEL -e MBX_TEST_DAMAGE -e MBX_NO_ZCARRY -e MBX_DEBUG -e MBX_NIR -e MBX_SIM_TRACE -e MESA_DEBUG -e DRM_SHIM_DEBUG -e MESA_LOADER_DRIVER_OVERRIDE \
 	${SIM_IMAGE:-n810-mesa:1} "$@"

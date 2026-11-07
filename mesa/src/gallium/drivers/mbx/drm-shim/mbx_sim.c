@@ -474,7 +474,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 		uint32_t tx = (a->ta_config >> 20 & 0x3ff) + 1, ty = (a->ta_config >> 10 & 0x3ff) + 1;
 
 		mbx_contract_render_regs(&SIM_IO, tx, ty);
-		mbx_contract_prerender_or(&SIM_IO, a->ta_regions, tx, ty, a->flags & MBX_SUBMIT_ZLOAD ? 0x20000000 : 0);	/* bit 30 on every region entry */
+		mbx_contract_prerender_damage(&SIM_IO, a->ta_regions, tx, ty, a->flags & MBX_SUBMIT_ZLOAD ? 0x20000000 : 0, a->damage);	/* bit 30 on every region entry */
 	}
 	rw(R_6DC, a->r_6dc);
 	rw(R_HW_CONTEXT, a->ta_context);
