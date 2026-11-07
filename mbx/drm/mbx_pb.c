@@ -212,6 +212,9 @@ void mbx_ctx_load(struct mbx_device *m)
 	/* as the stock daemon does: clear TA_CONTEXT, store, poll for it up to 50 ms, clear it again */
 	mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_TA_CONTEXT);
 	mbx_write(m, MBX_REG_TA_STORE, 1);
+	/* the store is done in a few microseconds: look for it before sleeping (a sleep costs 100 us and its wake-up) */
+	for (i = 0; i < 100 && !(mbx_read(m, MBX_REG_INT_STATUS) & MBX_INT_TA_CONTEXT); i++)
+		udelay(3);
 	for (i = 0; i < 500; i++) {
 		if (mbx_read(m, MBX_REG_INT_STATUS) & MBX_INT_TA_CONTEXT)
 			break;
@@ -371,10 +374,10 @@ int mbx_job_prepare_buffers(struct mbx_vm *vm, const struct drm_mbx_submit *a)
 	r.nx = DIV_ROUND_UP(r.tx, r.mx);
 	r.macro_last = ~0u;
 	r.shift = __ffs(r.mx * r.my);
-	ret = mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), region_init_fn, &r);
+	ret = mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), false, region_init_fn, &r);
 	if (ret)
 		return ret;
-	return mbx_vm_cpu(vm, a->ta_tails, tails_zero, zero_fn, NULL);
+	return mbx_vm_cpu(vm, a->ta_tails, tails_zero, false, zero_fn, NULL);
 }
 
 /* Bit 30 on every region entry: after the TA, before the render */
@@ -382,5 +385,5 @@ int mbx_job_region_bit30(struct mbx_vm *vm, const struct drm_mbx_submit *a, u32 
 {
 	struct bit30_arg arg = { .extra = extra, .damage = a->damage };
 
-	return mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), or_bit30_fn, &arg);
+	return mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), true, or_bit30_fn, &arg);
 }

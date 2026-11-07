@@ -262,6 +262,8 @@ static int mbx_job_run(struct mbx_job *job)
 		/* the stock services' reset_context: 0x810 = the context id, 0x81c = 1, wait for TA_CONTEXT, clear it */
 		mbx_write(m, MBX_REG_INT_CLEAR, MBX_INT_TA_CONTEXT);
 		mbx_write(m, MBX_REG_TA_RESET, 1);
+		for (i = 0; i < 100 && !(mbx_read(m, MBX_REG_INT_STATUS) & MBX_INT_TA_CONTEXT); i++)
+			udelay(3);	/* a few microseconds: look before sleeping */
 		for (i = 0; i < 500; i++) {
 			if (mbx_read(m, MBX_REG_INT_STATUS) & MBX_INT_TA_CONTEXT)
 				break;

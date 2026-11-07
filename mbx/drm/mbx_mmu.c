@@ -299,7 +299,30 @@ u32 mbx_vm_room(struct mbx_vm *vm, u32 va)
 	return room;
 }
 
-int mbx_vm_cpu(struct mbx_vm *vm, u32 va, u32 len, void (*fn)(void *priv, u32 off, u32 *w, u32 n), void *priv)
+/* Cache maintenance for the bytes [off, off + len) of a buffer, not the whole of it */
+static void mbx_sync_range(struct device *dev, struct sg_table *sgt, size_t off, size_t len, bool to_cpu)
+{
+	struct scatterlist *sg;
+	size_t pos = 0;
+	unsigned int i;
+
+	for_each_sgtable_dma_sg(sgt, sg, i) {
+		size_t seg = sg_dma_len(sg);
+
+		if (off < pos + seg && off + len > pos) {
+			size_t s = max(off, pos) - pos, e = min(off + len, pos + seg) - pos;
+
+			if (to_cpu)
+				dma_sync_single_range_for_cpu(dev, sg_dma_address(sg), s, e - s, DMA_BIDIRECTIONAL);
+			else
+				dma_sync_single_range_for_device(dev, sg_dma_address(sg), s, e - s, DMA_BIDIRECTIONAL);
+		}
+		pos += seg;
+	}
+}
+
+/* fn works on the words of [va, va + len): with read set it sees what the chip wrote (cache lines invalidated first); without, the range is only written */
+int mbx_vm_cpu(struct mbx_vm *vm, u32 va, u32 len, bool read, void (*fn)(void *priv, u32 off, u32 *w, u32 n), void *priv)
 {
 	struct mbx_device *m = vm->m;
 	struct mbx_mapping *map;
@@ -322,7 +345,8 @@ int mbx_vm_cpu(struct mbx_vm *vm, u32 va, u32 len, void (*fn)(void *priv, u32 of
 		ret = PTR_ERR(sgt);
 		goto out;
 	}
-	dma_sync_sgtable_for_cpu(m->dev, sgt, DMA_BIDIRECTIONAL);
+	if (read)
+		mbx_sync_range(m->dev, sgt, va - map->node.start, len, true);
 	while (done < len) {
 		u32 pos = va - map->node.start + done, in_page = pos & (PAGE_SIZE - 1);
 		u32 n = min_t(u32, len - done, PAGE_SIZE - in_page);
@@ -332,7 +356,7 @@ int mbx_vm_cpu(struct mbx_vm *vm, u32 va, u32 len, void (*fn)(void *priv, u32 of
 		kunmap_local(p);
 		done += n;
 	}
-	dma_sync_sgtable_for_device(m->dev, sgt, DMA_BIDIRECTIONAL);
+	mbx_sync_range(m->dev, sgt, va - map->node.start, len, false);
 out:
 	mutex_unlock(&vm->lock);
 	return ret;

@@ -136,7 +136,7 @@ struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj, u3
 /* bytes from device address va to the end of the buffer mapped there: 0 if none */
 u32 mbx_vm_room(struct mbx_vm *vm, u32 va);
 /* the CPU's access to len bytes at va in a buffer of the space, in runs of whole words */
-int mbx_vm_cpu(struct mbx_vm *vm, u32 va, u32 len, void (*fn)(void *priv, u32 off, u32 *w, u32 n), void *priv);
+int mbx_vm_cpu(struct mbx_vm *vm, u32 va, u32 len, bool read, void (*fn)(void *priv, u32 off, u32 *w, u32 n), void *priv);
 int mbx_vm_unmap(struct mbx_vm *vm, struct drm_gem_object *obj);
 void mbx_vm_activate(struct mbx_vm *vm);	/* with job_lock held */
 int mbx_pb_create(struct mbx_device *m);
