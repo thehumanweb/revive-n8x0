@@ -1,0 +1,61 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] drm/omap: rfbi: do not idle the CPU while a display update is in flight
+
+With the CPU idling (WFI in the OMAP2 idle path, with or without full-chip retention) a manual update armed on the tearing effect stalls
+until a timer tick or the 250 ms timeout wakes the CPU: about a third of the updates took 3 ms plus a multiple of 10 ms, up to 250 ms,
+with the software stages at about 100 microseconds each (a small rectangle's flip: 80-95 ms on average against 4-25 ms; a whole frame:
+200-225 ms against 75 ms). A busy CPU gave exactly the panel's refresh period (25 ms at 40 Hz). The idle loop now polls from the arming
+of RFBI to FRAMEDONE or its timeout (cpu_idle_poll_ctrl()); omapdrm.idle_poll=0 turns it off, at the price of the old latency, for power.
+
+---
+--- a/drivers/gpu/drm/omapdrm/dss/rfbi.c
++++ b/drivers/gpu/drm/omapdrm/dss/rfbi.c
+@@ -17,6 +17,7 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/component.h>
++#include <linux/cpu.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+ #include <linux/math64.h>
+@@ -72,6 +73,7 @@
+ 	/* held over a client's bus access and over a whole update */
+ 	struct semaphore bus_sem;
+ 	struct delayed_work framedone_timeout_work;
++	bool idle_polling;		/* cpu_idle_poll_ctrl(true) is held for the update in flight */
+ 
+ 	struct videomode vm;
+ 	struct dss_lcd_mgr_config mgr_config;
+@@ -314,8 +316,21 @@
+  * Manual update
+  */
+ 
++/*
++ * While an update is in flight the CPU does not idle: with the CPU in WFI the transfer stalls until a timer tick wakes it (about a third
++ * of the updates took 3 ms plus a multiple of 10 ms, up to the 250 ms of the timeout, with the software stages at 100 microseconds; a busy
++ * CPU gave exactly the panel's refresh period). The idle loop polls from the arming of RFBI to FRAMEDONE (or its timeout).
++ */
++static bool idle_poll = true;
++module_param(idle_poll, bool, 0644);
++MODULE_PARM_DESC(idle_poll, "poll instead of idling the CPU while a display update is in flight (power for latency)");
++
+ static void rfbi_update_done(struct rfbi_device *rfbi)
+ {
++	if (rfbi->idle_polling) {
++		rfbi->idle_polling = false;
++		cpu_idle_poll_ctrl(false);
++	}
+ 	u32 l = rfbi_read_reg(rfbi, RFBI_CONTROL);
+ 
+ 	rfbi_write_reg(rfbi, RFBI_CONTROL, l & ~RFBI_CONTROL_ENABLE);
+@@ -402,6 +417,10 @@
+ 	if (!rfbi->te)
+ 		l |= RFBI_CONTROL_ITE;
+ 	rfbi_write_reg(rfbi, RFBI_CONTROL, l);
++	if (idle_poll && !rfbi->idle_polling) {
++		rfbi->idle_polling = true;
++		cpu_idle_poll_ctrl(true);
++	}
+ 	dss_mgr_start_update(&rfbi->output);
+ 
+ 	return 0;

@@ -1,0 +1,53 @@
+# TODO
+
+Open work, newest first. Each item says what is known and what the next step is. Facts cite JOURNEY.md and mbx/README.md assumption numbers.
+
+## Display updates: replace the idle poll with a power-friendly design
+
+**Where it stands.** A manual (RFBI) display update stalls when the CPU idles between arming RFBI on the tearing-effect trigger and the
+FRAMEDONE interrupt: about a third of the updates took 3 ms plus a multiple of 10 ms, up to the 250 ms timeout, with every software stage
+at about 100 microseconds (a ring-buffer trace; printk hides it). Kernel patch 0066 (`omapdrm.idle_poll`, default on) makes the idle loop
+poll from arming to FRAMEDONE: a small partial update then takes 23-25 ms (40 fps) instead of 96 ms, a whole frame 75 ms instead of
+205-225 ms. It works but burns CPU for the whole update, including the wait for the tearing-effect pulse (up to a refresh period).
+Not yet measured: what that costs in CPU busy time and power.
+
+**What is known about the cause.**
+- Not full-chip retention (`sleep_while_idle=0` changes nothing): the plain idle WFI is enough to stall it.
+- On the unit (PRCM at 0x48008000, readable with `devmem`): `PM_WKEN1_CORE` (0x480082a0) = 0x04667FF8 has bit 0, the display wake event,
+  clear; `PM_WKDEP_MPU` (0x480081c8) = 0x14 has EN_CORE clear. Setting either alone changed nothing; both together helped (65 ms a
+  frame, 10 of 40 flips slow instead of 15-17) but did not fix it. A missing wake path is part of the cause, not all of it.
+- The FRAMEDONE interrupt does arrive (trace); the open question is whether the transfer itself waits or only the delivery.
+
+**Design (proper and power saving).**
+1. Hold the dependency, not the CPU: keep the clock domain and wake path the transfer needs awake while an update is in flight and
+   let the CPU WFI. Find the missing piece by diffing `CM_CLKSTCTRL_*` and the idle status registers during a stalled update and a
+   healthy one; then use `clkdm` wake/hold calls over the update window (rfbi arm to FRAMEDONE or timeout).
+2. Fallback if no hold works: an hrtimer-bounded poll that covers only the transfer, not the tearing-effect wait (the TE time is
+   predictable from the panel timing: wake just before it, poll through the transfer).
+3. Send less, less often: partial renders and the damage report (done), render and flip nothing when nothing changed, coalesce a
+   stale frame behind one in flight, start small rectangles right behind the scan (Nokia's `enable_tearsync()`), half-size mode.
+4. One wakeup per update: the 250 ms timeout stays a one-shot cancelled by the interrupt; queue flip N+1 before the event for N
+   (userspace pipelining) so the interrupt releases the next update directly (`gbm_damage -P` to measure it, not written yet).
+5. Let full-chip retention work between updates (nothing in flight, `sleep_while_idle`).
+
+**Next steps, in order.**
+1. Quantify the stopgap: CPU busy time from `/proc/stat` during `gbm_damage`, with and without `omapdrm.idle_poll`.
+2. Diff the clock-domain registers (stalled vs healthy update) to name the missing dependency.
+3. Replace the poll with the hold if it works; otherwise the hrtimer-bounded poll.
+4. Re-run `gbm_damage -D 0/1 -n 40 -l` for the flip distribution (target: no flip over 100 ms, CPU asleep during the wait).
+
+Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` checks the last frame), `kernel/debug/omapdrm-trace-updates.patch`
+(ring trace, `omapdrm.trace_updates` 1 records, 2 prints; apply on top of the series; build incrementally, do not re-run
+`prepare-6.18.sh`), `devmem` on the unit.
+
+## Other open items
+
+- Fast stencil on the chip with the depth tricks the stock stack uses (clip masks as depth-ALWAYS quads, each-pixel-once as a depth test),
+  with the external Z load and store (README assumption 7); stencil works on the CPU only (assumption 49).
+- Depth does not carry between chip and CPU draws in a framebuffer with stencil (a depth copy corrupted the stencil plane).
+- The per-point size word inside one list draw (untested; one object per point today).
+- PVRTC textures, the 2D core for blits and `glGenerateMipmap`, constant-colour blend (no factor code on the chip).
+- A frame-diff fallback (`mbx_frame_damage`) for apps that give no damage.
+- A real dma-fence on the imported scanout buffer so omapdrm waits on the MBX job instead of Mesa blocking (scheduling and CPU use only).
+- Frames rendered and not flipped rely on omapdrm's running damage union (patch 0065); half-size mode with renderer damage is untried.
+- The kernel partition has about 13 KB free (the loader kernel is 2 MB): the next kernel patch may need something trimmed.

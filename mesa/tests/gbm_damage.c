@@ -3,7 +3,7 @@
  * Partial updates end to end: EGL on GBM on the KMS device (omapdrm), a 64 x 64 square moving over a static background, page flips with
  * no damage clips of their own.
  *
- *   gbm_damage [-d /dev/dri/card0] [-n frames] [-D 0|1] [-s pixels a frame] [-v]
+ *   gbm_damage [-d /dev/dri/card0] [-n frames] [-D 0|1] [-s pixels a frame] [-z square size] [-l log each flip] [-v]
  *
  * -D 0 redraws the whole frame every time (damage unknown: the whole frame goes to the panel). -D 1 asks for the buffer's age
  * (EGL_EXT_buffer_age), says what changed since then with eglSetDamageRegionKHR and draws only there (EGL_KHR_partial_update): the MBX
@@ -24,7 +24,7 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#define SQ 64
+static int SQ = 64;
 
 static const char *vs_src =
 	"attribute vec2 a_pos;\n"
@@ -112,14 +112,16 @@ static int sq_x(int frame, int step, int w)
 int main(int argc, char **argv)
 {
 	const char *dev = "/dev/dri/card0";
-	int frames = 120, o, fd, i, partial = 1, step = 8, verify = 0;
+	int frames = 120, o, fd, i, partial = 1, step = 8, verify = 0, logflips = 0;
 
-	while ((o = getopt(argc, argv, "d:n:D:s:v")) != -1) {
+	while ((o = getopt(argc, argv, "d:n:D:s:z:vl")) != -1) {
 		if (o == 'd') dev = optarg;
 		else if (o == 'n') frames = atoi(optarg);
 		else if (o == 'D') partial = atoi(optarg);
 		else if (o == 's') step = atoi(optarg);
+		else if (o == 'z') SQ = atoi(optarg);
 		else if (o == 'v') verify = 1;
+		else if (o == 'l') logflips = 1;
 		else return 2;
 	}
 	if ((fd = open(dev, O_RDWR | O_CLOEXEC)) < 0) {
@@ -216,7 +218,7 @@ int main(int argc, char **argv)
 	drmEventContext evctx = { .version = 2, .page_flip_handler = page_flip_handler };
 	struct gbm_bo *prev = NULL;
 	double t0 = 0;
-	int frame, last_x = 0, setcrtc_fallbacks = 0;
+	int frame, last_x = 0, setcrtc_fallbacks = 0, last_age = 0;
 	double t_render = 0, t_swap = 0, t_flip = 0, tt;
 
 	for (frame = 0; frame < frames; frame++) {
@@ -226,6 +228,7 @@ int main(int argc, char **argv)
 		last_x = x;
 		if (partial) {
 			eglQuerySurface(dpy, esurf, EGL_BUFFER_AGE_EXT, &age);
+			last_age = age;
 			if (age > 0 && age <= 8 && frame >= age) {
 				/* the buffer holds the frame age frames ago: what differs is the square then and now */
 				int ox = sq_x(frame - age, step, W);
@@ -310,6 +313,8 @@ int main(int argc, char **argv)
 			}
 			if (frame >= 10)
 				t_flip += now() - tt;
+			if (logflips)
+				fprintf(stderr, "flip %d fb %u: %.1f ms (age %d)\n", frame, fb->id, (now() - tt) * 1000, last_age);
 			gbm_surface_release_buffer(surf, prev);
 		}
 		prev = bo;

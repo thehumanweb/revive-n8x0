@@ -1,0 +1,179 @@
+From: Carsten Munk <carsten.munk@gmail.com>
+Subject: [PATCH] drm/omap: record the time of each stage of a manual display update (debug, not in the series)
+
+omapdrm.trace_updates=1 records the time of crtc_flush, update_work, rfbi_send, rfbi_bus_got, rfbi_prepared, rfbi_armed_te, framedone_irq,
+rfbi_framedone, complete_update and the commit's wait for the previous update in a ring in memory (printk changes the timing it measures
+and hid the stall); =2 prints the record to the kernel log and starts a new one. Apply on top of the series (written against 0065).
+
+---
+--- a/drivers/gpu/drm/omapdrm/omap_crtc.c
++++ b/drivers/gpu/drm/omapdrm/omap_crtc.c
+@@ -88,6 +88,52 @@
+ 
+ 	return pending;
+ }
++
++int omap_trace_updates;
++
++#define TRACE_N 4096
++static struct { u64 us; const char *tag; } trace_ring[TRACE_N];
++static unsigned int trace_pos;
++static DEFINE_SPINLOCK(trace_lock);
++
++void omap_trace_add(const char *tag)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&trace_lock, flags);
++	if (trace_pos < TRACE_N) {
++		trace_ring[trace_pos].us = ktime_to_us(ktime_get());
++		trace_ring[trace_pos].tag = tag;
++		trace_pos++;
++	}
++	spin_unlock_irqrestore(&trace_lock, flags);
++}
++
++static int trace_updates_set(const char *val, const struct kernel_param *kp)
++{
++	int v, r = kstrtoint(val, 0, &v);
++	unsigned int i;
++
++	if (r)
++		return r;
++	if (v == 2) {
++		omap_trace_updates = 0;
++		for (i = 0; i < trace_pos; i++)
++			pr_info("omapdrm trace: %llu %s\n", trace_ring[i].us, trace_ring[i].tag);
++		trace_pos = 0;
++		return 0;
++	}
++	trace_pos = 0;
++	omap_trace_updates = v;
++	return 0;
++}
++
++static const struct kernel_param_ops trace_updates_ops = {
++	.set = trace_updates_set,
++	.get = param_get_int,
++};
++module_param_cb(trace_updates, &trace_updates_ops, &omap_trace_updates, 0644);
++MODULE_PARM_DESC(trace_updates, "1: record the time of each stage of a manual display update; 2: print the record");
+ 
+ int omap_crtc_wait_pending(struct drm_crtc *crtc)
+ {
+@@ -376,6 +422,8 @@
+ 	struct omap_crtc *omap_crtc = to_omap_crtc(crtc);
+ 	unsigned long flags;
+ 
++	OMAP_TRACE("complete_update");
++
+ 	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+ 	/* Send the vblank event if one has been requested. */
+ 	if (omap_crtc->event) {
+@@ -396,6 +444,7 @@
+ 	if (!omap_crtc->framedone_handler)
+ 		return;
+ 
++	OMAP_TRACE("framedone_irq");
+ 	omap_crtc->framedone_handler(omap_crtc->framedone_handler_data);
+ 	omap_crtc_complete_update(crtc);
+ }
+@@ -427,6 +476,7 @@
+ 	if (!omap_state->manually_updated)
+ 		return;
+ 
++	OMAP_TRACE("crtc_flush");
+ 	if (!delayed_work_pending(&omap_crtc->update_work))
+ 		schedule_delayed_work(&omap_crtc->update_work, 0);
+ }
+@@ -440,6 +490,7 @@
+ 
+ 	if (!dssdev || !dssdev->dsi_ops || !dssdev->dsi_ops->update)
+ 		return;
++	OMAP_TRACE("update_work");
+ 
+ 	/*
+ 	 * With no plane enabled (a client's framebuffer removed while shown)
+--- a/drivers/gpu/drm/omapdrm/omap_drv.c
++++ b/drivers/gpu/drm/omapdrm/omap_drv.c
+@@ -56,7 +56,9 @@
+ 		if (!new_crtc_state->active)
+ 			continue;
+ 
++		OMAP_TRACE("wait_pending");
+ 		ret = omap_crtc_wait_pending(crtc);
++		OMAP_TRACE("waited_pending");
+ 
+ 		if (!ret)
+ 			dev_warn(dev->dev,
+--- a/drivers/gpu/drm/omapdrm/omap_drv.h
++++ b/drivers/gpu/drm/omapdrm/omap_drv.h
+@@ -54,6 +54,12 @@
+ 	/* global atomic state of assignment between overlays and planes */
+ 	struct drm_plane *hwoverlay_to_plane[8];
+ };
++
++/* Timing of manual updates (omapdrm.trace_updates=1 records, =2 prints the record and starts a new one): a ring in memory, not printk, which
++ * changes the timing it measures */
++extern int omap_trace_updates;
++void omap_trace_add(const char *tag);
++#define OMAP_TRACE(tag) do { if (omap_trace_updates == 1) omap_trace_add(tag); } while (0)
+ 
+ struct omap_drm_private {
+ 	struct drm_device *ddev;
+--- a/drivers/gpu/drm/omapdrm/dss/rfbi.c
++++ b/drivers/gpu/drm/omapdrm/dss/rfbi.c
+@@ -33,6 +33,11 @@
+ 
+ #include "omapdss.h"
+ #include "dss.h"
++
++/* omapdrm.trace_updates (omap_crtc.c) */
++extern int omap_trace_updates;
++void omap_trace_add(const char *tag);
++#define OMAP_TRACE(tag) do { if (omap_trace_updates == 1) omap_trace_add(tag); } while (0)
+ 
+ #define RFBI_REVISION		0x0000
+ #define RFBI_SYSCONFIG		0x0010
+@@ -316,6 +321,7 @@
+ 
+ static void rfbi_update_done(struct rfbi_device *rfbi)
+ {
++
+ 	u32 l = rfbi_read_reg(rfbi, RFBI_CONTROL);
+ 
+ 	rfbi_write_reg(rfbi, RFBI_CONTROL, l & ~RFBI_CONTROL_ENABLE);
+@@ -329,6 +335,7 @@
+ {
+ 	struct rfbi_device *rfbi = data;
+ 
++	OMAP_TRACE("rfbi_framedone");
+ 	if (cancel_delayed_work(&rfbi->framedone_timeout_work))
+ 		rfbi_update_done(rfbi);
+ }
+@@ -359,7 +366,9 @@
+ 	u32 l;
+ 	int r;
+ 
++	OMAP_TRACE("rfbi_send");
+ 	down(&rfbi->bus_sem);
++	OMAP_TRACE("rfbi_bus_got");
+ 
+ 	if (!rfbi->enabled || !w || !h || x + w > frame_w || y + h > frame_h) {
+ 		r = -EIO;
+@@ -385,6 +394,7 @@
+ 	 */
+ 	dispc_disable_sidle(rfbi->dss->dispc);
+ 
++	OMAP_TRACE("rfbi_prepared");
+ 	rfbi_set_bits_per_cycle(rfbi, 16);
+ 	rfbi_write_reg(rfbi, RFBI_PIXEL_CNT, w * h);
+ 
+@@ -402,6 +412,7 @@
+ 	if (!rfbi->te)
+ 		l |= RFBI_CONTROL_ITE;
+ 	rfbi_write_reg(rfbi, RFBI_CONTROL, l);
++	OMAP_TRACE(rfbi->te ? "rfbi_armed_te" : "rfbi_armed_internal");
+ 	dss_mgr_start_update(&rfbi->output);
+ 
+ 	return 0;
