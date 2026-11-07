@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 /* The CPU fallback (mbx_fallback.h): softpipe drawing into the MBX buffers' memory */
+#include <poll.h>
 #include "compiler/nir/nir.h"
 #include "frontend/sw_winsys.h"
 #include "softpipe/sp_public.h"
@@ -181,6 +182,15 @@ static struct pipe_resource *twin_texture(struct mbx_context *ctx, struct mbx_re
 		t.next = NULL;
 		t.screen = sps;
 		rsc->sp_twin = sps->resource_create(sps, &t);
+		rsc->sp_dirty = true;
+	}
+	if (rsc->imported) {
+		/* another process renders into it: wait for its jobs (the dma-buf signals when the writers are done), and read it again */
+		if (rsc->dmabuf_fd > 0) {
+			struct pollfd pfd = { .fd = rsc->dmabuf_fd, .events = POLLIN };
+
+			poll(&pfd, 1, 1000);
+		}
 		rsc->sp_dirty = true;
 	}
 	if (!rsc->sp_twin || !rsc->sp_dirty)

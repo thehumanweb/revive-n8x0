@@ -33,6 +33,7 @@ struct mbx_resource {
 	bool tex;
 	bool cube;				/* six linear faces per level, sampled by the CPU fallback only (level_off: the level, 6 faces) */
 	bool twiddled;				/* the levels are one chain, each in the chip's twiddled order (power-of-two textures with mipmaps) */
+	int dmabuf_fd;				/* an imported buffer: a dup of its dma-buf, for waiting on its writers */
 	bool imported;				/* a buffer another process or device made (dmabuf import): written behind our back, so no copies of it are kept */
 	bool bind_rt;				/* made with a render target bind (softpipe then shares its memory) */
 	uint32_t wver, swap_wver;		/* CPU writes counted; the version the red-blue swapped copy was made from */

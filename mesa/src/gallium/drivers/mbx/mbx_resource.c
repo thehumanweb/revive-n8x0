@@ -201,6 +201,7 @@ static struct pipe_resource *mbx_resource_from_handle(struct pipe_screen *pscree
 	rsc->stride = handle->stride;
 	rsc->size = (uint32_t)rsc->bo->size;
 	rsc->imported = true;
+	rsc->dmabuf_fd = fcntl((int)handle->handle, F_DUPFD_CLOEXEC, 3);	/* to wait for its writer's fence before the CPU reads it */
 	/*
 	 * A buffer another process rendered (a Wayland client's, through a dmabuf) is sampled as a linear texture with the
 	 * stride it came with: the same layout a texture of ours has (rows in 16-texel units, the sampled width the next
@@ -274,6 +275,8 @@ static void mbx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resour
 		renderonly_scanout_destroy(rsc->scanout, mbx_screen(pscreen)->ro);
 	mbx_fallback_resource_destroy(rsc);
 	pipe_resource_reference(&rsc->swap, NULL);
+	if (rsc->dmabuf_fd > 0)
+		close(rsc->dmabuf_fd);
 	mbx_bo_unref(rsc->zbo);
 	mbx_bo_unref(rsc->bo);
 	FREE(rsc);

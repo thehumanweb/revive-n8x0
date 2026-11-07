@@ -1227,7 +1227,7 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 			nir_tex_instr *t = nir_instr_as_tex(instr);
 
 			/* a plain 2D sample of unit 0 or unit 1 (the chip has two), once each */
-			if (t->op != nir_texop_tex || t->sampler_dim != GLSL_SAMPLER_DIM_2D || t->is_array || t->is_shadow ||
+			if (t->op != nir_texop_tex || (t->sampler_dim != GLSL_SAMPLER_DIM_2D && t->sampler_dim != GLSL_SAMPLER_DIM_EXTERNAL) || t->is_array || t->is_shadow ||
 			    t->texture_index >= MBX_MAX_TEX || p.tex[t->texture_index] ||
 			    nir_tex_instr_src_index(t, nir_tex_src_coord) < 0)
 				return;
