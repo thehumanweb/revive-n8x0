@@ -143,6 +143,14 @@ circuit.
    bit 0 and 0x85c bit 3), observed. Layout: one float a pixel with the
    low bit set, rows of `((0x610 >> 8 & 0xff) + 1) * 16` pixels, at
    `0x674 & ~0xff`.
+   Measured on the unit with `mbxtri-drm -q file -k fill -C ctl [-g ta_bits] [-K 0xf80]` (a 64 x 64 scene, the buffer at `0x674`): **`0x610`
+   bit 1 stores** the tile depth after the render (ctl `0x302` and `0x303` wrote 2952 pixels of 1.0 and 1144 of the triangle's
+   0.75, `0x3f400001`, with the clear object in the scene), without `0x85c` bit 3 and with the stride field 3; ctl `0x300` and `0x301` stored
+   nothing. **A load was not seen** with any of `0x300`-`0x303`, `0x306`, `0x30a`, `0x312`, `0x322`, `0x342`, `0x382`, `0x3fe`,
+   `0x1302`-`0x8302` (and `-g 8`): with the clear object's depth write off (`-K 0xf80`) and the buffer prefilled with 1.0 the triangle drew
+   nothing and the buffer came back as zeros, so the tile's depth started at 0 and the buffer was not read. The model's rule above (load
+   on bit 1, store on bit 0 with a partial render) does not match the unit's store; the model was not changed. With the clear object
+   in the scene a loaded depth would be overwritten anyway, so the clear object must not write depth for a carry-over scene.
 8. **MMU off**: device addresses are physical. (The stack always runs with
    it on; texture words can't hold a physical SDRAM address anyway.) The TLB
    is loaded from the page tables on first use and refreshed by 0x1020 bit

@@ -100,6 +100,10 @@ int main(int argc, char **argv)
 	uint32_t tex_a_or = 0;	/* -L: bits ORed into texture word A */
 	uint32_t tex2_b_bits = 0, flat_colour = 0;
 	int flat_bg = 0;	/* -f colour: the background pass paints this ARGB8888 colour (MBX_SUBMIT_FLAT_BG) */
+	const char *zfile = NULL;
+	uint32_t zfill = 0xdeadbee1;
+	uint32_t ta_extra = 0;
+	struct bo zb = { 0 };
 	int maxlev = -1;	/* -m: word A bits 9-12 (default: the chain's last level) */
 	int mip_lw = 0;	/* -U: a twiddled mipmapped 2^n square texture */
 	char *endp;
@@ -118,7 +122,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:j:T:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:j:q:g:k:T:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -144,6 +148,9 @@ int main(int argc, char **argv)
 		else if (o == 'T') tails_bytes = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'A') tri_alpha_word = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'j') sscanf(optarg, "%u,%u,%u", &tri_va[0], &tri_va[1], &tri_va[2]);
+		else if (o == 'k') zfill = (uint32_t)strtoul(optarg, NULL, 0);	/* -k word: what the external Z buffer holds before the job */
+		else if (o == 'q') zfile = optarg;	/* -q file: an external Z buffer (0x674), dumped to file after the job */
+		else if (o == 'g') ta_extra = (uint32_t)strtoul(optarg, NULL, 0);	/* -g bits: ORed into the TA config (0x85c) */
 		else if (o == 'B') tri_clear_alpha = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'K') tri_clear_state = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'Z') dbl = 1;	/* -Z: a target twice the size, both halves filled: the background texture can come from the second half (driver bg_shift 16384) */
@@ -203,6 +210,17 @@ int main(int argc, char **argv)
 		px[i] = gradient ? 0xff000000u | (uint32_t)i : fill;	/* -G: every pixel its own value */
 	stream = calloc(128, 4);
 
+	if (zfile) {
+		uint32_t *zp;
+
+		if (bo_new(fd, &zb, TRI_W * TRI_H * 4, 1, 0)) {
+			fprintf(stderr, "mbxtri-drm: z buffer\n");
+			return 1;
+		}
+		zp = zb.map;
+		for (i = 0; i < TRI_W * TRI_H; i++)
+			zp[i] = zfill;	/* a marker no depth is, unless -k says what to load */
+	}
 	memset(&s, 0, sizeof(s));
 	tri_with_clear = xmode != 2;
 	tri_with_triangle = xmode != 1;
@@ -213,7 +231,9 @@ int main(int argc, char **argv)
 		s.stream_words = 2;
 	}
 	s.stream = (uintptr_t)stream;
-	s.ta_config = 0x80 | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10;
+	s.ta_config = 0x80 | (uint32_t)(TRI_W / 16 - 1) << 20 | (uint32_t)(TRI_H / 16 - 1) << 10 | ta_extra;
+	if (zfile)
+		s.r_zbuf = zb.va;
 	s.ta_width = (uint32_t)TRI_W << 16;
 	s.ta_height = (uint32_t)TRI_H << 16;
 	s.ta_regions = regions.va;
@@ -247,6 +267,10 @@ int main(int argc, char **argv)
 				return 1;
 			/* -D: look at what the TA left even though the render did not finish */
 		}
+	}
+	if (zfile && zb.map && (f = fopen(zfile, "wb"))) {
+		fwrite(zb.map, 1, TRI_W * TRI_H * 4, f);
+		fclose(f);
 	}
 	if (regprefix)
 		reg_dump(fd, regprefix, "after");
