@@ -1204,7 +1204,7 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 
 	memset(info, 0, sizeof(*info));
 	info->kind = MBX_FS_UNSUPPORTED;
-	if (getenv("MBX_NIR"))
+	if (MBX_ENV_SET("MBX_NIR"))
 		nir_print_shader(fs, stderr);	/* debug: the fragment shader as the matcher sees it */
 	if (exec_list_length(&impl->body) != 1)
 		return;

@@ -172,7 +172,7 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 		mbx_job_flush(ctx);	/* the clear comes after what was drawn */
 		if (full && !rsc->twiddled && ctx->fb.cbufs[0].level == 0 &&
 		    (rsc->base.format == PIPE_FORMAT_B8G8R8A8_UNORM || rsc->base.format == PIPE_FORMAT_B8G8R8X8_UNORM ||
-		     rsc->base.format == PIPE_FORMAT_B5G6R5_UNORM) && !getenv("MBX_CPU_CLEAR")) {
+		     rsc->base.format == PIPE_FORMAT_B5G6R5_UNORM) && !MBX_ENV_SET("MBX_CPU_CLEAR")) {
 			/* the next job paints it in its background pass, reading nothing of the target (the CPU fill of
 			 * a 800 x 480 target was 7.5 ms of a 16.6 ms frame); anything that needs the memory first settles it */
 			if (ctx->clear.pending && ctx->clear.rsc != rsc)

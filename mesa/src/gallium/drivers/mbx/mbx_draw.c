@@ -230,7 +230,7 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 	unsigned stride_px, fmt;
 	bool clamp_s, clamp_t, bilinear;
 
-	if (getenv("MBX_DEBUG"))
+	if (mbx_debug_level())
 		mbx_dbg("tex_words unit %u: view %p smp %p texture %p tex %d imported %d", unit, (void *)view, (const void *)smp,
 			view ? (void *)view->texture : NULL, view && view->texture ? mbx_resource(view->texture)->tex : -1,
 			view && view->texture ? mbx_resource(view->texture)->imported : -1);
@@ -239,7 +239,7 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 	tr = unit_texture(ctx, unit);
 	if (!tr)
 		return false;
-	if (tr->imported && getenv("MBX_DEBUG")) {
+	if (tr->imported && mbx_debug_level()) {
 		const uint32_t *px;
 		unsigned nz = 0, nff = 0;
 		struct pollfd pfd = { .fd = tr->dmabuf_fd, .events = POLLIN };
@@ -363,7 +363,7 @@ static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *
 	else if (ctx->cb[1].buffer)
 		fs_uniforms = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[1].buffer)->bo) +
 					      ctx->cb[1].buffer_offset);
-	if (getenv("MBX_DEBUG") && atoi(getenv("MBX_DEBUG")) > 1)
+	if (mbx_debug_level() > 1)
 		for (i = 0; i < nu; i++)
 			mbx_dbg("  uniform c%u = %g %g %g %g (buffer %p, user %p, size %u)", i,
 				uniforms ? uniforms[i * 4] : -1.0f, uniforms ? uniforms[i * 4 + 1] : -1.0f,
@@ -678,7 +678,7 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		ctx->job.zuse = true;
 	mbx_dbg("program: %u instructions, %u uniform slots, %u constants", prog->ninsn, prog->nuniform, prog->nconst);
 	layout = vertex_layout(ctx, prog, comps);
-	if (getenv("MBX_DEBUG") && atoi(getenv("MBX_DEBUG")) > 1) {
+	if (mbx_debug_level() > 1) {
 		char text[128];
 
 		for (unsigned i = 0; i < prog->ninsn; i++) {
@@ -704,7 +704,7 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 			vb_ptr[b] = (uint8_t *)mbx_bo_map(mbx_resource(ctx->vb[b].buffer.resource)->bo) +
 				    ctx->vb[b].buffer_offset;
 	}
-	if (getenv("MBX_DEBUG") && atoi(getenv("MBX_DEBUG")) > 1) {
+	if (mbx_debug_level() > 1) {
 		for (unsigned k = 0; k < ctx->velems->count; k++) {
 			const struct pipe_vertex_element *e = &ctx->velems->e[k];
 			const struct pipe_vertex_buffer *vb = &ctx->vb[e->vertex_buffer_index];

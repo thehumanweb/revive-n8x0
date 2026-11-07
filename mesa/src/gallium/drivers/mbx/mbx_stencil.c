@@ -30,7 +30,7 @@ bool mbx_stencil_chip_ok(struct mbx_context *ctx)
 {
 	const struct pipe_stencil_state *s0, *s1;
 
-	if (!stencil_on(ctx) || getenv("MBX_CPU_STENCIL"))
+	if (!stencil_on(ctx) || MBX_ENV_SET("MBX_CPU_STENCIL"))
 		return false;
 	s0 = &ctx->dsa->stencil[0];
 	s1 = &ctx->dsa->stencil[1];

@@ -159,7 +159,7 @@ bool mbx_job_begin(struct mbx_context *ctx)
 		struct mbx_resource *zr = mbx_resource(ctx->fb.zsbuf.texture);
 
 		job->zr = zr;
-		job->zload = zr->zvalid && zr->zbo && zr->zw == ctx->fb.width && zr->zh == ctx->fb.height && !getenv("MBX_NO_ZCARRY");
+		job->zload = zr->zvalid && zr->zbo && zr->zw == ctx->fb.width && zr->zh == ctx->fb.height && !MBX_ENV_SET("MBX_NO_ZCARRY");
 	}
 	emit_frame_start(ctx, job->clear_depth, job->zload);
 	return true;
@@ -181,7 +181,7 @@ static void report_scanout_damage(struct mbx_context *ctx, struct mbx_resource *
 	struct mbx_screen *screen = ctx->screen;
 	struct mbx_omap_gem_damage d = { .handle = color->scanout->handle };
 
-	if (screen->no_omap_damage || !screen->ro || getenv("MBX_NO_OMAP_DAMAGE"))
+	if (screen->no_omap_damage || !screen->ro || MBX_ENV_SET("MBX_NO_OMAP_DAMAGE"))
 		return;
 	if (!damage) {
 		d.flags = MBX_OMAP_GEM_DAMAGE_FULL;
@@ -234,7 +234,7 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.r_addr = color->bo->va;
 	s.r_stride = color->stride / 4;		/* words */
 	s.damage = color->damage;
-	if (getenv("MBX_TEST_DAMAGE")) {	/* test hook: x,y,w,h in pixels (top down) of the only region rendered, as set_damage_region would say */
+	if (getenv("MBX_TEST_DAMAGE")) {	/* read live: gles2_feat sets it around one test */	/* test hook: x,y,w,h in pixels (top down) of the only region rendered, as set_damage_region would say */
 		int dx, dy, dw, dh;
 
 		if (sscanf(getenv("MBX_TEST_DAMAGE"), "%d,%d,%d,%d", &dx, &dy, &dw, &dh) == 4)
@@ -248,7 +248,7 @@ void mbx_job_flush(struct mbx_context *ctx)
 	use_ext = job->zr && (job->zload || (job->zuse && ctx->zkeep));
 	if (job->zuse && job->zr && !use_ext)
 		job->zr->zvalid = false;	/* the depth stays on chip and is gone with the job: the memory no longer matches */
-	if (use_ext && !getenv("MBX_NO_ZCARRY") && mbx_z_ensure(ctx, job->zr)) {
+	if (use_ext && !MBX_ENV_SET("MBX_NO_ZCARRY") && mbx_z_ensure(ctx, job->zr)) {
 		/* the depth goes to memory after the render (ctl bit 1), and comes from it first when it is current (bit 0 and the
 		 * region entries' bit 29): chip and CPU draws and later jobs then share one depth buffer (README assumption 7) */
 		unsigned stride_px = align(ctx->fb.width, 16);
@@ -288,7 +288,7 @@ void mbx_job_flush(struct mbx_context *ctx)
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
-		if (getenv("MBX_VERIFY")) {	/* debug: what the job drew */
+		if (MBX_ENV_SET("MBX_VERIFY")) {	/* debug: what the job drew */
 			const uint32_t *px;
 			unsigned nz = 0;
 

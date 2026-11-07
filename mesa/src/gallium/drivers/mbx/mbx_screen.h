@@ -13,7 +13,21 @@
 #include <stdlib.h>
 
 /* MBX_DEBUG=1 in the environment traces the driver's decisions on stderr */
-#define mbx_dbg(...) do { if (getenv("MBX_DEBUG")) { fprintf(stderr, "mbx: "); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
+/* an environment variable's presence, looked up once per call site (getenv scans the whole environment: not for every draw) */
+#define MBX_ENV_SET(name) ({ static int v_ = -1; if (v_ < 0) v_ = getenv(name) != NULL; v_; })
+/* MBX_DEBUG's level (1 when set without a number), looked up once */
+static inline int mbx_debug_level(void)
+{
+	static int level = -1;
+
+	if (level < 0) {
+		const char *e = getenv("MBX_DEBUG");
+
+		level = e ? (atoi(e) > 0 ? atoi(e) : 1) : 0;
+	}
+	return level;
+}
+#define mbx_dbg(...) do { if (mbx_debug_level()) { fprintf(stderr, "mbx: "); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } while (0)
 
 /* A job's fence: jobs complete in order, so a number says it all */
 struct pipe_fence_handle {

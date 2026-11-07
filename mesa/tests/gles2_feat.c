@@ -457,6 +457,95 @@ static int t_tex_rgb(char *why)
 	return ok;
 }
 
+/*
+ * A dma-buf imported twice is one GEM handle: the importer's second use must survive the first one's release (Weston
+ * re-imports a client's buffer at every attach). Export a texture's image, import it twice, release the first, and
+ * sample the second.
+ */
+static int t_dmabuf_reimport(char *why)
+{
+	PFNEGLCREATEIMAGEKHRPROC create_image = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+	PFNEGLDESTROYIMAGEKHRPROC destroy_image = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+	PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC query = (PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC)eglGetProcAddress("eglExportDMABUFImageQueryMESA");
+	PFNEGLEXPORTDMABUFIMAGEMESAPROC export_image = (PFNEGLEXPORTDMABUFIMAGEMESAPROC)eglGetProcAddress("eglExportDMABUFImageMESA");
+	PFNGLEGLIMAGETARGETTEXTURE2DOESPROC target = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+	EGLDisplay dpy = eglGetCurrentDisplay();
+	EGLContext ctx = eglGetCurrentContext();
+	unsigned char px[8 * 8 * 4];
+	EGLImageKHR src, a, b;
+	GLuint t, ta, tb;
+	int fourcc, nplanes, fd = -1, stride = 0, offset = 0, ok = 1;
+	EGLuint64KHR mod;
+
+	if (!create_image || !destroy_image || !query || !export_image || !target) {
+		snprintf(why, 200, "no dma-buf export or import");
+		return 1;	/* nothing to test here: not a failure */
+	}
+	quadrants(px, 8, 8);
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	src = create_image(dpy, ctx, EGL_GL_TEXTURE_2D_KHR, (EGLClientBuffer)(uintptr_t)t, NULL);
+	if (src == EGL_NO_IMAGE_KHR || !query(dpy, src, &fourcc, &nplanes, &mod) ||
+	    !export_image(dpy, src, &fd, &stride, &offset)) {
+		snprintf(why, 200, "the texture could not be exported");
+		return 0;
+	}
+	{
+		const EGLint attr[] = { EGL_WIDTH, 8, EGL_HEIGHT, 8, EGL_LINUX_DRM_FOURCC_EXT, fourcc, EGL_DMA_BUF_PLANE0_FD_EXT, fd,
+					EGL_DMA_BUF_PLANE0_OFFSET_EXT, offset, EGL_DMA_BUF_PLANE0_PITCH_EXT, stride, EGL_NONE };
+
+		a = create_image(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attr);
+		b = create_image(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attr);
+	}
+	if (a == EGL_NO_IMAGE_KHR || b == EGL_NO_IMAGE_KHR) {
+		/* the host sim's emulated DRM device cannot import a dma-buf; on the unit this is a failure */
+		if (getenv("MBX_SIM_NO_DMABUF_IMPORT") || getenv("LD_PRELOAD")) {
+			fprintf(stderr, "dmabuf_reimport: skipped, the dma-buf cannot be imported here (sim)\n");
+			return 1;
+		}
+		snprintf(why, 200, "the dma-buf could not be imported");
+		return 0;
+	}
+	glGenTextures(1, &ta);
+	glBindTexture(GL_TEXTURE_2D, ta);
+	target(GL_TEXTURE_2D, (GLeglImageOES)a);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glGenTextures(1, &tb);
+	glBindTexture(GL_TEXTURE_2D, tb);
+	target(GL_TEXTURE_2D, (GLeglImageOES)b);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	/* the first import, then its release, then the second */
+	begin();
+	glBindTexture(GL_TEXTURE_2D, ta);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = quad_probes(why);
+	glBindTexture(GL_TEXTURE_2D, 0);
+	glDeleteTextures(1, &ta);
+	destroy_image(dpy, a);
+	glFinish();
+	if (ok) {
+		begin();
+		glBindTexture(GL_TEXTURE_2D, tb);
+		quad(0, 0, 1, 1, 1, 1, 1);
+		ok = quad_probes(why);
+		if (!ok)
+			strncat(why, " (after the first import was released)", 60);
+	}
+	glUseProgram(prog);
+	glDeleteTextures(1, &tb);
+	destroy_image(dpy, b);
+	destroy_image(dpy, src);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static int t_tex_modulate(char *why)
 {
 	unsigned char px[8 * 8 * 4];
@@ -2028,6 +2117,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "cube", t_cube },
 	{ "tex_replace", t_tex_replace },
 	{ "tex_rgb", t_tex_rgb },
+	{ "dmabuf_reimport", t_dmabuf_reimport },
 	{ "tex_modulate", t_tex_modulate },
 	{ "tex_npot", t_tex_npot },
 	{ "tex_bilinear", t_tex_bilinear },
