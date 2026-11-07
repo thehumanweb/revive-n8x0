@@ -785,6 +785,51 @@ static int t_grid_light(char *why)
 	return ok;
 }
 
+/* a lit texture: the texel times a per-pixel lighting term that is not affine (grid mode for the lighting, the texture unit for the
+ * texel, the combiner multiplies them); normals as in grid_light, a flat grey texel (200, 150, 100) */
+static int t_grid_tex(char *why)
+{
+	static const char fs[] =
+		"precision mediump float;\nuniform sampler2D u_tex;\nvarying vec2 v_uv;\nvarying vec4 v_color;\n"
+		"void main() { vec3 n = normalize(v_color.xyz); float d = max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0); "
+		"gl_FragColor = vec4(texture2D(u_tex, v_uv).rgb * d, 1.0); }\n";
+	unsigned char px[8 * 8 * 4];
+	GLuint t, p = link_tex(fs);
+	struct { int x, y; } pt[] = { { 32, 32 }, { 8, 32 }, { 6, 6 }, { 56, 40 } };
+	int ok = 1;
+	float v[4 * 8] = { -1, -1, 0, 0, -1, -1, 1, 1,	1, -1, 1, 0, 1, -1, 1, 1,	-1, 1, 0, 1, -1, 1, 1, 1,	1, 1, 1, 1, 1, 1, 1, 1 };
+
+	for (int i = 0; i < 64; i++) {
+		px[i * 4] = 200; px[i * 4 + 1] = 150; px[i * 4 + 2] = 100; px[i * 4 + 3] = 255;
+	}
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(p);
+	glUniform1i(glGetUniformLocation(p, "u_tex"), 0);
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v + 2);
+	glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), v + 4);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	for (unsigned i = 0; i < sizeof(pt) / sizeof(pt[0]) && ok; i++) {
+		float u = (pt[i].x + 0.5f) / 32.0f - 1.0f, w = 1.0f - (pt[i].y + 0.5f) / 32.0f;
+		float d = 1.0f / sqrtf(u * u + w * w + 1.0f);
+		struct px a = probe(pt[i].x, pt[i].y);
+
+		if (abs(a.c[0] - (int)(200 * d + 0.5f)) > 16 || abs(a.c[1] - (int)(150 * d + 0.5f)) > 14 || abs(a.c[2] - (int)(100 * d + 0.5f)) > 12) {
+			snprintf(why, 200, "(%d,%d) is %d %d %d, expected about %d %d %d", pt[i].x, pt[i].y, a.c[0], a.c[1], a.c[2],
+				 (int)(200 * d + 0.5f), (int)(150 * d + 0.5f), (int)(100 * d + 0.5f));
+			ok = 0;
+		}
+	}
+	glUseProgram(prog);
+	glDeleteProgram(p);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static int t_scissor_clear(char *why)
 {
 	begin();
@@ -1568,6 +1613,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },
 	{ "grid_light", t_grid_light },
+	{ "grid_tex", t_grid_tex },
 	{ "frag_depth", t_frag_depth },
 	{ "alpha_discard", t_alpha_discard },
 	{ "cube", t_cube },

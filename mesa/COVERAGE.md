@@ -111,3 +111,6 @@ the CPU fallback. Non-power-of-two and render-to-texture-only textures stay line
 - `if (alpha < k) discard;` (and mirrors): the chip's alpha function with state bit 14 (README assumption 45; `alpha_discard`).
 - A full-target colour clear costs nothing (README assumption 44).
 - A textured first job in a new process used to read the previous process's texels (stale TLB); fixed by loading the TLB at every address-space switch (README assumption 46), so the flat clear works with textured scenes too.
+- A lit texture (a texel times a per-pixel `normalize`/`dot` term) runs on the chip in grid mode: the texture unit takes the texel, the vertex program the lighting at grid corners, the combiner multiplies them (`grid_tex`; no new code was needed beyond grid mode).
+- Zero colour mask is on the chip; a partial mask, stencil, `discard` on a colour lane and constant-colour blend are still softpipe (measured reasons: no per-channel write mask, no stencil, the alpha function tests only alpha, no constant factor code).
+
