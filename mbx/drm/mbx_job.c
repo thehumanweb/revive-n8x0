@@ -183,9 +183,10 @@ MODULE_PARM_DESC(prof, "print the average time of each phase of a job every two 
 /* Time spent in each phase of the jobs since the last print (the prof parameter) */
 static struct {
 	u64 n, build, ta, bit30, render, started;
+	u64 vm, ctx, bg, region;	/* the build phase's parts */
 } pstat;
 
-static void mbx_prof_add(u64 build, u64 ta, u64 bit30, u64 render)
+static void mbx_prof_add(u64 build, u64 ta, u64 bit30, u64 render, u64 vm, u64 ctx, u64 bg, u64 region)
 {
 	u64 now = ktime_get_ns();
 
@@ -196,12 +197,17 @@ static void mbx_prof_add(u64 build, u64 ta, u64 bit30, u64 render)
 	pstat.ta += ta;
 	pstat.bit30 += bit30;
 	pstat.render += render;
+	pstat.vm += vm;
+	pstat.ctx += ctx;
+	pstat.bg += bg;
+	pstat.region += region;
 	if (now - pstat.started >= 2 * NSEC_PER_SEC) {
 		u64 n = pstat.n;
 
-		pr_info("mbx prof: %llu jobs in 2 s; per job: build+region init %llu us, TA (feed and wait) %llu us, bit 30 pass %llu us, render %llu us\n",
-			n, div64_u64(pstat.build, n * 1000), div64_u64(pstat.ta, n * 1000), div64_u64(pstat.bit30, n * 1000),
-			div64_u64(pstat.render, n * 1000));
+		pr_info("mbx prof: %llu jobs in 2 s; per job: build+region init %llu us (address space %llu, free list+contexts %llu, background %llu, region array and tails %llu), TA (feed and wait) %llu us, bit 30 pass %llu us, render %llu us\n",
+			n, div64_u64(pstat.build, n * 1000), div64_u64(pstat.vm, n * 1000), div64_u64(pstat.ctx, n * 1000),
+			div64_u64(pstat.bg, n * 1000), div64_u64(pstat.region, n * 1000), div64_u64(pstat.ta, n * 1000),
+			div64_u64(pstat.bit30, n * 1000), div64_u64(pstat.render, n * 1000));
 		memset(&pstat, 0, sizeof(pstat));
 	}
 }
@@ -213,7 +219,7 @@ static int mbx_job_run(struct mbx_job *job)
 	struct drm_mbx_submit *a = &job->a;
 	unsigned long ms = job->ms;
 	ktime_t t_ta = 0, t_render = 0;
-	u64 p0 = 0, p1 = 0, p2 = 0, p3 = 0;
+	u64 p0 = 0, p1 = 0, p2 = 0, p3 = 0, pv = 0, pc = 0, pb = 0, pr = 0;
 	u32 ctx, i;
 	int ret;
 
@@ -222,6 +228,8 @@ static int mbx_job_run(struct mbx_job *job)
 		p0 = ktime_get_ns();
 	if (m->active_vm != job->vm || job->vm->dirty)	/* the MMU takes the address space again when it changed (another client, new or removed mappings) */
 		mbx_vm_activate(job->vm);
+	if (prof)
+		pv = ktime_get_ns();
 	spin_lock_irq(&m->irq_lock);
 	m->pending = 0;
 	spin_unlock_irq(&m->irq_lock);
@@ -233,7 +241,11 @@ static int mbx_job_run(struct mbx_job *job)
 		goto reset;
 	}
 	mbx_ctx_load(m);
+	if (prof)
+		pc = ktime_get_ns();
 	mbx_pb_set_background(m, a);
+	if (prof)
+		pb = ktime_get_ns();
 	ret = mbx_job_prepare_buffers(job->vm, a);
 	if (ret)
 		goto reset;
@@ -259,8 +271,10 @@ static int mbx_job_run(struct mbx_job *job)
 		if (unlikely(mbx_trace))
 			printk(KERN_DEBUG "mbx: S after the TA context reset (%u polls) %08x\n", i, mbx_read(m, MBX_REG_INT_STATUS));
 	}
-	if (prof)
+	if (prof) {
 		p1 = ktime_get_ns();
+		pr = p1 - pb;
+	}
 	t_ta = ktime_get();
 	mbx_write(m, MBX_REG_TA_START, 1);
 	mbx_feed(m, job->stream, a->stream_words);
@@ -324,7 +338,7 @@ static int mbx_job_run(struct mbx_job *job)
 	if (ret)
 		goto reset;
 	if (prof)
-		mbx_prof_add(p1 - p0, p2 - p1, p3 - p2, ktime_get_ns() - p3);
+		mbx_prof_add(p1 - p0, p2 - p1, p3 - p2, ktime_get_ns() - p3, pv - p0, pc - pv, pb - pc, pr);
 	mutex_unlock(&m->job_lock);
 	return 0;
 reset:

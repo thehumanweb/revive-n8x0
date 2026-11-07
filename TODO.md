@@ -44,9 +44,12 @@ Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` c
 
 - Pipeline (client to screen), measured 2026-11-07: the panel runs at 40 Hz by default (user), so a small update costs one 25 ms period and
   a client can reach 40 fps; the DRM mode still says 51 Hz, so Weston expected a refresh every 19.6 ms and started its repaints too late
-  (`repaint-window=16` in the image's `weston.ini` fixes the timing: 26.6 -> 40 fps for a windowed client). A cleaner fix is for the
-  mode to report the real rate (the panel timings the omapdrm mode is made from), so Weston's defaults, the clients' frame callbacks and
-  the presentation timestamps agree. Fullscreen is still 20 fps (a client that redraws everything: 8 ms of chip time for 1500 tiles, and
+  (`repaint-window=16` in the image's `weston.ini` fixes the timing: 26.6 -> 40 fps for a windowed client). Tried: an honest 40 Hz mode
+  (a custom modeline from `weston.ini`, 620 lines instead of 486) does not help by itself: Weston then starts a repaint 25 ms - window after
+  the last flip, and with the default window of 7 ms the windowed client got 20 fps; it needs a window of 16 ms or more for 40 fps, the same
+  as with the 51 Hz mode (where 12 already works, the wrong period giving Weston extra margin). So the mode change buys nothing for speed and
+  touches the panel driver: not done. The setting that matters is `repaint-window` against the 10-12 ms a repaint takes.
+  Fullscreen is still 20 fps (a client that redraws everything: 8 ms of chip time for 1500 tiles, and
   Weston's 416-tile textured draw 6.7 ms, each job with 1-3 ms of kernel CPU on the one core); `MBX_PROF=1` (per process) and the module
   parameter `mbx.prof=1` (per phase, in dmesg) measure it.
 
