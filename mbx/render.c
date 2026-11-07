@@ -1438,8 +1438,12 @@ static void tile(struct mbxemu *e, struct rctx *rc, uint32_t entry)
 			for (i = 0; i < TILE; i++)
 				unpack(rc->fmt, row + i * (rc->fmt == 9 ? 2 : 4), col[j * TILE + i]);
 		} else {
-			for (i = 0; i < TILE; i++)
-				tex_fetch(e, &rc->bg, 0, (int)(x0 + i), (int)(y0 + j), col[j * TILE + i]);
+			for (i = 0; i < TILE; i++) {
+				/* a flat background (8 x 8 texels, README assumption 44): every texture coordinate is zero */
+				int flat = rc->bg.lw == 3 && rc->bg.lh == 3;
+
+				tex_fetch(e, &rc->bg, 0, flat ? 0 : (int)(x0 + i), flat ? 0 : (int)(y0 + j), col[j * TILE + i]);
+			}
 		}
 	}
 	/* depth: loaded from the Z buffer when 0x610 asks and the entry has bit
@@ -1600,7 +1604,9 @@ void render_kick(struct mbxemu *e)
 				/* soft: the render's format, address and row against the object's texture words */
 				uint32_t bytes = rc.fmt == 9 ? 2 : 4;
 
-				if (rc.bg.fmt != (rc.fmt == 9 ? 1u : 6u) || rc.bg.addr != rc.addr ||
+				if (rc.bg.lw == 3 && rc.bg.lh == 3)
+					;	/* a flat background (the clear colour, 8 x 8 texels, clamped): not the target */
+				else if (rc.bg.fmt != (rc.fmt == 9 ? 1u : 6u) || rc.bg.addr != rc.addr ||
 				    rc.bg.stride * bytes != rc.stride)
 					emu_violation(e, V_FMT, "the background object's texture (format, address, row) does "
 						      "not describe the render target (0x650, 0x65c, 0x660)");

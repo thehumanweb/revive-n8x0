@@ -132,6 +132,26 @@ static inline void mbx_contract_background(const struct mbx_io *io, uint32_t pb_
 }
 
 /*
+ * The background object for a frame that starts with a clear (README assumption 44): the same object, but its texture is 16 x 8
+ * texels of the clear colour, written in the buffer's first page past the object (offset 0x400, 128 aligned), read
+ * 8 x 8 with clamping, every texture coordinate zero, so the background pass paints the colour and reads nothing of the
+ * target. colour: ARGB8888, or RGB565 in the low 16 bits.
+ */
+#define MBX_FLAT_BG_OFFSET	0x400
+static inline void mbx_contract_background_flat(const struct mbx_io *io, uint32_t pb_va, uint32_t tiles_x, uint32_t tiles_y,
+						int fmt565, uint32_t colour)
+{
+	uint32_t i;
+
+	mbx_contract_background(io, pb_va, pb_va + MBX_FLAT_BG_OFFSET, 16, tiles_x, tiles_y, fmt565);
+	io->wr32(io->opaque, pb_va + 4 * 1, 0xa0000000 | (fmt565 ? 0x4000 : 0x18000));
+	io->wr32(io->opaque, pb_va + 4 * 21, 0);
+	io->wr32(io->opaque, pb_va + 4 * 25, 0);
+	for (i = 0; i < 16 * 8; i++)
+		io->wr32(io->opaque, pb_va + MBX_FLAT_BG_OFFSET + 4 * i, fmt565 ? (colour & 0xffff) * 0x10001u : colour);
+}
+
+/*
  * The region array, before the TA: every entry 0x22000000 | its macro tile's origin (y << 8
  * | x, in tiles), word 1 clear. The TA clears bit 25 and writes the list address for the tiles
  * that get a list.

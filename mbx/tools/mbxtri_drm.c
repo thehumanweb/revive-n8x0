@@ -98,7 +98,8 @@ int main(int argc, char **argv)
 {
 	uint32_t tails_bytes = 65536, tex_b_bits = 0x0e000000, tex_pitch = 8, tex_bw = 0, tex_lo = 0xff000000, tex_hi = 0xffffffff, tex_fmt = 6;
 	uint32_t tex_a_or = 0;	/* -L: bits ORed into texture word A */
-	uint32_t tex2_b_bits = 0;
+	uint32_t tex2_b_bits = 0, flat_colour = 0;
+	int flat_bg = 0;	/* -f colour: the background pass paints this ARGB8888 colour (MBX_SUBMIT_FLAT_BG) */
 	int maxlev = -1;	/* -m: word A bits 9-12 (default: the chain's last level) */
 	int mip_lw = 0;	/* -U: a twiddled mipmapped 2^n square texture */
 	char *endp;
@@ -117,7 +118,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:J:Q:V:U:u:L:m:y:z:O")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -135,6 +136,7 @@ int main(int argc, char **argv)
 		else if (o == 'U') mip_lw = (int)strtoul(optarg, NULL, 0);
 		else if (o == 'u') tri_uvscale = (float)atof(optarg);
 		else if (o == 'O') tri_offset = 1;
+		else if (o == 'f') { flat_bg = 1; flat_colour = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'V') tex_fmt = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'Q') { tex_bw = 1; tex_lo = (uint32_t)strtoul(optarg, &endp, 0); tex_hi = *endp == ':' ? (uint32_t)strtoul(endp + 1, NULL, 0) : 0xffffffff; }
 		else if (o == 'J') tex_pitch = (uint32_t)strtoul(optarg, NULL, 0);
@@ -223,6 +225,10 @@ int main(int argc, char **argv)
 	s.r_height = (uint32_t)(TRI_H - 1) << 16;
 	s.r_addr = surf.va;
 	s.r_stride = TRI_W;			/* words */
+	if (flat_bg) {
+		s.flags |= MBX_SUBMIT_FLAT_BG;
+		s.bg_colour = flat_colour;
+	}
 	s.r_6dc = 0x3f800001;			/* clear depth 1.0, as GLES writes it (0 on the chip is not 1.0) */
 	if (regprefix)
 		reg_dump(fd, regprefix, "before");

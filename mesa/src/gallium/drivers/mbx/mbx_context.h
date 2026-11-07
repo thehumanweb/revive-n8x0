@@ -82,6 +82,14 @@ struct mbx_context {
 	struct mbx_job job;
 	uint64_t last_fence;			/* the last job this context submitted */
 	struct mbx_target_bos tbos;
+	/* a full-target colour clear not yet done: the next job's background pass paints it (README assumption 44), or
+	 * the CPU fills the target when something needs the memory first (mbx_clear_materialize) */
+	struct {
+		bool pending;
+		struct mbx_resource *rsc;	/* a reference is held */
+		uint32_t packed;
+		unsigned level, w, h;
+	} clear;
 	float next_clear_depth;
 };
 
@@ -104,6 +112,9 @@ void mbx_emit_f(struct mbx_context *ctx, unsigned type, float f);
 bool mbx_job_begin(struct mbx_context *ctx);
 void mbx_job_fini(struct mbx_context *ctx);
 void mbx_job_use_texture(struct mbx_context *ctx, struct mbx_resource *rsc);
+/* the pending clear, done on the CPU (before the CPU or softpipe touches the target); mbx_clear_settle also renders what is recorded */
+void mbx_clear_materialize(struct mbx_context *ctx);
+void mbx_clear_settle(struct mbx_context *ctx);
 
 #define MBX_CH_TA	0
 #define MBX_CH_CTL	1

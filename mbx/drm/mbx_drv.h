@@ -42,6 +42,8 @@
 #define MBX_PB_LAST_PAGE	(MBX_PB_FIRST_PAGE + MBX_PB_PAGES - 1)
 #define MBX_PB_VA		(MBX_PB_FIRST_PAGE << 12)
 #define MBX_PB_TABLE_SIZE	0x4000			/* 16 KB, 16 KB aligned */
+/* the flat background texture (16 x 8 texels of the clear colour) in the parameter buffer's first page, past the object */
+#define MBX_FLAT_BG_OFFSET	0x400
 #define MBX_PB_TABLE_VA		0x800000
 /*
  * The TA and EVM contexts, zeroed and padded (the chip writes past their nominal sizes: a page,

@@ -151,8 +151,10 @@ int main(int argc, char **argv)
 				glFinish();
 				t0 = now();
 			}
-			glClearColor(0.1f, 0.1f, 0.2f, 1);
-			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+			if (!getenv("FPS_NOCLEAR")) {
+				glClearColor(0.1f, 0.1f, 0.2f, 1);
+				glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+			}
 			switch (i) {
 			case 0: glUseProgram(prog[0]); draw_verts(quad, 3); break;
 			case 1: glUseProgram(prog[0]); draw_verts(quad, 6); break;

@@ -370,7 +370,7 @@ int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
 	u32 i;
 	int ret;
 
-	if (a->flags || a->stream_words > MBX_MAX_STREAM_WORDS || a->n_bos > MBX_MAX_BOS)
+	if ((a->flags & ~MBX_SUBMIT_FLAT_BG) || a->stream_words > MBX_MAX_STREAM_WORDS || a->n_bos > MBX_MAX_BOS)
 		return -EINVAL;
 	job = kzalloc(sizeof(*job), GFP_KERNEL);
 	if (!job)

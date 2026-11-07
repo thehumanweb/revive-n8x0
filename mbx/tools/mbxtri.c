@@ -103,12 +103,13 @@ int main(int argc, char **argv)
 	int o, verbose = 0;
 	uint32_t surf = SURF, regions = REGIONS, tails = TAILS, pb = PB;
 	uint32_t stream[128], words, status, tex_b_bits = 0x0e000000, tex_pitch = 8, tex_bw = 0, tex_lo = 0xff000000, tex_hi = 0xffffffff, tex_fmt = 6;
-	uint32_t tex2_b_bits = 0;
+	uint32_t tex2_b_bits = 0, flat_colour = 0;
+	int flat_bg = 0;
 	int mip_lw = 0;
 	char *endp;
 	int i, x, y;
 
-	while ((o = getopt(argc, argv, "a:vo:N:Y:H:J:Q:V:U:u:y:z:O")) != -1) {
+	while ((o = getopt(argc, argv, "a:vo:N:Y:H:J:Q:V:U:u:y:z:Of:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'N') { tri_tex = 1; tri_tex_mode = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'Y') tri_tex_c = (uint32_t)strtoul(optarg, NULL, 0);
@@ -117,6 +118,7 @@ int main(int argc, char **argv)
 		else if (o == 'y') { tri_tex2 = 1; tex2_b_bits = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'z') tri_tex2_c = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'O') tri_offset = 1;
+		else if (o == 'f') { flat_bg = 1; flat_colour = (uint32_t)strtoul(optarg, NULL, 0); }
 		else if (o == 'V') tex_fmt = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'Q') { tex_bw = 1; tex_lo = (uint32_t)strtoul(optarg, &endp, 0); tex_hi = *endp == ':' ? (uint32_t)strtoul(endp + 1, NULL, 0) : 0xffffffff; }
 		else if (o == 'J') tex_pitch = (uint32_t)strtoul(optarg, NULL, 0);
@@ -150,7 +152,10 @@ int main(int argc, char **argv)
 	mbx_contract_freelist(&IO, 0x70000, PB, (PB >> 12) + 8);
 	mbx_contract_ta_setup(&IO);
 	mbx_contract_contexts(&IO, CTX);
-	mbx_contract_background(&IO, PB, SURF, W, W / 16, H / 16, 0);
+	if (flat_bg)
+		mbx_contract_background_flat(&IO, PB, W / 16, H / 16, 0, flat_colour);
+	else
+		mbx_contract_background(&IO, PB, SURF, W, W / 16, H / 16, 0);
 	mbx_contract_regions(&IO, REGIONS, W / 16, H / 16);
 	mbx_contract_tails(&IO, TAILS, 65536);
 

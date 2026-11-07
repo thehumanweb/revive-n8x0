@@ -350,7 +350,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	uint32_t i, st;
 	int ret = 0;
 
-	if (a->flags || a->stream_words > (256u << 10) || a->n_bos > 64)
+	if ((a->flags & ~MBX_SUBMIT_FLAT_BG) || a->stream_words > (256u << 10) || a->n_bos > 64)
 		return -EINVAL;
 	/* chunks whole and of a known type, as the kernel checks them */
 	for (i = 0; i < a->stream_words;) {
@@ -428,8 +428,10 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 		uint32_t tx = (a->ta_config >> 20 & 0x3ff) + 1, ty = (a->ta_config >> 10 & 0x3ff) + 1;
 
 		/* the background object, the region array and the tails, for this frame */
-		mbx_contract_background(&SIM_IO, PB_VA, a->r_addr, a->r_stride * (a->r_format == 9 ? 2 : 1), tx, ty,
-					a->r_format == 9);
+		a->flags & MBX_SUBMIT_FLAT_BG ?
+			mbx_contract_background_flat(&SIM_IO, PB_VA, tx, ty, a->r_format == 9, a->bg_colour) :
+			mbx_contract_background(&SIM_IO, PB_VA, a->r_addr, a->r_stride * (a->r_format == 9 ? 2 : 1), tx, ty,
+						a->r_format == 9);
 		mbx_contract_regions(&SIM_IO, a->ta_regions, tx, ty);
 		mbx_contract_tails(&SIM_IO, a->ta_tails, 0x10000);
 	}

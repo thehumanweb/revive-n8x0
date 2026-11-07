@@ -266,10 +266,23 @@ void mbx_pb_set_background(struct mbx_device *m, const struct drm_mbx_submit *a)
 		o[25] = 0;
 	}
 	p = kmap_local_page(shmem->pages[0]);
+	if (a->flags & MBX_SUBMIT_FLAT_BG) {
+		/* the frame starts with a clear: the texture is 16 x 8 texels of the clear colour in the page's
+		 * unused part (the buffer's first page holds only the background object), 8 x 8 read with clamping, and
+		 * every texture coordinate is zero (README assumption 44) */
+		u32 *tex = p + MBX_FLAT_BG_OFFSET / 4;
+
+		o[1] = 0xa0000000 | (rgb565 ? 0x4000 : 0x18000);
+		o[2] = 0x0e000000 | (16 / 16) << 18 | (MBX_PB_VA + MBX_FLAT_BG_OFFSET) >> 7;
+		o[21] = 0;
+		o[25] = 0;
+		for (i = 0; i < (rgb565 ? 16 * 8 / 2 : 16 * 8); i++)
+			tex[i] = rgb565 ? (a->bg_colour & 0xffff) * 0x10001u : a->bg_colour;
+	}
 	for (i = 0; i < ARRAY_SIZE(o); i++)
 		p[i] = o[i];
 	kunmap_local(p);
-	dma_sync_single_range_for_device(m->dev, sg_dma_address(sgt->sgl), 0, sizeof(o), DMA_TO_DEVICE);
+	dma_sync_single_range_for_device(m->dev, sg_dma_address(sgt->sgl), 0, MBX_FLAT_BG_OFFSET + 512, DMA_TO_DEVICE);
 }
 
 /* The region array before the TA: 0x22000000 | the macro tile's origin, word 1 clear (assumption 31) */

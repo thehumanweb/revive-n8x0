@@ -44,11 +44,14 @@ the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 | `glReadPixels`, `glCopyTexImage`, blits | CPU or the 2D core (`twod.c`: ROPs, blits) | readpixels and plain copies done; the rest not |
 | Compressed textures (PVRTC) | native texel format | not exposed |
 
+A full-target colour clear is not done on the CPU: the driver keeps it pending and the next job's background pass paints it (README assumption 44); a CPU draw, blit, read-back, sampler or other target settles it with a CPU fill. The other rows below were measured before this and still include the CPU clear (about 7.5 ms at 800x480, 2 ms at 400x240).
+
 ## Performance (N810, offscreen FBO, 2026-11-07; `mesa/tests/gles2_fps.c`: clear, draw, `glFinish` per frame)
 
 | Scene | 200x120 | 400x240 | 800x480 |
 |---|---|---|---|
-| plain full-screen quad (chip) | 2.9 ms (340 fps) | 5.7 ms (176 fps) | 16.6 ms (60 fps) |
+| plain full-screen quad (chip) | 2.4 ms (411 fps) | 3.8 ms (261 fps) | 9.1 ms (110 fps) |
+| the same with the clear on the CPU (`MBX_CPU_CLEAR=1`; before the flat background) | 2.9 ms (340 fps) | 5.7 ms (176 fps) | 16.6 ms (60 fps) |
 | one small triangle (chip) | | 6.7 ms (149 fps) | 20.2 ms (50 fps) |
 | textured quad, replace / modulate (chip, 256x256 bilinear) | | 9.1 / 9.2 ms (109 fps) | 25.2 / 25.0 ms (40 fps) |
 | 400 small triangles (chip) | | 13.1 ms (76 fps) | 28.6 ms (35 fps) |

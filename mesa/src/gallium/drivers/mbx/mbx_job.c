@@ -148,6 +148,8 @@ bool mbx_job_begin(struct mbx_context *ctx)
 		return false;
 	if (!target_bos(ctx, ctx->fb.width, ctx->fb.height))
 		return false;
+	if (ctx->clear.pending && ctx->clear.rsc != mbx_resource(cbuf->texture))
+		mbx_clear_materialize(ctx);	/* a clear of another target: its memory is needed as it is */
 	pipe_resource_reference((struct pipe_resource **)&job->color, cbuf->texture);
 	job->active = true;
 	emit_frame_start(ctx, job->clear_depth);
@@ -162,6 +164,7 @@ void mbx_job_flush(struct mbx_context *ctx)
 	struct drm_mbx_submit_bo bo[1 + MBX_MAX_TEX];
 	unsigned nbo = 0;
 	struct mbx_resource *color = job->color;
+	bool flat;
 	uint32_t zclear;
 	float z = job->clear_depth;
 	int ret;
@@ -191,6 +194,13 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.r_stride = color->stride / 4;		/* words */
 	memcpy(&zclear, &z, 4);
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
+	flat = ctx->clear.pending && ctx->clear.rsc == color;
+	if (ctx->clear.pending && !flat)
+		mbx_clear_materialize(ctx);	/* another target's clear: the CPU fills it */
+	if (flat) {
+		s.flags |= MBX_SUBMIT_FLAT_BG;	/* the background pass paints the clear colour (README assumption 44) */
+		s.bg_colour = ctx->clear.packed;
+	}
 
 	/* the render target is the one buffer the job writes that others may use (the display) */
 	bo[nbo].handle = color->bo->handle;
@@ -209,6 +219,10 @@ void mbx_job_flush(struct mbx_context *ctx)
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
+		if (flat) {
+			ctx->clear.pending = false;
+			pipe_resource_reference((struct pipe_resource **)&ctx->clear.rsc, NULL);
+		}
 		for (unsigned i = 0; i < MBX_MAX_TEX; i++)
 			if (job->tex[i])
 				job->tex[i]->last_fence = s.fence;	/* the CPU must not rewrite a texture a job still reads */
@@ -228,6 +242,10 @@ void mbx_job_fini(struct mbx_context *ctx)
 
 void mbx_flush_for_resource(struct mbx_context *ctx, struct mbx_resource *rsc)
 {
+	if (ctx->clear.pending && ctx->clear.rsc == rsc) {
+		mbx_clear_settle(ctx);	/* a clear nobody has drawn on yet: the CPU fills it now */
+		return;
+	}
 	if (!ctx->job.active)
 		return;
 	if (ctx->job.color == rsc) {

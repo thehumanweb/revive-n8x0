@@ -566,6 +566,34 @@ static int t_scissor_draw(char *why)
 	return 1;
 }
 
+static void tri_z(float z, float r, float g, float b, float a, int cw);
+
+/* full-target clears the chip paints in its background pass (README assumption 44), and what must settle them first */
+static int t_clear_flat(char *why)
+{
+	begin();
+	glClearColor(0.25f, 0.5f, 1, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	CHECK(0, 0, 64, 128, 255);			/* clear only, then read */
+	CHECK(63, 47, 64, 128, 255);
+	glClearColor(1, 0, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glClearColor(0, 1, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);			/* a second clear replaces the first */
+	tri_z(0.5f, 0, 0, 1, 1, 0);			/* clear + draw in one job */
+	CHECK(2, 2, 0, 255, 0);
+	CHECK(32, 24, 0, 0, 255);
+	glEnable(GL_SCISSOR_TEST);
+	glScissor(4, 4, 8, 8);
+	glClearColor(1, 1, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);			/* a scissored clear after a full one */
+	glDisable(GL_SCISSOR_TEST);
+	CHECK(6, 6, 255, 255, 0);
+	CHECK(2, 2, 0, 255, 0);
+	CHECK(32, 24, 0, 0, 255);
+	return 1;
+}
+
 static int t_scissor_clear(char *why)
 {
 	begin();
@@ -1308,6 +1336,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "tex_uniform", t_tex_uniform },
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
+	{ "clear_flat", t_clear_flat },
 	{ "tex_replace", t_tex_replace },
 	{ "tex_modulate", t_tex_modulate },
 	{ "tex_npot", t_tex_npot },

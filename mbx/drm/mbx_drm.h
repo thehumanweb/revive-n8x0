@@ -90,6 +90,13 @@ struct drm_mbx_submit_bo {
  * MBX_BO_INFO_ALIGN_64K of at least 64 KB, zeroed) and bit 30 on every region entry before
  * the render.
  */
+/*
+ * MBX_SUBMIT_FLAT_BG: the background pass of every tile paints bg_colour instead of reading the render target (the frame
+ * starts with a clear): the driver writes a small constant texture into the parameter buffer's first page and points the
+ * background object at it. Without it the background object is the target itself (what was drawn is kept).
+ */
+#define MBX_SUBMIT_FLAT_BG	(1u << 0)
+
 struct drm_mbx_submit {
 	__u64 stream;		/* in: user pointer to the chunks */
 	__u32 stream_words;
@@ -114,8 +121,8 @@ struct drm_mbx_submit {
 	__u32 r_zbuf;		/* 0x674 */
 	__u32 r_pb;		/* ignored: the driver builds the background object */
 	__u32 r_6dc;		/* 0x6dc */
-	__u32 flags;		/* 0 */
-	__u32 pad;
+	__u32 flags;		/* MBX_SUBMIT_* */
+	__u32 bg_colour;	/* MBX_SUBMIT_FLAT_BG: the clear colour in the target's texel format (RGB565: the low 16 bits) */
 	__u64 bos;		/* in: user pointer to struct drm_mbx_submit_bo[n_bos] */
 	__u32 n_bos;		/* at most 64 */
 	__u32 pad2;

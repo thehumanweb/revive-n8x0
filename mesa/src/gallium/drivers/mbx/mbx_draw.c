@@ -421,6 +421,9 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		(void *)ctx->vs, (void *)ctx->fs, (void *)ctx->velems, ctx->viewport.scale[0]);
 	if (!ctx->vs || !ctx->fs || !ctx->velems || !ctx->viewport.scale[0])
 		return;
+	for (unsigned u = 0; u < MBX_MAX_SAMPLERS; u++)
+		if (ctx->clear.pending && ctx->views[u] && ctx->views[u]->texture == &ctx->clear.rsc->base)
+			mbx_clear_settle(ctx);	/* sampling a texture whose clear is still pending */
 	if (state_needs_fallback(ctx)) {
 		if (!mbx_fallback_draw(ctx, info, drawid_offset, draws, num_draws))
 			mesa_loge("mbx: this state needs the CPU fallback and it could not draw; draw skipped");

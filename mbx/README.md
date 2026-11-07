@@ -653,3 +653,12 @@ circuit.
     assumption 39). GL's L8 is (l, l, l, 1) and A8 is (0, 0, 0, a): the driver takes A8 for shaders that use only its alpha
     (the glyph atlas) and lets L8's alpha lane use the primary colour's alpha instead of the byte (a per-draw combiner word);
     an A8 texture in a shader's colour lanes, whose colour is zero, goes to the CPU. Zero bytes are stored as 1.
+44. **Flat background** (found during device testing; `mbxtri-drm -f 0xAARRGGBB`, four colours, 0 differing pixels against the
+    model; with the target pre-filled with another pattern the output is unchanged, so the pass reads nothing of the target):
+    the background object (assumption 31) may texture from a 16 x 8 texel block of the clear colour instead of the target:
+    the block sits in the parameter buffer's first page at offset 0x400 (128 aligned), object word A is `0xa0000000 | format`
+    (8 x 8 texels, clamped), word B is `0x0e000000 | (16 / 16) << 18 | (pb_va + 0x400) >> 7`, texture coordinate words 21 and
+    25 are 0. Every tile then starts as the colour. A frame that begins with a full-target clear needs no CPU fill
+    (7.5 ms at 800 x 480, 16.6 ms down to about 9 ms). The kernel takes `MBX_SUBMIT_FLAT_BG` and `bg_colour` in the submit;
+    Mesa keeps a full-target clear pending until a job takes it or something needs the memory (a CPU draw, a blit, a read-back,
+    a sampler, another target), which then fills it on the CPU.

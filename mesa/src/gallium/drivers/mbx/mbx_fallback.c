@@ -286,7 +286,7 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 		return false;
 	mbx_dbg("fallback: a draw on the CPU (softpipe)");
 	/* what was recorded for the MBX finishes first, and the memory is settled */
-	mbx_job_flush(ctx);
+	mbx_clear_settle(ctx);
 	mbx_resource_wait(ctx->screen, mbx_resource(ctx->fb.cbufs[0].texture));
 	if (!(vs = fb_shader(ctx, ctx->vs)) || !(fs = fb_shader(ctx, ctx->fs)))
 		return false;
@@ -403,7 +403,7 @@ bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *inf
 	if (!sp || info->scissor_enable || info->render_condition_enable)
 		return false;
 	mbx_dbg("fallback: a blit on the CPU (softpipe)");
-	mbx_job_flush(ctx);
+	mbx_clear_settle(ctx);
 	mbx_resource_wait(ctx->screen, src);
 	mbx_resource_wait(ctx->screen, dst);
 	b.src.resource = twin_texture(ctx, src);

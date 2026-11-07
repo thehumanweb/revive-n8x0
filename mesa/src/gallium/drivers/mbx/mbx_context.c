@@ -21,6 +21,7 @@ static void mbx_context_destroy(struct pipe_context *pctx)
 	struct mbx_context *ctx = mbx_context(pctx);
 
 	mbx_job_flush(ctx);
+	mbx_clear_materialize(ctx);
 	mbx_fallback_context_destroy(ctx);
 	while (ctx->programs) {
 		struct mbx_vgp_program *n = ctx->programs->next;
@@ -72,6 +73,66 @@ static uint32_t pack_clear_colour(enum pipe_format format, const union pipe_colo
 	return format == PIPE_FORMAT_B5G6R5_UNORM ? uc.us : uc.ui[0];
 }
 
+/* A CPU fill of a rectangle of the target with a packed colour */
+static void cpu_fill(struct mbx_context *ctx, struct mbx_resource *rsc, unsigned level, uint32_t v,
+		     unsigned x0, unsigned y0, unsigned x1, unsigned y1)
+{
+	unsigned bpp = util_format_get_blocksize(rsc->base.format), x, y;
+	uint8_t *map;
+
+	mbx_resource_wait(ctx->screen, rsc);
+	map = mbx_bo_map(rsc->bo);
+	mbx_dbg("clear on the CPU: %ux%u, stride %u, bo size %llu, map %p", x1 - x0, y1 - y0, rsc->stride,
+		(unsigned long long)rsc->bo->size, (void *)map);
+	if (!map)
+		return;
+	if (rsc->twiddled && x1 > x0 && y1 > y0) {
+		/* a twiddled texture: the rows are not rows; fill a linear box and store it in the chip's order */
+		struct pipe_box box = { .x = (int)x0, .y = (int)y0, .width = (int)(x1 - x0), .height = (int)(y1 - y0), .depth = 1 };
+		unsigned stride = box.width * bpp;
+		uint8_t *lin = malloc((size_t)stride * box.height);
+
+		if (lin) {
+			for (y = 0; y < (unsigned)box.height; y++)
+				for (x = 0; x < (unsigned)box.width; x++)
+					memcpy(lin + (uint64_t)y * stride + (uint64_t)x * bpp, &v, bpp);
+			mbx_tex_twiddle(rsc, level, &box, lin, stride, true);
+			free(lin);
+			rsc->sp_dirty = true;
+		}
+		return;
+	}
+	for (y = y0; y < y1; y++) {
+		uint8_t *row = map + (uint64_t)y * rsc->stride;
+
+		if (bpp == 4)
+			for (x = x0; x < x1; x++)
+				((uint32_t *)row)[x] = v;
+		else
+			for (x = x0; x < x1; x++)
+				((uint16_t *)row)[x] = (uint16_t)v;
+	}
+}
+
+void mbx_clear_materialize(struct mbx_context *ctx)
+{
+	struct mbx_resource *rsc = ctx->clear.rsc;
+
+	if (!ctx->clear.pending)
+		return;
+	ctx->clear.pending = false;
+	if (rsc) {
+		cpu_fill(ctx, rsc, ctx->clear.level, ctx->clear.packed, 0, 0, ctx->clear.w, ctx->clear.h);
+		pipe_resource_reference((struct pipe_resource **)&ctx->clear.rsc, NULL);
+	}
+}
+
+void mbx_clear_settle(struct mbx_context *ctx)
+{
+	mbx_job_flush(ctx);		/* a job with draws on the cleared target takes the clear in its background pass */
+	mbx_clear_materialize(ctx);
+}
+
 static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t color_clear_mask,
 		      uint8_t stencil_clear_mask, const struct pipe_scissor_state *scissor,
 		      const union pipe_color_union *color, double depth, unsigned stencil)
@@ -88,11 +149,9 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 	}
 	if ((buffers & PIPE_CLEAR_COLOR0) && ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture) {
 		struct mbx_resource *rsc = mbx_resource(ctx->fb.cbufs[0].texture);
-		unsigned bpp = util_format_get_blocksize(rsc->base.format), x, y;
-		uint8_t *map;
-		uint32_t v;
-
 		unsigned x0 = 0, y0 = 0, x1 = ctx->fb.width, y1 = ctx->fb.height;
+		uint32_t v = pack_clear_colour(rsc->base.format, color);
+		bool full;
 
 		if (scissor) {		/* the CPU fill is exactly the rectangle */
 			x0 = MIN2(MAX2(scissor->minx, 0), x1);
@@ -100,40 +159,26 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 			x1 = MIN2(scissor->maxx, x1);
 			y1 = MIN2(scissor->maxy, y1);
 		}
-		mbx_job_flush(ctx);	/* the CPU fill comes after what was drawn */
-		mbx_resource_wait(ctx->screen, rsc);
-		map = mbx_bo_map(rsc->bo);
-		mbx_dbg("clear: %ux%u, stride %u, bo size %llu, map %p", ctx->fb.width, ctx->fb.height, rsc->stride,
-			(unsigned long long)rsc->bo->size, (void *)map);
-		if (!map)
-			return;
-		v = pack_clear_colour(rsc->base.format, color);
-		if (rsc->twiddled && x1 > x0 && y1 > y0) {
-			/* a twiddled texture: the rows are not rows; fill a linear box and store it in the chip's order */
-			struct pipe_box box = { .x = (int)x0, .y = (int)y0, .width = (int)(x1 - x0), .height = (int)(y1 - y0), .depth = 1 };
-			unsigned stride = box.width * bpp;
-			uint8_t *lin = malloc((size_t)stride * box.height);
-
-			if (lin) {
-				for (y = 0; y < (unsigned)box.height; y++)
-					for (x = 0; x < (unsigned)box.width; x++)
-						memcpy(lin + (uint64_t)y * stride + (uint64_t)x * bpp, &v, bpp);
-				mbx_tex_twiddle(rsc, ctx->fb.cbufs[0].level, &box, lin, stride, true);
-				free(lin);
-				rsc->sp_dirty = true;
-			}
+		full = x0 == 0 && y0 == 0 && x1 == ctx->fb.width && y1 == ctx->fb.height;
+		mbx_job_flush(ctx);	/* the clear comes after what was drawn */
+		if (full && !rsc->twiddled && ctx->fb.cbufs[0].level == 0 &&
+		    (rsc->base.format == PIPE_FORMAT_B8G8R8A8_UNORM || rsc->base.format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+		     rsc->base.format == PIPE_FORMAT_B5G6R5_UNORM) && !getenv("MBX_CPU_CLEAR")) {
+			/* the next job paints it in its background pass, reading nothing of the target (the CPU fill of
+			 * a 800 x 480 target was 7.5 ms of a 16.6 ms frame); anything that needs the memory first settles it */
+			if (ctx->clear.pending && ctx->clear.rsc != rsc)
+				mbx_clear_materialize(ctx);
+			ctx->clear.pending = true;
+			pipe_resource_reference((struct pipe_resource **)&ctx->clear.rsc, &rsc->base);
+			ctx->clear.packed = v;
+			ctx->clear.level = 0;
+			ctx->clear.w = ctx->fb.width;
+			ctx->clear.h = ctx->fb.height;
+			mbx_dbg("clear pending: %08x", v);
 			return;
 		}
-		for (y = y0; y < y1; y++) {
-			uint8_t *row = map + (uint64_t)y * rsc->stride;
-
-			if (bpp == 4)
-				for (x = x0; x < x1; x++)
-					((uint32_t *)row)[x] = v;
-			else
-				for (x = x0; x < x1; x++)
-					((uint16_t *)row)[x] = (uint16_t)v;
-		}
+		mbx_clear_materialize(ctx);
+		cpu_fill(ctx, rsc, ctx->fb.cbufs[0].level, v, x0, y0, x1, y1);
 	}
 }
 
