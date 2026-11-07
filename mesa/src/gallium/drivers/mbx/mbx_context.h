@@ -13,7 +13,6 @@
 
 struct nir_shader;
 
-#define MBX_MAX_TEX 2	/* texture units the TSP has (the draws it takes use the first) */
 #define MBX_MAX_SAMPLERS 8	/* what GLES2 needs: the CPU fallback takes the draws that use more than the chip does */
 
 /* A shader as the state tracker hands it over; its VGP program is made at the first draw */

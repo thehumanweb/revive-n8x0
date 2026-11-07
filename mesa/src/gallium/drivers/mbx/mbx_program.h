@@ -19,11 +19,12 @@ enum mbx_fs_kind {
 	MBX_FS_MATCHED,		/* gl_FragColor from one varying's components and constants */
 };
 
+#define MBX_MAX_TEX 2	/* texture units the TSP has */
 #define MBX_MAX_FSU 4	/* fragment uniform vec4s the vertex program can take */
 
 /* One lane of gl_FragColor: a product of up to one of each factor */
 struct mbx_fs_lane {
-	bool tex;			/* the texel's lane */
+	unsigned tex;			/* the units whose texel (this lane) is a factor, bit k for unit k */
 	bool has_var;
 	unsigned var_loc, var_comp;	/* a varying's component: slot, component */
 	bool has_uni;
@@ -39,8 +40,9 @@ struct mbx_fs_info {
 	bool flat;		/* flat shading (declared so, or nothing varies) */
 	/* texturing: unit 0's texel, times the lanes' other factors (modulate) or alone (replace) */
 	bool tex;
+	unsigned units;		/* the texture units the shader samples: 1 (unit 0) or 3 (both) */
 	bool modulate;
-	unsigned uv_loc[2], uv_comp[2];	/* where the coordinate comes from in the vertex shader's outputs */
+	unsigned uv_loc[MBX_MAX_TEX][2], uv_comp[MBX_MAX_TEX][2];	/* where each unit's coordinate comes from in the vertex shader's outputs */
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* the fragment uniform vec4s read */
 };
 
@@ -65,8 +67,9 @@ struct mbx_vgp_program {
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* fragment uniform vec4s the program carries as constants */
 	int fsu_base;			/* their first constant slot */
 	bool tex;			/* unit 0 is sampled */
-	uint32_t tex_c;			/* its combiner (texture word C) */
-	int tex_scale_slot;		/* the uniform slot holding the texture's (width / padded width, height / padded height) */
+	unsigned ntex;			/* texture units used */
+	uint32_t tex_c[MBX_MAX_TEX];	/* their combiners (texture word C) */
+	int tex_scale_slot[MBX_MAX_TEX];	/* the uniform slot holding each texture's (width / padded width, height / padded height) */
 	/* gl_PointSize: the TA takes one size for the object, so only a constant or a uniform works */
 	enum { MBX_PSIZE_STATE, MBX_PSIZE_IMM, MBX_PSIZE_UNIFORM } psize_kind;
 	float psize;			/* MBX_PSIZE_IMM */

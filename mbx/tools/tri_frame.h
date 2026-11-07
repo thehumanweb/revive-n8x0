@@ -49,6 +49,8 @@ static uint32_t tri_alpha_word = 0xe0000000, tri_clear_alpha = 0xe0000000;	/* al
 /* a textured triangle (mbxtri-drm -N mode): unit 0's words A, B, C, and the state word's bits 16-18 */
 static int tri_tex;
 static uint32_t tri_tex_a, tri_tex_b, tri_tex_c = 0xd6887610, tri_tex_mode = 2;
+static int tri_tex2;				/* -y: a second texture unit with these words (A, B2, C2) */
+static uint32_t tri_tex2_b, tri_tex2_c = 0xd6887610;
 /* a twiddled, mipmapped test texture (-U log2 size): each level one flat colour */
 static float tri_uvscale = 1.0f;
 static inline uint32_t tri_twiddle(uint32_t u, uint32_t v, int lw, int lh)
@@ -123,7 +125,7 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 	static const uint32_t rgba[3] = { 0xff0000ff, 0xff00ff00, 0xffff0000 };	/* R G B A in memory order */
 	struct tri_src p0[2] = { { VF_IN, 0, VXYZW }, { VF_CONST, 0, VXYZW } };
 	struct tri_src col[1] = { { VF_IN, 1, VSWZ(2, 1, 0, 3) } };
-	uint32_t code[6][2];
+	uint32_t code[7][2];
 	float c = cosf(deg * (float)M_PI / 180), sn = sinf(deg * (float)M_PI / 180);
 	float m[16] = { c, -sn, 0, 0, sn, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 	int i;
@@ -163,13 +165,18 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 
 	if (tri_with_triangle) {
 		/* the object header: state, alpha test, layout, viewport, depth */
-		tri_ta(&s, 0x10000000 | 0x1 | 0x2 | (tri_tex ? 0x4 : 0) | 0x20 | 0x80 | 0x100);
+		tri_ta(&s, 0x10000000 | 0x1 | 0x2 | (tri_tex ? 0x4 : 0) | (tri_tex2 ? 0x8 : 0) | 0x20 | 0x80 | 0x100);
 		tri_ta(&s, tri_state_word | (tri_tex ? tri_tex_mode << 16 : 0));	/* Gouraud, depth test LESS (by default) */
 		tri_ta(&s, tri_alpha_word);		/* alpha test word */
 		if (tri_tex) {
 			tri_ta(&s, tri_tex_a);
 			tri_ta(&s, tri_tex_b);
 			tri_ta(&s, tri_tex_c);
+		}
+		if (tri_tex2) {
+			tri_ta(&s, tri_tex_a);
+			tri_ta(&s, tri_tex2_b);
+			tri_ta(&s, tri_tex2_c);
 		}
 		tri_ta(&s, tri_tex ? 0x253 : 0x53);	/* v0: three floats, v1: four bytes packed, v2: two floats (the texture coordinate) */
 		tri_taf(&s, TRI_W / 2.0f); tri_taf(&s, TRI_W / 2.0f);
@@ -185,11 +192,12 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 			struct tri_src uv[1] = { { VF_IN, 2, VXYZW } };
 
 			tri_enc(code[5], VOP_MOV, VOUT(3), 0xf, uv, 1);	/* o3 = v2: texture coordinate s, t */
+			tri_enc(code[6], VOP_MOV, VOUT(4), 0xf, uv, 1);	/* o4 = v2: the second unit's */
 		}
 		tri_ta(&s, 0x80000000 | 0x4);		/* a section: bit 2 */
-		tri_ta(&s, 0u << 16 | (tri_tex ? 5u : 4u) << 8 | 0);	/* flags 0 (once, window 0), instructions 0..4 (5) */
-		tri_ta(&s, 0x90000000 | 0u << 16 | (tri_tex ? 5 : 4));
-		for (i = 0; i < (tri_tex ? 6 : 5); i++) {
+		tri_ta(&s, 0u << 16 | (tri_tex2 ? 6u : tri_tex ? 5u : 4u) << 8 | 0);	/* flags 0 (once, window 0), instructions 0..4 (5, 6) */
+		tri_ta(&s, 0x90000000 | 0u << 16 | (tri_tex2 ? 6 : tri_tex ? 5 : 4));
+		for (i = 0; i < (tri_tex2 ? 7 : tri_tex ? 6 : 5); i++) {
 			tri_ta(&s, code[i][0]);
 			tri_ta(&s, code[i][1]);
 		}

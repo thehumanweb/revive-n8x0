@@ -90,13 +90,21 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 		return NULL;
 	}
 	p->gouraud = !ctx->fs->fs_info.flat;
-	p->tex_scale_slot = -1;
+	p->tex_scale_slot[0] = p->tex_scale_slot[1] = -1;
 	if (ctx->fs->fs_info.tex) {
 		/* texture word C: colour and alpha each A * B + C * D with C = 1 - 1 = 0. Replace is the stock
 		 * stack's own word (the background object's); modulate has the texel in A and the primary colour in B */
 		p->tex = true;
-		p->tex_c = ctx->fs->fs_info.modulate ? 0x86884610 : 0xd6887610;
-		p->st_extra |= 2u << 16;	/* state bits 16-18: one texture unit is mode 2 (found on the chip: 1 draws nothing, 3, 6, 7 hang) */
+		p->tex_c[0] = ctx->fs->fs_info.modulate ? 0x86884610 : 0xd6887610;
+		p->ntex = 1;
+		if (ctx->fs->fs_info.units & 2) {
+			/* the second unit multiplies the first's result by its own texel (found on the chip: its picture is
+			 * the model's): colour and alpha A = previous, B = texel, C = 1 - 1 */
+			p->tex_c[1] = 0x56883610;
+			p->ntex = 2;
+		}
+		/* state bits 16-18: one texture unit is mode 2, two are 5 (found on the chip: 1 draws nothing, 3, 4, 6, 7 hang) */
+		p->st_extra |= (p->ntex == 2 ? 5u : 2u) << 16;
 	}
 	p->sections = 0xf0020000 | 0x4 | (scissor ? 0xfu << 20 : 0);	/* user clip planes 0-3 on for the scissor */	/* the VGP section the program is loaded in (bit 2); bit 17 is needed on the chip (observed on an N810), the model ignores it */
 	if (!mbx_compile_vs(ctx->vs->nir, &ctx->fs->fs_info, p)) {

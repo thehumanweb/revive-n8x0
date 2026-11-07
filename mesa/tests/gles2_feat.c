@@ -875,9 +875,9 @@ static int t_polygon_offset(char *why)
 	return 1;
 }
 
-static int t_fb_two_tex(char *why)
+static int t_tex_two_units(char *why)
 {
-	/* two textures multiplied (the chip takes one in the fixed pipe: the CPU does this): quadrants times mid grey */
+	/* two textures multiplied (unit 0 replace, unit 1 previous times texel: both on the chip): quadrants times mid grey */
 	unsigned char px[8 * 8 * 4], grey[8 * 8 * 4];
 	GLuint t0, t1;
 	int ok;
@@ -1119,7 +1119,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "tex_subimage", t_tex_subimage },
 	{ "render_to_texture", t_render_to_texture },
 	{ "mipmap", t_mipmap },
-	{ "fb_two_tex", t_fb_two_tex },
+	{ "tex_two_units", t_tex_two_units },
 	{ "colormask", t_colormask },
 	{ "blend_constant", t_blend_constant },
 	{ "blend_subtract", t_blend_subtract },

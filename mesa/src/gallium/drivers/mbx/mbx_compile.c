@@ -449,21 +449,24 @@ static bool pass_one(struct cc *c)
 			c->vuse[v.idx]++;
 		write_dest(c, v, D_OUT, 1, bgra[lane]);
 	}
-	if (fs->tex) {
-		/* the texture coordinate into o3.xy, times (width / padded width, height / padded height): the
+	for (unsigned u = 0; u < MBX_MAX_TEX; u++) {
+		/* unit u's texture coordinate into o(3 + u).xy, times (width / padded width, height / padded height): the
 		 * chip reads a power-of-two texture and the padding repeats the edge texels */
-		int slot = c->max_uniform + 1;
+		int slot;
 
+		if (!(fs->units >> u & 1))
+			continue;
+		slot = c->max_uniform + 1;
 		for (lane = 0; lane < 2; lane++) {
-			struct vsrc t = c->outs[fs->uv_loc[lane]][fs->uv_comp[lane]], scale = { .kind = V_CONST, .idx = slot, .lane = lane };
+			struct vsrc t = c->outs[fs->uv_loc[u][lane]][fs->uv_comp[u][lane]], scale = { .kind = V_CONST, .idx = slot, .lane = lane };
 
 			if (t.kind == V_NONE)
 				return fail(c, "the vertex shader does not write the texture coordinate the fragment shader reads");
 			t = op2(c, MBX_VGP_MUL, t, scale);
 			c->vuse[t.idx]++;
-			write_dest(c, t, D_OUT, 3, lane);
+			write_dest(c, t, D_OUT, 3 + (int)u, lane);
 		}
-		c->prog->tex_scale_slot = slot;
+		c->prog->tex_scale_slot[u] = slot;
 	}
 	return true;
 }
@@ -709,7 +712,7 @@ bool mbx_compile_vs(nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp
  * vertex program, and reaches the TSP as the primary colour: it is exact because each factor is linear across a
  * triangle (a varying) or constant (a uniform). The texel then multiplies it (modulate), or is it (replace).
  */
-static bool fs_factors(nir_scalar s, struct mbx_fs_lane *L, nir_tex_instr *tex, unsigned lane)
+static bool fs_factors(nir_scalar s, struct mbx_fs_lane *L, nir_tex_instr *const tex[MBX_MAX_TEX], unsigned lane)
 {
 	s = nir_scalar_chase_movs(s);
 	if (nir_scalar_is_const(s)) {
@@ -717,12 +720,13 @@ static bool fs_factors(nir_scalar s, struct mbx_fs_lane *L, nir_tex_instr *tex, 
 		L->has_k = true;
 		return true;
 	}
-	if (tex && nir_def_instr(s.def) == &tex->instr) {
-		if (s.comp != lane || L->tex)
-			return false;
-		L->tex = true;
-		return true;
-	}
+	for (unsigned k = 0; k < MBX_MAX_TEX; k++)
+		if (tex[k] && nir_def_instr(s.def) == &tex[k]->instr) {
+			if (s.comp != lane || (L->tex >> k & 1))
+				return false;
+			L->tex |= 1u << k;
+			return true;
+		}
 	if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_input) {
 		nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
 
@@ -753,7 +757,7 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 {
 	nir_function_impl *impl = nir_shader_get_entrypoint(fs);
 	nir_intrinsic_instr *store = NULL;
-	nir_tex_instr *tex = NULL;
+	nir_tex_instr *tex[MBX_MAX_TEX] = { NULL, NULL };
 	unsigned i, j;
 
 	memset(info, 0, sizeof(*info));
@@ -778,14 +782,15 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		case nir_instr_type_tex: {
 			nir_tex_instr *t = nir_instr_as_tex(instr);
 
-			/* one plain 2D sample of unit 0 */
-			if (tex || t->op != nir_texop_tex || t->sampler_dim != GLSL_SAMPLER_DIM_2D || t->is_array ||
-			    t->is_shadow || t->texture_index != 0 || nir_tex_instr_src_index(t, nir_tex_src_coord) < 0)
+			/* a plain 2D sample of unit 0 or unit 1 (the chip has two), once each */
+			if (t->op != nir_texop_tex || t->sampler_dim != GLSL_SAMPLER_DIM_2D || t->is_array || t->is_shadow ||
+			    t->texture_index >= MBX_MAX_TEX || tex[t->texture_index] ||
+			    nir_tex_instr_src_index(t, nir_tex_src_coord) < 0)
 				return;
 			for (i = 0; i < t->num_srcs; i++)
 				if (t->src[i].src_type != nir_tex_src_coord)
 					return;	/* a bias, a projector, an offset: not yet */
-			tex = t;
+			tex[t->texture_index] = t;
 			break;
 		}
 		case nir_instr_type_intrinsic: {
@@ -809,29 +814,36 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 	if (!store || nir_src_num_components(store->src[0]) != 4)
 		return;
 
-	if (tex) {
-		nir_scalar u = nir_scalar_resolved(tex->src[nir_tex_instr_src_index(tex, nir_tex_src_coord)].src.ssa, 0);
-		nir_scalar v = nir_scalar_resolved(tex->src[nir_tex_instr_src_index(tex, nir_tex_src_coord)].src.ssa, 1);
+	for (unsigned k = 0; k < MBX_MAX_TEX; k++) {
+		nir_scalar u, v;
+		nir_intrinsic_instr *iu, *iv;
 
+		if (!tex[k])
+			continue;
+		u = nir_scalar_resolved(tex[k]->src[nir_tex_instr_src_index(tex[k], nir_tex_src_coord)].src.ssa, 0);
+		v = nir_scalar_resolved(tex[k]->src[nir_tex_instr_src_index(tex[k], nir_tex_src_coord)].src.ssa, 1);
 		if (!nir_scalar_is_intrinsic(u) || nir_scalar_intrinsic_op(u) != nir_intrinsic_load_input ||
 		    !nir_scalar_is_intrinsic(v) || nir_scalar_intrinsic_op(v) != nir_intrinsic_load_input)
 			return;
-		nir_intrinsic_instr *iu = nir_def_as_intrinsic(u.def), *iv = nir_def_as_intrinsic(v.def);
-
-		info->uv_loc[0] = nir_intrinsic_io_semantics(iu).location;
-		info->uv_comp[0] = nir_intrinsic_component(iu) + u.comp;
-		info->uv_loc[1] = nir_intrinsic_io_semantics(iv).location;
-		info->uv_comp[1] = nir_intrinsic_component(iv) + v.comp;
-		info->tex = true;
+		iu = nir_def_as_intrinsic(u.def);
+		iv = nir_def_as_intrinsic(v.def);
+		info->uv_loc[k][0] = nir_intrinsic_io_semantics(iu).location;
+		info->uv_comp[k][0] = nir_intrinsic_component(iu) + u.comp;
+		info->uv_loc[k][1] = nir_intrinsic_io_semantics(iv).location;
+		info->uv_comp[k][1] = nir_intrinsic_component(iv) + v.comp;
+		info->units |= 1u << k;
 	}
+	if (info->units & ~1u && !(info->units & 1u))
+		return;			/* unit 1 alone: the chain starts at unit 0 */
+	info->tex = info->units != 0;
 	for (i = 0; i < 4; i++) {
 		struct mbx_fs_lane *L = &info->lane[i];
 
 		L->k = 1.0f;
 		if (!fs_factors(nir_scalar_resolved(store->src[0].ssa, i), L, tex, i))
 			return;
-		if ((L->tex != 0) != (info->tex != 0))
-			return;	/* the texel is in every lane or in none: it is one combiner */
+		if (L->tex != info->units)
+			return;	/* the same texels in every lane: it is one combiner chain */
 	}
 	/* the fragment uniforms the vertex program needs, each vec4 once */
 	for (i = 0; i < 4; i++) {

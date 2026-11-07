@@ -624,3 +624,12 @@ circuit.
     not found yet (a second texture word or unit is the untried guess), so the driver uses the nearest level for the
     `_MIPMAP_LINEAR` filters. A texture that is both mipmapped and a render target is twiddled and the chip cannot
     render into it (the driver draws to it on the CPU).
+
+
+41. **Two texture units on the chip** (found during device testing; `mbxtri-drm -N 5 -y B -z C`, `mbxtri -N 5 ...`: unit 0 and unit 1 sample the same
+    8 x 8 linear texture, four texel pairs, 0 differing pixels in all of them). State word bits 16-18 = 5; the header mask names
+    both units (bits 2 and 3) and sends A, B, C for each; the vertex program writes unit 0's coordinate to `o3.xy` and unit 1's to
+    `o4.xy` (with `o4` unwritten unit 1 samples (0, 0): the picture is its texel at the corner). Unit 1's combiner `0x56883610` is
+    colour and alpha A = previous, B = texel, C = 1 - 1: previous x texel, so unit 0 replace (`0xd6887610`) or modulate (`0x86884610`)
+    followed by it is texel0 x texel1 (x the primary colour). Trilinear sweeps with two units (the second unit with bits 29 and
+    30, `maxlev` 5, 11 or 15 in word A) still sample level 0.

@@ -177,10 +177,10 @@ static uint32_t vertex_layout(struct mbx_context *ctx, const struct mbx_vgp_prog
 }
 
 /* Texture words A and B of unit 0 from the bound view and sampler: a linear power-of-two texture with a stride */
-static bool tex_words(struct mbx_context *ctx, uint32_t *a, uint32_t *b)
+static bool tex_words(struct mbx_context *ctx, unsigned unit, uint32_t *a, uint32_t *b)
 {
-	struct pipe_sampler_view *view = ctx->views[0];
-	const struct pipe_sampler_state *smp = ctx->samplers[0];
+	struct pipe_sampler_view *view = ctx->views[unit];
+	const struct pipe_sampler_state *smp = ctx->samplers[unit];
 	struct mbx_resource *tr;
 	unsigned stride_px, fmt;
 	bool clamp_s, clamp_t, bilinear;
@@ -218,24 +218,19 @@ static bool tex_words(struct mbx_context *ctx, uint32_t *a, uint32_t *b)
 static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *prog, uint32_t layout)
 {
 	const struct pipe_viewport_state *vp = &ctx->viewport;
-	uint32_t ta = 0, tb = 0;
+	uint32_t ta[MBX_MAX_TEX] = { 0 }, tb[MBX_MAX_TEX] = { 0 };
+	unsigned u;
 
-	if (prog->tex && !tex_words(ctx, &ta, &tb))
-		ta = tb = 0;
-	if (prog->tex) {
-		const uint32_t *tp = ctx->views[0] && ctx->views[0]->texture ?
-				     mbx_bo_map(mbx_resource(ctx->views[0]->texture)->bo) : NULL;
-
-		mbx_dbg("texture words A %08x B %08x C %08x, texel words %08x %08x %08x %08x; state %08x",
-			ta, tb, prog->tex_c, tp ? tp[0] : 0, tp ? tp[1] : 0, tp ? tp[4] : 0, tp ? tp[5] : 0, hw_state_word(ctx, prog));
-	}
-	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | (prog->tex ? 0x4 : 0) | 0x20 | 0x80 | 0x100);
+	for (u = 0; u < prog->ntex; u++)
+		if (!tex_words(ctx, u, &ta[u], &tb[u]))
+			ta[u] = tb[u] = 0;
+	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | (prog->ntex > 0 ? 0x4 : 0) | (prog->ntex > 1 ? 0x8 : 0) | 0x20 | 0x80 | 0x100);
 	mbx_emit(ctx, MBX_CH_TA, hw_state_word(ctx, prog));
 	mbx_emit(ctx, MBX_CH_TA, 0xe0000000);		/* alpha function ALWAYS (0 is NEVER, which rejects every pixel with bit 25 set) */
-	if (prog->tex) {
-		mbx_emit(ctx, MBX_CH_TA, ta);
-		mbx_emit(ctx, MBX_CH_TA, tb);
-		mbx_emit(ctx, MBX_CH_TA, prog->tex_c);
+	for (u = 0; u < prog->ntex; u++) {
+		mbx_emit(ctx, MBX_CH_TA, ta[u]);
+		mbx_emit(ctx, MBX_CH_TA, tb[u]);
+		mbx_emit(ctx, MBX_CH_TA, prog->tex_c[u]);
 	}
 	mbx_emit(ctx, MBX_CH_TA, layout);
 	mbx_emit_f(ctx, MBX_CH_TA, vp->scale[0]);	/* x scale, x offset, y offset, y scale */
@@ -304,11 +299,12 @@ static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *
 						v[3] = tr - lo;
 					}
 					mbx_emit_f(ctx, MBX_CH_TA, v[c]);
-				} else if (prog->tex && (int)i == prog->tex_scale_slot) {
+				} else if (prog->tex && ((int)i == prog->tex_scale_slot[0] || (int)i == prog->tex_scale_slot[1])) {
 					float s = 1.0f;
+					unsigned un = (int)i == prog->tex_scale_slot[0] ? 0 : 1;
 
-					if (ctx->views[0] && c < 2) {
-						struct mbx_resource *tr = mbx_resource(ctx->views[0]->texture);
+					if (ctx->views[un] && c < 2) {
+						struct mbx_resource *tr = mbx_resource(ctx->views[un]->texture);
 
 						s = c == 0 ? (float)tr->base.width0 / (float)(1u << tr->tex_lw) :
 							     (float)tr->base.height0 / (float)(1u << tr->tex_lh);
@@ -486,8 +482,9 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		unsigned i;
 
 		mbx_dbg("draw %u: header", d);
-		if (prog->tex && ctx->views[0] && ctx->views[0]->texture)
-			mbx_job_use_texture(ctx, mbx_resource(ctx->views[0]->texture));
+		for (unsigned un = 0; un < prog->ntex; un++)
+			if (ctx->views[un] && ctx->views[un]->texture)
+				mbx_job_use_texture(ctx, mbx_resource(ctx->views[un]->texture));
 		emit_header(ctx, prog, layout);
 		mbx_dbg("draw %u: program", d);
 		emit_program(ctx, prog);
