@@ -1,0 +1,4 @@
+# N810 TSC2005 on the LS041Y3 panel: Diablo's /etc/pointercal (tslib linear, RX-44 default)
+# as a libinput matrix for 800x480, raw 0..4095 (user, found during device testing).
+ACTION=="add|change", KERNEL=="event*", ATTRS{name}=="TSC2005 touchscreen", \
+  ENV{LIBINPUT_CALIBRATION_MATRIX}="1.1418 0.0018 -0.0718 -0.0030 -1.2916 1.1313"
