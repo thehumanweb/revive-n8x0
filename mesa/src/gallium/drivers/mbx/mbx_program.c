@@ -39,6 +39,17 @@ static uint32_t comb_word_alpha(unsigned has_texel, bool has_prim, unsigned unit
 	return has_texel ? 1u << 13 | 2u << 11 | tail : 3u << 13 | 1u << 11 | tail;
 }
 
+/*
+ * The combiner words of the texture units for a shader; l8: the units whose bound texture is L8, whose texel alpha is 1
+ * where the chip returns the byte (so that lane takes the primary colour's alpha, as if the shader had no texel there).
+ */
+void mbx_tex_combiners(const struct mbx_fs_info *fi, unsigned ntex, unsigned l8, uint32_t out[MBX_MAX_TEX])
+{
+	for (unsigned u = 0; u < ntex; u++)
+		out[u] = comb_word(fi->mc >> u & 1, fi->pass_c, u) |
+			 comb_word_alpha((fi->ma & ~l8) >> u & 1, fi->pass_a, u);
+}
+
 static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shader_state *templ)
 {
 	struct mbx_shader *so = CALLOC_STRUCT(mbx_shader);
@@ -122,9 +133,7 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 		p->tex = true;
 		p->units = fi->units;
 		p->ntex = fi->units & 2 ? 2 : 1;	/* unit 1 needs unit 0's block before it */
-		p->tex_c[0] = comb_word(fi->mc & 1, fi->pass_c, 0) | comb_word_alpha(fi->ma & 1, fi->pass_a, 0);
-		if (p->ntex == 2)
-			p->tex_c[1] = comb_word(fi->mc & 2, fi->pass_c, 1) | comb_word_alpha(fi->ma & 2, fi->pass_a, 1);
+		mbx_tex_combiners(fi, p->ntex, 0, p->tex_c);
 		/* state bits 16-18: one texture unit is mode 2, two are 5 (found on the chip: 1 draws nothing, 3, 4, 6, 7 hang) */
 		p->st_extra |= (p->ntex == 2 ? 5u : 2u) << 16;
 	}

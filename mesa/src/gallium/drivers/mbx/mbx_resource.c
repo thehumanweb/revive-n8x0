@@ -359,6 +359,14 @@ static void nudge_black(enum pipe_format format, uint8_t *p, unsigned stride, un
 				if (!(t[0] | t[1] | t[2]))
 					t[0] = 1;
 			}
+	} else if (format == PIPE_FORMAT_A8_UNORM || format == PIPE_FORMAT_L8_UNORM) {
+		for (y = 0; y < h; y++)
+			for (x = 0; x < w; x++) {
+				uint8_t *t = p + (uint64_t)y * stride + x;
+
+				if (!*t)
+					*t = 1;
+			}
 	} else if (format == PIPE_FORMAT_L8A8_UNORM) {
 		for (y = 0; y < h; y++)
 			for (x = 0; x < w; x++) {

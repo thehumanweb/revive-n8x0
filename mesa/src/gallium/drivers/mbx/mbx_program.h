@@ -101,6 +101,7 @@ void mbx_fs_match(struct nir_shader *fs, struct mbx_fs_info *info);
 bool mbx_compile_vs(struct nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp_program *prog);
 
 struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx);
+void mbx_tex_combiners(const struct mbx_fs_info *fi, unsigned ntex, unsigned l8, uint32_t out[MBX_MAX_TEX]);
 void mbx_program_destroy(struct mbx_vgp_program *p);
 
 #endif

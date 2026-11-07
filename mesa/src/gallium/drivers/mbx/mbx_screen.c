@@ -133,7 +133,9 @@ static bool mbx_screen_is_format_supported(struct pipe_screen *pscreen, enum pip
 		case PIPE_FORMAT_B4G4R4A4_UNORM:
 		case PIPE_FORMAT_B5G5R5A1_UNORM:
 		case PIPE_FORMAT_L8A8_UNORM:
-			break;	/* the chip's ARGB8888, RGB565, ARGB4444, ARGB1555 and LA88 */
+		case PIPE_FORMAT_A8_UNORM:
+		case PIPE_FORMAT_L8_UNORM:
+			break;	/* the chip's ARGB8888, RGB565, ARGB4444, ARGB1555, LA88 and one-byte format */
 		default:
 			return false;
 		}

@@ -174,6 +174,8 @@ int main(int argc, char **argv)
 		for (i = 0; i < 64; i++)
 			if (tex_fmt == 6)
 				c_wr32(NULL, texva + 4 * ((i / 8) * tex_pitch + i % 8), tex_bw ? (i % 8 >= 4 ? tex_hi : tex_lo) : quad[(i / 8 >= 4) * 2 + (i % 8 >= 4)]);
+			else if (tex_fmt == 5)
+				ram[texva + (i / 8) * tex_pitch + i % 8] = (uint8_t)(i % 8 >= 4 ? tex_hi : tex_lo);
 			else {
 				uint32_t a16 = texva + 2 * ((i / 8) * tex_pitch + i % 8), v16 = (i % 8 >= 4 ? tex_hi : tex_lo) & 0xffff;
 

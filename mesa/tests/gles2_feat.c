@@ -1206,7 +1206,80 @@ static int t_tex_alpha_only(char *why)
 	return ok;
 }
 
+static GLuint make_tex1(int w, int h, GLenum fmt, const unsigned char *data, GLint filter)
+{
+	GLuint t;
+
+	glGenTextures(1, &t);
+	glBindTexture(GL_TEXTURE_2D, t);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, data);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	return t;
+}
+
+static int t_tex_a8(char *why)
+{
+	/* a one-byte alpha atlas (GL_ALPHA): the left half 0, the right half 255, drawn as text colour red over green */
+	unsigned char px[8 * 8];
+	GLuint t;
+	int ok;
+
+	for (int i = 0; i < 64; i++)
+		px[i] = (i % 8) >= 4 ? 255 : 0;
+	begin();
+	glClearColor(0, 1, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	t = make_tex1(8, 8, GL_ALPHA, px, GL_LINEAR);
+	glUseProgram(prog_txt);
+	glUniform1i(glGetUniformLocation(prog_txt, "u_tex"), 0);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	quad(0, 0, 1, 1, 1, 0, 0);
+	glDisable(GL_BLEND);
+	/* the seam is a ramp (bilinear next to a zero byte: the driver stores 1 for 0), the sides are pure */
+	ok = is(8, 32, 0, 255, 0, why, 200) && is(56, 32, 255, 0, 0, why, 200);
+	if (ok && (probe(32, 32).c[0] < 40 || probe(32, 32).c[0] > 215)) {
+		snprintf(why, 200, "the A8 seam (32,32) is %d: a ramp expected", probe(32, 32).c[0]);
+		ok = 0;
+	}
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+static int t_tex_l8(char *why)
+{
+	/* a luminance texture (GL_LUMINANCE): 128 on the left, 255 on the right, times a white vertex colour: grey, with alpha 1
+	 * (blended over green it must not mix) */
+	unsigned char px[8 * 8];
+	GLuint t;
+	int ok;
+
+	for (int i = 0; i < 64; i++)
+		px[i] = (i % 8) >= 4 ? 255 : 128;
+	begin();
+	glClearColor(0, 1, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	t = make_tex1(8, 8, GL_LUMINANCE, px, GL_NEAREST);
+	glUseProgram(prog_mod);
+	glUniform1i(glGetUniformLocation(prog_mod, "u_tex"), 0);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	glDisable(GL_BLEND);
+	ok = is(8, 32, 128, 128, 128, why, 200) && is(56, 32, 255, 255, 255, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "tex_a8", t_tex_a8 },
+	{ "tex_l8", t_tex_l8 },
 	{ "tex_sum", t_tex_sum },
 	{ "tex_mix", t_tex_mix },
 	{ "tex_alpha_only", t_tex_alpha_only },

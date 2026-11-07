@@ -112,6 +112,11 @@ static bool state_needs_fallback(struct mbx_context *ctx)
 		return true;
 	if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture && mbx_resource(ctx->fb.cbufs[0].texture)->twiddled)
 		return true;			/* a mipmapped texture is twiddled: the chip cannot render into it */
+	if (ctx->fs && ctx->fs->fs_info.kind == MBX_FS_MATCHED)
+		for (unsigned u = 0; u < MBX_MAX_TEX; u++)
+			if ((ctx->fs->fs_info.mc >> u & 1) && ctx->views[u] && ctx->views[u]->texture &&
+			    ctx->views[u]->texture->format == PIPE_FORMAT_A8_UNORM)
+				return true;	/* an alpha-only texture's colour is zero, the chip returns its byte in every channel */
 	return false;
 }
 
@@ -218,9 +223,19 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, uint32_t *a, uint3
 static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *prog, uint32_t layout)
 {
 	const struct pipe_viewport_state *vp = &ctx->viewport;
-	uint32_t ta[MBX_MAX_TEX] = { 0 }, tb[MBX_MAX_TEX] = { 0 };
-	unsigned u;
+	uint32_t ta[MBX_MAX_TEX] = { 0 }, tb[MBX_MAX_TEX] = { 0 }, tc[MBX_MAX_TEX];
+	unsigned u, l8 = 0;
 
+	memcpy(tc, prog->tex_c, sizeof(tc));
+
+	for (u = 0; u < prog->ntex; u++) {
+		struct pipe_sampler_view *vw = ctx->views[u];
+
+		if (vw && vw->texture && vw->texture->format == PIPE_FORMAT_L8_UNORM)
+			l8 |= 1u << u;
+	}
+	if (l8)
+		mbx_tex_combiners(&((const struct mbx_shader *)prog->fs)->fs_info, prog->ntex, l8, tc);
 	for (u = 0; u < prog->ntex; u++) {
 		if (u == 0 && !(prog->units & 1))
 			continue;	/* unit 1 alone: unit 0's block is a copy of unit 1's (below) */
@@ -237,7 +252,7 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 	for (u = 0; u < prog->ntex; u++) {
 		mbx_emit(ctx, MBX_CH_TA, ta[u]);
 		mbx_emit(ctx, MBX_CH_TA, tb[u]);
-		mbx_emit(ctx, MBX_CH_TA, prog->tex_c[u]);
+		mbx_emit(ctx, MBX_CH_TA, tc[u]);
 	}
 	mbx_emit(ctx, MBX_CH_TA, layout);
 	mbx_emit_f(ctx, MBX_CH_TA, vp->scale[0]);	/* x scale, x offset, y offset, y scale */

@@ -175,6 +175,8 @@ int main(int argc, char **argv)
 		for (i = 0; i < 64; i++)
 			if (tex_fmt == 6)
 				tp[(i / 8) * tex_pitch + i % 8] = tex_bw ? (i % 8 >= 4 ? tex_hi : tex_lo) : quad[(i / 8 >= 4) * 2 + (i % 8 >= 4)];
+			else if (tex_fmt == 5)	/* one byte a texel (L8 or A8) */
+				((uint8_t *)tp)[(i / 8) * tex_pitch + i % 8] = (uint8_t)(i % 8 >= 4 ? tex_hi : tex_lo);
 			else	/* a 16-bit texel */
 				((uint16_t *)tp)[(i / 8) * tex_pitch + i % 8] = (uint16_t)(i % 8 >= 4 ? tex_hi : tex_lo);
 		/* clamp both ways, 8 x 8, format 6 (ARGB8888), the stride in 8 texels: bit 0 of A and bits 1+ at 18 of B (-J) */

@@ -645,3 +645,11 @@ circuit.
     a shader may take only the alpha from a texture), the rest is `o2`, and the vertex program evaluates the coefficients
     (exact when they are affine in the varyings). An additive term in the alpha lane has no place on the chip (the
     shader takes the CPU).
+
+
+43. **One-byte texels** (found during device testing; `mbxtri-drm -N 2 -V 5 -Q lo:hi [-H ...]`, five cases, 0 differing pixels): texel format 5
+    returns the byte in red, green, blue **and alpha** (the replace combiner writes it to all four channels of the target),
+    filters like the others, and a zero byte is an all-zero texel like black (a bilinear sample next to it is a step, README
+    assumption 39). GL's L8 is (l, l, l, 1) and A8 is (0, 0, 0, a): the driver takes A8 for shaders that use only its alpha
+    (the glyph atlas) and lets L8's alpha lane use the primary colour's alpha instead of the byte (a per-draw combiner word);
+    an A8 texture in a shader's colour lanes, whose colour is zero, goes to the CPU. Zero bytes are stored as 1.

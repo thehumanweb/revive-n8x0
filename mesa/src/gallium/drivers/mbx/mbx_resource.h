@@ -47,6 +47,8 @@ static inline int mbx_chip_tex_format(enum pipe_format f)
 	case PIPE_FORMAT_B4G4R4A4_UNORM: return 2;	/* ARGB4444 */
 	case PIPE_FORMAT_B5G5R5A1_UNORM: return 0;	/* ARGB1555 */
 	case PIPE_FORMAT_L8A8_UNORM: return 4;		/* LA88 */
+	case PIPE_FORMAT_A8_UNORM:
+	case PIPE_FORMAT_L8_UNORM: return 5;		/* one byte in every channel, alpha too (the combiner picks) */
 	default: return -1;
 	}
 }
