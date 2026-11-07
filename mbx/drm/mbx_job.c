@@ -187,7 +187,8 @@ static int mbx_job_run(struct mbx_job *job)
 	int ret;
 
 	mutex_lock(&m->job_lock);
-	mbx_vm_activate(job->vm);
+	if (m->active_vm != job->vm || job->vm->dirty)	/* the MMU takes the address space again when it changed (another client, new or removed mappings) */
+		mbx_vm_activate(job->vm);
 	spin_lock_irq(&m->irq_lock);
 	m->pending = 0;
 	spin_unlock_irq(&m->irq_lock);

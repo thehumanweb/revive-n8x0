@@ -195,9 +195,6 @@ void mbx_job_flush(struct mbx_context *ctx)
 	memcpy(&zclear, &z, 4);
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
 	flat = ctx->clear.pending && ctx->clear.rsc == color;
-	for (unsigned i = 0; i < MBX_MAX_TEX; i++)
-		if (ctx->job.tex[i])
-			flat = false;	/* a textured job with the flat background comes out wrong on the unit (README assumption 44): CPU fill */
 	if (ctx->clear.pending && !flat)
 		mbx_clear_materialize(ctx);	/* another target's clear: the CPU fills it */
 	if (flat) {

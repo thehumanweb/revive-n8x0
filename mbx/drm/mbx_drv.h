@@ -68,6 +68,7 @@ struct mbx_vm {
 	u32 *pt[MBX_MMU_TABLES];
 	dma_addr_t pt_dma[MBX_MMU_TABLES];
 	struct list_head maps;
+	bool dirty;			/* a mapping came or went since the MMU last took this address space */
 };
 
 struct mbx_file {

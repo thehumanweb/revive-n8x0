@@ -84,6 +84,7 @@ static void unmap_locked(struct mbx_vm *vm, struct mbx_mapping *map)
 	for (k = 0; k < n; k++, pg++)
 		vm->pt[pg >> 10][pg & 1023] = lower_32_bits(vm->m->dummy_dma);
 	list_del(&map->link);
+	vm->dirty = true;
 	drm_mm_remove_node(&map->node);
 	drm_gem_object_put(map->obj);
 	kfree(map);
@@ -174,6 +175,7 @@ struct mbx_mapping *mbx_vm_map(struct mbx_vm *vm, struct drm_gem_object *obj, u3
 	drm_gem_object_get(obj);
 	map->obj = obj;
 	list_add(&map->link, &vm->maps);
+	vm->dirty = true;
 out:
 	mutex_unlock(&vm->lock);
 	return map;
@@ -204,7 +206,7 @@ int mbx_vm_unmap(struct mbx_vm *vm, struct drm_gem_object *obj)
 static int mmu_seq = 1;	/* the stock daemon's handshake: without it the TLB keeps the previous client's pages (found on the unit with two clients) */
 module_param(mmu_seq, int, 0644);
 MODULE_PARM_DESC(mmu_seq, "debug: 1 does the stock daemon's MMU enable handshake");
-static int tlb_mode;
+static int tlb_mode = 1;	/* default: the TLB is loaded with the client's pages at every address-space switch (found on the unit: without it a new process's first textured job read the previous process's texels) */
 module_param(tlb_mode, int, 0644);
 MODULE_PARM_DESC(tlb_mode, "debug: 1 loads the TLB for the client's pages, 2 also for the whole parameter buffer");
 
@@ -234,6 +236,7 @@ void mbx_vm_activate(struct mbx_vm *vm)
 	struct mbx_device *m = vm->m;
 	int i;
 
+	vm->dirty = false;
 	for (i = 0; i < MBX_MMU_TABLES; i++)
 		mbx_write(m, MBX_REG_MMU_TABLE(i), lower_32_bits(vm->pt_dma[i]));
 	if (mmu_seq) {

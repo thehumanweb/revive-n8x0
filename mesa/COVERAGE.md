@@ -108,5 +108,5 @@ the CPU fallback. Non-power-of-two and render-to-texture-only textures stay line
 - Cube maps: CPU-sampled (six linear faces per level), no cube render targets.
 - `gl_PointSize` from a vertex attribute: one object per point (`point_sizes`).
 - `if (alpha < k) discard;` (and mirrors): the chip's alpha function with state bit 14 (README assumption 45; `alpha_discard`).
-- A full-target colour clear costs nothing when the scene has no textured draw (README assumption 44).
-- Known: a textured first job in a new process is sometimes wrong on the unit (black or stale); not understood.
+- A full-target colour clear costs nothing (README assumption 44).
+- A textured first job in a new process used to read the previous process's texels (stale TLB); fixed by loading the TLB at every address-space switch (README assumption 46), so the flat clear works with textured scenes too.
