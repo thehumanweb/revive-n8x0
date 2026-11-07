@@ -45,6 +45,7 @@ static inline void tri_taf(struct tri_sw *s, float f) { uint32_t u; memcpy(&u, &
 /* The ISP/TSP state word of the triangle's object (Gouraud, depth test LESS); mbxtri-drm -S overrides it */
 static uint32_t tri_state_word = 1u << 29 | 1u << 25 | 1u << 22 | 1u << 9;	/* source ONE, destination ZERO, bit 25 with the alpha function ALWAYS: the colour is exact */
 static uint32_t tri_clear_state = 0xe00 | 0x100;	/* the depth-only clear's state word (mbxtri-drm -K overrides it) */
+static uint32_t tri_va[3] = { 255, 255, 255 };			/* the vertices' alpha (-j a0,a1,a2) */
 static uint32_t tri_alpha_word = 0xe0000000, tri_clear_alpha = 0xe0000000;	/* alpha function ALWAYS; 0 is NEVER */	/* the alpha-test words (mbxtri-drm -A, -B) */
 /* a textured triangle (mbxtri-drm -N mode): unit 0's words A, B, C, and the state word's bits 16-18 */
 static int tri_tex;
@@ -123,7 +124,8 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 {
 	struct tri_sw s = { .base = out, .p = out };
 	static const float v[3][3] = { { 0, 0.8f, 0.5f }, { -0.8f, -0.6f, 0.5f }, { 0.8f, -0.6f, 0.5f } };
-	static const uint32_t rgba[3] = { 0xff0000ff, 0xff00ff00, 0xffff0000 };	/* R G B A in memory order */
+	static const uint32_t rgba_rgb[3] = { 0x0000ff, 0x00ff00, 0xff0000 };	/* R G B in memory order; the alpha is tri_va */
+	uint32_t rgba[3] = { rgba_rgb[0] | tri_va[0] << 24, rgba_rgb[1] | tri_va[1] << 24, rgba_rgb[2] | tri_va[2] << 24 };
 	struct tri_src p0[2] = { { VF_IN, 0, VXYZW }, { VF_CONST, 0, VXYZW } };
 	struct tri_src col[1] = { { VF_IN, 1, VSWZ(2, 1, 0, 3) } };
 	uint32_t code[8][2];

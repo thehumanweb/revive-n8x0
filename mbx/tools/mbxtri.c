@@ -109,9 +109,11 @@ int main(int argc, char **argv)
 	char *endp;
 	int i, x, y;
 
-	while ((o = getopt(argc, argv, "a:vo:N:Y:H:J:Q:V:U:u:y:z:Of:")) != -1) {
+	while ((o = getopt(argc, argv, "a:vA:j:o:N:Y:H:J:Q:V:U:u:y:z:Of:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'N') { tri_tex = 1; tri_tex_mode = (uint32_t)strtoul(optarg, NULL, 0); }
+		else if (o == 'A') tri_alpha_word = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'j') sscanf(optarg, "%u,%u,%u", &tri_va[0], &tri_va[1], &tri_va[2]);
 		else if (o == 'Y') tri_tex_c = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'U') mip_lw = (int)strtoul(optarg, NULL, 0);
 		else if (o == 'u') tri_uvscale = (float)atof(optarg);

@@ -764,6 +764,7 @@ struct fsp {
 	nir_tex_instr *tex[MBX_MAX_TEX];
 	unsigned lane;		/* the lane being parsed: a texel must be this lane's component */
 	bool bad;
+	nir_intrinsic_instr *disc;	/* a discard / terminate under a condition */
 };
 
 struct fs_term {
@@ -1010,6 +1011,50 @@ static bool fs_lane(struct fsp *p, nir_scalar s, struct mbx_fs_lane *L)
 	return !p->bad;
 }
 
+/*
+ * "if (alpha < k) discard;" and its three mirrors, with the alpha the shader's own gl_FragColor.a: the chip's alpha
+ * function (alpha word: function in bits 29-31 as the depth test numbers them, the reference in bits 21-28) does it
+ * (README assumption 45). The reference is the constant's 8-bit threshold on the side that keeps the pixels the shader keeps.
+ */
+static bool fs_alpha_test(nir_intrinsic_instr *disc, nir_intrinsic_instr *store, struct mbx_fs_info *info)
+{
+	nir_scalar cond = nir_scalar_resolved(disc->src[0].ssa, 0), a, k, alpha = nir_scalar_resolved(store->src[0].ssa, 3);
+	nir_alu_instr *alu;
+	bool const_second;
+	float t;
+	int func;
+
+	if (!nir_scalar_is_alu(cond))
+		return false;
+	alu = nir_def_as_alu(cond.def);
+	if (alu->op != nir_op_slt && alu->op != nir_op_sge && alu->op != nir_op_flt && alu->op != nir_op_fge)
+		return false;
+	a = nir_scalar_chase_alu_src(cond, 0);
+	k = nir_scalar_chase_alu_src(cond, 1);
+	const_second = nir_scalar_is_const(k);
+	if (!const_second) {
+		nir_scalar tmp = a;
+
+		a = k;
+		k = tmp;
+		if (!nir_scalar_is_const(k))
+			return false;
+	}
+	if (a.def != alpha.def || a.comp != alpha.comp)
+		return false;			/* the test must be on the colour's alpha lane itself */
+	t = nir_scalar_as_float(k) * 255.0f;
+	if (t < 0.0f || t > 255.0f)
+		return false;
+	/* discard when (a OP k) or (k OP a): the pixels that stay satisfy the opposite */
+	if (alu->op == nir_op_slt || alu->op == nir_op_flt)
+		func = const_second ? 6 : 3;	/* a < k discarded: keep a >= k; k < a discarded: keep a <= k */
+	else
+		func = const_second ? 1 : 4;	/* a >= k discarded: keep a < k; k >= a discarded: keep a > k */
+	/* a keep-side with ">=" or "<" rounds the threshold up, "<=" or ">" rounds it down (the alpha is 8 bits) */
+	info->alpha_word = (uint32_t)func << 29 | ((func == 6 || func == 1) ? (uint32_t)ceilf(t) : (uint32_t)floorf(t)) << 21;
+	return true;
+}
+
 void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 {
 	nir_function_impl *impl = nir_shader_get_entrypoint(fs);
@@ -1033,7 +1078,8 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 
 			if (alu->op != nir_op_mov && alu->op != nir_op_vec2 && alu->op != nir_op_vec3 && alu->op != nir_op_vec4 &&
 			    alu->op != nir_op_fmul && alu->op != nir_op_fadd && alu->op != nir_op_fsub && alu->op != nir_op_fneg &&
-			    alu->op != nir_op_ffma && alu->op != nir_op_flrp)
+			    alu->op != nir_op_ffma && alu->op != nir_op_flrp && alu->op != nir_op_slt && alu->op != nir_op_sge &&
+			    alu->op != nir_op_flt && alu->op != nir_op_fge)
 				return;
 			break;
 		}
@@ -1060,6 +1106,11 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 				if ((loc != FRAG_RESULT_COLOR && loc != FRAG_RESULT_DATA0) || store)
 					return;
 				store = intr;
+			} else if (intr->intrinsic == nir_intrinsic_terminate_if ||
+				   intr->intrinsic == nir_intrinsic_demote_if) {
+				if (p.disc)
+					return;
+				p.disc = intr;
 			} else if (intr->intrinsic != nir_intrinsic_load_input && intr->intrinsic != nir_intrinsic_load_uniform) {
 				return;	/* derivatives and the rest: not yet */
 			}
@@ -1070,6 +1121,9 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		}
 	}
 	if (!store || nir_src_num_components(store->src[0]) != 4)
+		return;
+
+	if (p.disc && !fs_alpha_test(p.disc, store, info))
 		return;
 
 	/* each sampled unit's coordinate: the first two components of one varying (or any two, each its own) */

@@ -102,3 +102,11 @@ the CPU fallback. Non-power-of-two and render-to-texture-only textures stay line
    refusing them at link time with an error (Mesa's GLES2 allows a link failure for an unsupported program).
 4. **Wider test coverage:** dEQP-GLES2 (piglit's `deqp_gles2` profile needs the dEQP binaries: a large build), and our own
    draw-and-probe tests in `mesa/tests/` for each feature above, with the model's picture as the expectation.
+
+## Added 2026-11-07 (after the table above)
+
+- Cube maps: CPU-sampled (six linear faces per level), no cube render targets.
+- `gl_PointSize` from a vertex attribute: one object per point (`point_sizes`).
+- `if (alpha < k) discard;` (and mirrors): the chip's alpha function with state bit 14 (README assumption 45; `alpha_discard`).
+- A full-target colour clear costs nothing when the scene has no textured draw (README assumption 44).
+- Known: a textured first job in a new process is sometimes wrong on the unit (black or stale); not understood.

@@ -59,6 +59,7 @@ struct mbx_fs_info {
 	bool pass_c, pass_a;	/* the colour lanes / the alpha lane have a primary colour (a coefficient other than 1) */
 	unsigned uv_loc[MBX_MAX_TEX][2], uv_comp[MBX_MAX_TEX][2];	/* where each unit's coordinate comes from in the vertex shader's outputs */
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* the fragment uniform vec4s read */
+	uint32_t alpha_word;	/* the alpha-test word for a "discard if alpha is on one side of a constant" (README assumption 45); 0: always */
 };
 
 /*

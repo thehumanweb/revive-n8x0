@@ -128,6 +128,13 @@ static const char fs_cube[] =
 	"varying vec2 v_uv;\n"
 	"void main() { gl_FragColor = textureCube(u_tex, vec3(v_uv.x - 0.5, (v_uv.y - 0.5) * 0.2, 0.0)); }\n";
 
+static const char fs_discard[] =
+	"precision mediump float;\n"
+	"uniform sampler2D u_tex;\n"
+	"varying vec2 v_uv;\n"
+	"varying vec4 v_color;\n"
+	"void main() { vec4 c = texture2D(u_tex, v_uv) * v_color; if (c.a < 0.5) discard; gl_FragColor = c; }\n";
+
 static GLuint compile(GLenum type, const char *src)
 {
 	GLuint s = glCreateShader(type);
@@ -666,6 +673,34 @@ static int t_cube(char *why)
 		quad(0, 0, 1, 1, 1, 1, 1);
 		ok = is(56, 32, 0, 0, 255, why, 200) && is(8, 32, 0, 255, 0, why, 200);
 	}
+	glUseProgram(prog);
+	glDeleteProgram(p);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
+/* discard on alpha: a cut-out (the chip's alpha function, state bit 14); the left half of the texture has alpha 0.25, the right 0.88 */
+static int t_alpha_discard(char *why)
+{
+	unsigned char px[8 * 8 * 4];
+	GLuint t, p;
+	int ok;
+
+	for (int y = 0; y < 8; y++)
+		for (int x = 0; x < 8; x++) {
+			unsigned char *q = px + (y * 8 + x) * 4;
+
+			q[0] = 255; q[1] = 200; q[2] = 100; q[3] = x < 4 ? 64 : 224;
+		}
+	begin();
+	glClearColor(0, 0, 1, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	p = link_tex(fs_discard);
+	glUseProgram(p);
+	glUniform1i(glGetUniformLocation(p, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = is(8, 32, 0, 0, 255, why, 200) && is(56, 32, 255, 200, 100, why, 200) && is(20, 8, 0, 0, 255, why, 200);
 	glUseProgram(prog);
 	glDeleteProgram(p);
 	glDeleteTextures(1, &t);
@@ -1415,6 +1450,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },
+	{ "alpha_discard", t_alpha_discard },
 	{ "cube", t_cube },
 	{ "tex_replace", t_tex_replace },
 	{ "tex_modulate", t_tex_modulate },

@@ -118,7 +118,7 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:T:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
+	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:j:T:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
 		if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
@@ -143,6 +143,7 @@ int main(int argc, char **argv)
 		else if (o == 'H') tex_b_bits = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'T') tails_bytes = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'A') tri_alpha_word = (uint32_t)strtoul(optarg, NULL, 0);
+		else if (o == 'j') sscanf(optarg, "%u,%u,%u", &tri_va[0], &tri_va[1], &tri_va[2]);
 		else if (o == 'B') tri_clear_alpha = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'K') tri_clear_state = (uint32_t)strtoul(optarg, NULL, 0);
 		else if (o == 'Z') dbl = 1;	/* -Z: a target twice the size, both halves filled: the background texture can come from the second half (driver bg_shift 16384) */

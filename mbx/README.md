@@ -662,3 +662,9 @@ circuit.
     (7.5 ms at 800 x 480, 16.6 ms down to about 9 ms). The kernel takes `MBX_SUBMIT_FLAT_BG` and `bg_colour` in the submit;
     Mesa keeps a full-target clear pending until a job takes it or something needs the memory (a CPU draw, a blit, a read-back,
     a sampler, another target), which then fills it on the CPU.
+    Limit found later: with a textured draw in the same scene (`mbxtri-drm -N 2 -Q lo:hi -f colour`) the unit's picture differs from
+    the model's and changes from run to run, so Mesa uses the flat background only for scenes without a textured draw (the clear is a
+    CPU fill otherwise). Cause not found (the texel block in the first page next to the draw's own texture is a guess).
+
+
+45. **The alpha function** (found during device testing; `mbxtri-drm -j a0,a1,a2 -A word`, functions 0-7 at references 0-255, vertex alphas 0/128/255, then `mbxtri` for the model): the alpha word's function (bits 29-31, numbered as the depth test's) and reference (bits 21-28) apply to the colour alpha after the texture combiners; thresholds equal the model's to the reference value (15 of 4096 pixels differ at a reference equal to a vertex's own alpha, a rounding difference at the edge). **State bit 14 must be set** for the function to take effect in a Mesa scene: without it the same words left discarded pixels showing stale memory (the unit's picture then changed from run to run); with it a cut-out texture discards exactly. Mesa maps `if (a < k) discard;` (and the three mirrored forms, on the shader's own alpha lane) to function GEQUAL/LESS/LEQUAL/GREATER with the 8-bit threshold on the side that keeps the shader's pixels, and sets bit 14. A textured draw in a scene that uses the flat background (assumption 44) came out wrong; see there.

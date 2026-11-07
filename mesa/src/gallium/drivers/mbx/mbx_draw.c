@@ -141,6 +141,8 @@ static uint32_t hw_state_word(struct mbx_context *ctx, const struct mbx_vgp_prog
 	}
 	st |= func << 9;
 	st |= hw_blend_bits(ctx);
+	if (ctx->fs && ctx->fs->fs_info.kind == MBX_FS_MATCHED && ctx->fs->fs_info.alpha_word)
+		st |= ST_ALPHATEST;		/* the alpha function takes effect only with bit 14 (found during device testing, README assumption 45) */
 	return st;
 }
 
@@ -251,7 +253,8 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 	}
 	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | (prog->ntex > 0 ? 0x4 : 0) | (prog->ntex > 1 ? 0x8 : 0) | 0x20 | 0x80 | 0x100);
 	mbx_emit(ctx, MBX_CH_TA, hw_state_word(ctx, prog));
-	mbx_emit(ctx, MBX_CH_TA, 0xe0000000);		/* alpha function ALWAYS (0 is NEVER, which rejects every pixel with bit 25 set) */
+	mbx_emit(ctx, MBX_CH_TA, ctx->fs && ctx->fs->fs_info.kind == MBX_FS_MATCHED && ctx->fs->fs_info.alpha_word ?
+		 ctx->fs->fs_info.alpha_word : 0xe0000000);	/* alpha function ALWAYS (0 is NEVER, which rejects every pixel with bit 25 set), or the shader's discard on alpha */
 	for (u = 0; u < prog->ntex; u++) {
 		mbx_emit(ctx, MBX_CH_TA, ta[u]);
 		mbx_emit(ctx, MBX_CH_TA, tb[u]);
