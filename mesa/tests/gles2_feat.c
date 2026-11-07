@@ -1033,7 +1033,52 @@ static int t_render_to_texture(char *why)
 	return ok;
 }
 
+static int t_mip_chip(char *why)
+{
+	/* mipmaps on the chip (a shader it can do): a 32 x 32 texture whose levels are flat colours (level 0 red, 1 green, 2 blue,
+	 * 3 yellow, 4 cyan, 5 magenta), drawn magnified (level 0) and minified 4 times (level 1) and 8 times (level 2) */
+	static const unsigned char col[6][4] = { { 255, 0, 0, 255 }, { 0, 255, 0, 255 }, { 0, 0, 255, 255 },
+						 { 255, 255, 0, 255 }, { 0, 255, 255, 255 }, { 255, 0, 255, 255 } };
+	unsigned char *lvl;
+	GLuint t;
+	int ok = 1;
+
+	glGenTextures(1, &t);
+	glBindTexture(GL_TEXTURE_2D, t);
+	for (int l = 0; l <= 5; l++) {
+		int n = 32 >> l;
+
+		lvl = malloc((size_t)n * n * 4);
+		for (int i = 0; i < n * n; i++)
+			memcpy(lvl + 4 * i, col[l], 4);
+		glTexImage2D(GL_TEXTURE_2D, l, GL_RGBA, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, lvl);
+		free(lvl);
+	}
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	begin();
+	quad(0, 0, 1, 1, 1, 1, 1);		/* 32 texels over 64 pixels: level 0 */
+	if (!is(32, 32, 255, 0, 0, why, 200))
+		ok = 0;
+	begin();
+	quad(0, 0, 4, 4, 1, 1, 1);		/* 128 texels over 64 pixels: 2 per pixel, level 1 */
+	if (ok && !is(32, 32, 0, 255, 0, why, 200))
+		ok = 0;
+	begin();
+	quad(0, 0, 8, 8, 1, 1, 1);		/* 4 per pixel: level 2 */
+	if (ok && !is(32, 32, 0, 0, 255, why, 200))
+		ok = 0;
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static const struct { const char *name; int (*fn)(char *); } tests[] = {
+	{ "mip_chip", t_mip_chip },
 	{ "copy_tex", t_copy_tex },
 	{ "tex_subimage", t_tex_subimage },
 	{ "render_to_texture", t_render_to_texture },

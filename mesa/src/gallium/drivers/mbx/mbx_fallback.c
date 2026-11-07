@@ -169,7 +169,7 @@ static struct pipe_resource *twin_texture(struct mbx_context *ctx, struct mbx_re
 	uint8_t *base;
 	unsigned l;
 
-	if (rsc->bind_rt || rsc->scanout)
+	if ((rsc->bind_rt && !rsc->twiddled) || rsc->scanout)
 		return twin_shared(ctx, rsc);
 	if (!rsc->sp_twin) {
 		t.next = NULL;
@@ -182,9 +182,20 @@ static struct pipe_resource *twin_texture(struct mbx_context *ctx, struct mbx_re
 	if (!rsc->tex || !(base = mbx_bo_map(rsc->bo)))
 		return rsc->sp_twin;
 	for (l = 0; l <= rsc->base.last_level; l++) {
-		struct pipe_box box = { 0, 0, 0, u_minify(rsc->base.width0, l), u_minify(rsc->base.height0, l), 1 };
+		struct pipe_box box = { .width = u_minify(rsc->base.width0, l), .height = u_minify(rsc->base.height0, l), .depth = 1 };
 
-		sp->texture_subdata(sp, rsc->sp_twin, l, 0, &box, base + rsc->level_off[l], rsc->level_stride[l], 0);
+		if (rsc->twiddled) {	/* back to linear rows for softpipe */
+			unsigned stride = box.width * util_format_get_blocksize(rsc->base.format);
+			uint8_t *lin = malloc((size_t)stride * box.height);
+
+			if (!lin)
+				continue;
+			mbx_tex_twiddle(rsc, l, &box, lin, stride, false);
+			sp->texture_subdata(sp, rsc->sp_twin, l, 0, &box, lin, stride, 0);
+			free(lin);
+		} else {
+			sp->texture_subdata(sp, rsc->sp_twin, l, 0, &box, base + rsc->level_off[l], rsc->level_stride[l], 0);
+		}
 	}
 	rsc->sp_dirty = false;
 	return rsc->sp_twin;
@@ -196,6 +207,8 @@ void mbx_fallback_resource_destroy(struct mbx_resource *rsc)
 }
 
 /* --- the state, replayed --- */
+
+static void twin_readback(struct mbx_context *ctx, struct mbx_resource *rsc, unsigned level, const struct pipe_box *box);
 
 static void *fb_shader(struct mbx_context *ctx, struct mbx_shader *so)
 {
@@ -238,8 +251,12 @@ static void sync_framebuffer(struct mbx_context *ctx)
 	unsigned i;
 
 	for (i = 0; i < fb.nr_cbufs; i++)
-		if (fb.cbufs[i].texture)
-			fb.cbufs[i].texture = twin_shared(ctx, mbx_resource(ctx->fb.cbufs[i].texture));
+		if (fb.cbufs[i].texture) {
+			struct mbx_resource *c = mbx_resource(ctx->fb.cbufs[i].texture);
+
+			/* a twiddled texture the chip cannot render to: softpipe draws into its own copy, written back after */
+			fb.cbufs[i].texture = c->twiddled ? twin_texture(ctx, c) : twin_shared(ctx, c);
+		}
 	if (fb.zsbuf.texture)
 		fb.zsbuf.texture = twin_private(ctx, mbx_resource(ctx->fb.zsbuf.texture));
 	/* the surfaces are new each time, which also drops softpipe's tile caches: the CPU and the MBX have
@@ -328,6 +345,11 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 	}
 	sp->draw_vbo(sp, &di, drawid_offset, NULL, draws, num_draws);
 	sp->flush(sp, NULL, 0);		/* softpipe's tiles are written back to the memory */
+	if (mbx_resource(ctx->fb.cbufs[0].texture)->twiddled) {
+		struct pipe_box box = { .width = ctx->fb.width, .height = ctx->fb.height, .depth = 1 };
+
+		twin_readback(ctx, mbx_resource(ctx->fb.cbufs[0].texture), ctx->fb.cbufs[0].level, &box);
+	}
 
 	sp->bind_blend_state(sp, NULL);
 	sp->bind_rasterizer_state(sp, NULL);
@@ -358,6 +380,12 @@ static void twin_readback(struct mbx_context *ctx, struct mbx_resource *rsc, uns
 	src = sp->texture_map(sp, rsc->sp_twin, level, PIPE_MAP_READ, box, &xfer);
 	if (!src)
 		return;
+	if (rsc->twiddled) {
+		mbx_tex_twiddle(rsc, level, box, src, xfer->stride, true);
+		sp->texture_unmap(sp, xfer);
+		rsc->sp_dirty = false;
+		return;
+	}
 	for (y = 0; y < (unsigned)box->height; y++)
 		memcpy(dst + rsc->level_off[level] + (uint64_t)(box->y + y) * rsc->level_stride[level] + (uint64_t)box->x * bpp,
 		       src + (uint64_t)y * xfer->stride, (uint64_t)box->width * bpp);
@@ -379,7 +407,7 @@ bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *inf
 	mbx_resource_wait(ctx->screen, src);
 	mbx_resource_wait(ctx->screen, dst);
 	b.src.resource = twin_texture(ctx, src);
-	shared_dst = dst->bind_rt || dst->scanout;
+	shared_dst = (dst->bind_rt && !dst->twiddled) || dst->scanout;
 	b.dst.resource = shared_dst ? twin_shared(ctx, dst) : twin_texture(ctx, dst);
 	if (!b.src.resource || !b.dst.resource)
 		return false;
@@ -387,7 +415,7 @@ bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *inf
 	sp->blit(sp, &b);
 	sp->flush(sp, NULL, 0);
 	if (!shared_dst) {
-		struct pipe_box box = { info->dst.box.x, info->dst.box.y, 0, info->dst.box.width, info->dst.box.height, 1 };
+		struct pipe_box box = { .x = info->dst.box.x, .y = info->dst.box.y, .width = info->dst.box.width, .height = info->dst.box.height, .depth = 1 };
 
 		if (box.width < 0) {
 			box.x += box.width;

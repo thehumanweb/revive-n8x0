@@ -57,6 +57,14 @@ own (a copy of the NIR from before our lowering). Limits: the MBX keeps depth on
 carry between MBX and CPU draws of one frame (a frame of either kind is right); mipmaps of a render target are not shared; mipmapped sampling is the CPU's only (the chip reads linear textures, level 0 only: on-chip mipmaps need twiddled storage); it
 is slow (softpipe on the 330 MHz ARM1136), a path for correctness.
 
+## Mipmaps
+
+Power-of-two textures of at least 8 x 8 with more than one level are stored twiddled (the chip's chain, no padding; the CPU
+sees a staging copy in linear order), and the sampler's mipmap filter sets word B bit 29 and level bias 9 (nearest level; the
+`_MIPMAP_LINEAR` filters get the nearest level too: the chip's trilinear mode is not understood, README assumption 40).
+`glGenerateMipmap` is a blit on the CPU (softpipe). The chip cannot render into a twiddled texture: such draws and clears go to
+the CPU fallback. Non-power-of-two and render-to-texture-only textures stay linear with the base level only.
+
 ## Hardware limits found on the unit (texturing)
 
 - Bilinear filtering is skipped next to a texel whose R, G and B are all zero: a black-to-light edge is a step. The driver does not

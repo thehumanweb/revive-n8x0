@@ -108,6 +108,22 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 		if (!map)
 			return;
 		v = pack_clear_colour(rsc->base.format, color);
+		if (rsc->twiddled && x1 > x0 && y1 > y0) {
+			/* a twiddled texture: the rows are not rows; fill a linear box and store it in the chip's order */
+			struct pipe_box box = { .x = (int)x0, .y = (int)y0, .width = (int)(x1 - x0), .height = (int)(y1 - y0), .depth = 1 };
+			unsigned stride = box.width * bpp;
+			uint8_t *lin = malloc((size_t)stride * box.height);
+
+			if (lin) {
+				for (y = 0; y < (unsigned)box.height; y++)
+					for (x = 0; x < (unsigned)box.width; x++)
+						memcpy(lin + (uint64_t)y * stride + (uint64_t)x * bpp, &v, bpp);
+				mbx_tex_twiddle(rsc, ctx->fb.cbufs[0].level, &box, lin, stride, true);
+				free(lin);
+				rsc->sp_dirty = true;
+			}
+			return;
+		}
 		for (y = y0; y < y1; y++) {
 			uint8_t *row = map + (uint64_t)y * rsc->stride;
 

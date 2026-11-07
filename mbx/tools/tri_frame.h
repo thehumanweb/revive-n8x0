@@ -49,6 +49,36 @@ static uint32_t tri_alpha_word = 0xe0000000, tri_clear_alpha = 0xe0000000;	/* al
 /* a textured triangle (mbxtri-drm -N mode): unit 0's words A, B, C, and the state word's bits 16-18 */
 static int tri_tex;
 static uint32_t tri_tex_a, tri_tex_b, tri_tex_c = 0xd6887610, tri_tex_mode = 2;
+/* a twiddled, mipmapped test texture (-U log2 size): each level one flat colour */
+static float tri_uvscale = 1.0f;
+static inline uint32_t tri_twiddle(uint32_t u, uint32_t v, int lw, int lh)
+{
+	int lmin = lw < lh ? lw : lh, b;
+	uint32_t i = 0;
+
+	for (b = 0; b < lmin; b++)
+		i |= (v >> b & 1) << (2 * b) | (u >> b & 1) << (2 * b + 1);
+	return i | (lw > lh ? u >> lmin : v >> lmin) << (2 * lmin);
+}
+/* writes the chain (largest level first, no padding) of 2^lw square ARGB8888 levels, level l in colour col[l]; returns the bytes */
+static inline uint32_t tri_fill_mips(uint32_t *mem, int lw)
+{
+	static const uint32_t col[12] = { 0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffff00, 0xff00ffff, 0xffff00ff,
+					  0xffffffff, 0xff808080, 0xff804000, 0xff008040, 0xff400080, 0xff404040 };
+	uint32_t off = 0;
+	int l;
+
+	for (l = 0; l <= lw; l++) {
+		int w = lw - l, n = 1 << (w > 0 ? w : 0);
+		int x, y;
+
+		for (y = 0; y < n; y++)
+			for (x = 0; x < n; x++)
+				mem[off + tri_twiddle(x, y, w, w)] = col[l];
+		off += n * n;
+	}
+	return off * 4;
+}
 static int tri_with_clear = 1;		/* 0: leave out the depth-only clear (tests) */
 static int tri_with_triangle = 1;	/* 0: leave out the triangle (experiments) */
 
@@ -173,8 +203,8 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 			tri_taf(&s, v[i][0]); tri_taf(&s, v[i][1]); tri_taf(&s, v[i][2]);
 			tri_ta(&s, rgba[i]);
 			if (tri_tex) {		/* s, t: the vertex's place in the target (x, y over 0..1) */
-				tri_taf(&s, v[i][0] * 0.5f + 0.5f);
-				tri_taf(&s, v[i][1] * 0.5f + 0.5f);
+				tri_taf(&s, (v[i][0] * 0.5f + 0.5f) * tri_uvscale);
+				tri_taf(&s, (v[i][1] * 0.5f + 0.5f) * tri_uvscale);
 			}
 		}
 	tri_put(&s, CH_CTL, 1);			/* the object ends */

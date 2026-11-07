@@ -90,6 +90,24 @@ static struct pipe_resource *mbx_resource_create(struct pipe_screen *pscreen,
 	} else if (util_format_is_depth_or_stencil(templ->format)) {
 		rsc->on_chip = true;
 		size = 4096;
+	} else if (templ->target == PIPE_TEXTURE_2D && (templ->bind & PIPE_BIND_SAMPLER_VIEW) &&
+		   !(templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
+		   mbx_chip_tex_format(templ->format) >= 0 && templ->last_level > 0 && templ->last_level < MBX_MAX_LEVELS &&
+		   util_is_power_of_two_nonzero(templ->width0) && util_is_power_of_two_nonzero(templ->height0) &&
+		   templ->width0 >= 8 && templ->height0 >= 8) {
+		/* mipmaps: the chip reads them from a twiddled chain, the largest level first, no padding (the chip cannot
+		 * render into it: draws to such a texture go through the CPU fallback, mbx_fallback.c) */
+		unsigned bpp = util_format_get_blocksize(templ->format), l;
+		uint64_t off = 0;
+
+		rsc->tex = rsc->twiddled = true;
+		rsc->tex_lw = util_logbase2(templ->width0);
+		rsc->tex_lh = util_logbase2(templ->height0);
+		for (l = 0; l <= templ->last_level; l++) {
+			rsc->level_off[l] = (uint32_t)off;
+			off += (uint64_t)u_minify(templ->width0, l) * u_minify(templ->height0, l) * bpp;
+		}
+		size = align64(off, 128);
 	} else if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) &&
 		   (templ->bind & PIPE_BIND_SAMPLER_VIEW) &&
 		   !(templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
@@ -230,7 +248,42 @@ static void mbx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resour
 
 struct mbx_transfer {
 	struct pipe_transfer base;
+	uint8_t *staging;	/* a twiddled texture's box in linear order, until the unmap */
 };
+
+/* The index of texel (u, v) in a twiddled 2^lw x 2^lh level: v's bits even, u's odd, the longer side's extra bits on top */
+static uint32_t twiddle_index(uint32_t u, uint32_t v, int lw, int lh)
+{
+	int lmin = lw < lh ? lw : lh, b;
+	uint32_t i = 0;
+
+	for (b = 0; b < lmin; b++)
+		i |= (v >> b & 1) << (2 * b) | (u >> b & 1) << (2 * b + 1);
+	return i | (lw > lh ? u >> lmin : v >> lmin) << (2 * lmin);
+}
+
+void mbx_tex_twiddle(struct mbx_resource *rsc, unsigned level, const struct pipe_box *box, uint8_t *lin,
+		     unsigned lin_stride, bool store)
+{
+	unsigned bpp = util_format_get_blocksize(rsc->base.format), x, y;
+	unsigned w = u_minify(rsc->base.width0, level), h = u_minify(rsc->base.height0, level);
+	int lw = util_logbase2(w), lh = util_logbase2(h);
+	uint8_t *base = mbx_bo_map(rsc->bo);
+
+	if (!base)
+		return;
+	base += rsc->level_off[level];
+	for (y = 0; y < (unsigned)box->height; y++)
+		for (x = 0; x < (unsigned)box->width; x++) {
+			uint8_t *t = base + (uint64_t)twiddle_index(box->x + x, box->y + y, lw, lh) * bpp;
+			uint8_t *l = lin + (uint64_t)y * lin_stride + (uint64_t)x * bpp;
+
+			if (store)
+				memcpy(t, l, bpp);
+			else
+				memcpy(l, t, bpp);
+		}
+}
 
 static void *mbx_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc, unsigned level,
 			      unsigned usage, const struct pipe_box *box, struct pipe_transfer **ptransfer)
@@ -258,6 +311,22 @@ static void *mbx_transfer_map(struct pipe_context *pctx, struct pipe_resource *p
 		trans->base.layer_stride = 0;
 		*ptransfer = &trans->base;
 		return base + box->x;
+	}
+	if (rsc->twiddled) {
+		unsigned bpp = util_format_get_blocksize(prsc->format);
+
+		trans->base.stride = box->width * bpp;
+		trans->base.layer_stride = trans->base.stride * box->height;
+		trans->staging = malloc((size_t)trans->base.layer_stride);
+		if (!trans->staging) {
+			pipe_resource_reference(&trans->base.resource, NULL);
+			FREE(trans);
+			return NULL;
+		}
+		if (usage & PIPE_MAP_READ)
+			mbx_tex_twiddle(rsc, level, box, trans->staging, trans->base.stride, false);
+		*ptransfer = &trans->base;
+		return trans->staging;
 	}
 	if (rsc->tex) {
 		trans->base.stride = rsc->level_stride[level];
@@ -300,9 +369,16 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 {
 	struct mbx_resource *rsc = mbx_resource(ptrans->resource);
 
+	struct mbx_transfer *mt = (struct mbx_transfer *)ptrans;
+
+	if (mt->staging) {
+		if (ptrans->usage & PIPE_MAP_WRITE)
+			mbx_tex_twiddle(rsc, ptrans->level, &ptrans->box, mt->staging, ptrans->stride, true);
+		free(mt->staging);
+	}
 	if (ptrans->usage & PIPE_MAP_WRITE)
 		rsc->sp_dirty = true;
-	if (rsc->tex && (ptrans->usage & PIPE_MAP_WRITE))
+	if (rsc->tex && !rsc->twiddled && (ptrans->usage & PIPE_MAP_WRITE))
 		tex_fill_padding(rsc, ptrans);
 	pipe_resource_reference(&ptrans->resource, NULL);
 	FREE(ptrans);

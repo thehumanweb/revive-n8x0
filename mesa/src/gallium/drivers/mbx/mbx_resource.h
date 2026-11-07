@@ -24,6 +24,7 @@ struct mbx_resource {
 	/* a sampled 2D texture: linear (the chip reads linear textures with a stride), every level's
 	 * width and height padded to a power of two of at least 8, the edge texels repeated into the padding */
 	bool tex;
+	bool twiddled;				/* the levels are one chain, each in the chip's twiddled order (power-of-two textures with mipmaps) */
 	bool bind_rt;				/* made with a render target bind (softpipe then shares its memory) */
 	struct pipe_resource *sp_twin;		/* the CPU fallback's view of it (mbx_fallback.c) */
 	bool sp_fresh;				/* a depth twin not yet cleared */
@@ -32,6 +33,10 @@ struct mbx_resource {
 	uint32_t level_off[MBX_MAX_LEVELS];	/* bytes */
 	uint32_t level_stride[MBX_MAX_LEVELS];	/* bytes a row */
 };
+
+/* Copy a box of one level between a linear buffer and a twiddled texture (store: linear to texture) */
+void mbx_tex_twiddle(struct mbx_resource *rsc, unsigned level, const struct pipe_box *box, uint8_t *lin,
+		     unsigned lin_stride, bool store);
 
 /* The chip's texel format (texture word A bits 14-16) for a gallium format, or -1 */
 static inline int mbx_chip_tex_format(enum pipe_format f)

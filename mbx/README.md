@@ -609,3 +609,16 @@ circuit.
     first texel, (u, v) floored after the half-texel shift, so a black-to-white edge is a step where a white-to-grey
     one is a ramp. A texel of colour 1 in any channel filters normally. Checked: formats 0, 1, 2, 4 and 6, strides 8, 16
     and 32 texels.
+
+
+40. **Mipmaps on the chip** (found during device testing; `mbxtri-drm -N 2 -U 5 -u scale -H bits` against `mbxtri`, a 32 x 32 twiddled ARGB8888
+    chain whose levels are flat colours, drawn with the texture coordinates scaled so that 1 to 12 texels fall on a pixel). The
+    chain is the model's: twiddled, the largest level first, no padding, the level count in word A bits 9-12, no stride. Word B
+    bit 29 makes it mipmapped (nearest level); **the level bias field in bits 25-28 must be 9 for that** (`0x32000000`,
+    the stock stack's nearest setting; 7, which I had from the linear background object, picks a level too fine at every ratio):
+    with 9 the chip picks the level the model does at every scale tried (1 to 24, 0 differing pixels), alone and with the
+    bilinear bit (`0xb2000000`). The chip's level is `floor(lod + field / 4 - c)` with c a little under 1.83. **Bit 30
+    (trilinear) hangs the job unless bit 29 is set too, and with both set (`0x6e000000`, `0xee000000`, any field 7-10) the
+    chip samples level 0 at every scale**: the trilinear mode needs something not found yet, so the driver uses the nearest
+    level for the `_MIPMAP_LINEAR` filters. A texture that is both mipmapped and a render target is twiddled and the chip cannot
+    render into it (the driver draws to it on the CPU).

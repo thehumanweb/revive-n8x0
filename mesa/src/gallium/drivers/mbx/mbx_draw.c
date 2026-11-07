@@ -110,6 +110,8 @@ static bool state_needs_fallback(struct mbx_context *ctx)
 		return true;			/* no stencil on the chip */
 	if (ctx->dsa && ctx->dsa->alpha_enabled)
 		return true;
+	if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture && mbx_resource(ctx->fb.cbufs[0].texture)->twiddled)
+		return true;			/* a mipmapped texture is twiddled: the chip cannot render into it */
 	return false;
 }
 
@@ -187,6 +189,20 @@ static bool tex_words(struct mbx_context *ctx, uint32_t *a, uint32_t *b)
 		return false;
 	tr = mbx_resource(view->texture);
 	fmt = mbx_chip_tex_format(tr->base.format);
+	if (tr->twiddled) {
+		/* a twiddled chain: no stride; mipmapped when the sampler asks (word B bit 29, with the level
+		 * bias field 9: found on the chip, round to the nearest level); the chip's trilinear mode (bit 30) is not
+		 * understood yet, so the *_MIPMAP_LINEAR filters take the nearest level too */
+		bool mip = smp->min_mip_filter != PIPE_TEX_MIPFILTER_NONE;
+
+		clamp_s = smp->wrap_s != PIPE_TEX_WRAP_REPEAT && smp->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT;
+		clamp_t = smp->wrap_t != PIPE_TEX_WRAP_REPEAT && smp->wrap_t != PIPE_TEX_WRAP_MIRROR_REPEAT;
+		bilinear = mip ? smp->min_img_filter == PIPE_TEX_FILTER_LINEAR : smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
+		*a = (clamp_s ? 1u << 31 : 0) | (clamp_t ? 1u << 29 : 0) | (uint32_t)(tr->tex_lw - 3) << 24 |
+		     (uint32_t)(tr->tex_lh - 3) << 20 | fmt << 14 | (mip ? (uint32_t)tr->base.last_level << 9 : 0);
+		*b = (mip ? 0x32000000u : 0x0e000000u) | (bilinear ? 1u << 31 : 0) | tr->bo->va >> 7;
+		return true;
+	}
 	stride_px = tr->level_stride[0] / util_format_get_blocksize(tr->base.format);
 	/* NPOT textures are read with the coordinates scaled (the VGP does it), so only clamping them is right */
 	clamp_s = smp->wrap_s != PIPE_TEX_WRAP_REPEAT && smp->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT;
