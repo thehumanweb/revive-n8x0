@@ -169,7 +169,7 @@ static struct pipe_resource *twin_texture(struct mbx_context *ctx, struct mbx_re
 	uint8_t *base;
 	unsigned l;
 
-	if ((rsc->bind_rt && !rsc->twiddled) || rsc->scanout)
+	if ((rsc->bind_rt && !rsc->twiddled && !rsc->cube) || rsc->scanout)
 		return twin_shared(ctx, rsc);
 	if (!rsc->sp_twin) {
 		t.next = NULL;
@@ -179,6 +179,21 @@ static struct pipe_resource *twin_texture(struct mbx_context *ctx, struct mbx_re
 	}
 	if (!rsc->sp_twin || !rsc->sp_dirty)
 		return rsc->sp_twin;
+	if (rsc->cube && (base = mbx_bo_map(rsc->bo))) {
+		for (l = 0; l <= rsc->base.last_level; l++) {
+			unsigned w = u_minify(rsc->base.width0, l), h = u_minify(rsc->base.height0, l), f;
+
+			for (f = 0; f < 6; f++) {
+				struct pipe_box box = { .z = (int)f, .width = (int)w, .height = (int)h, .depth = 1 };
+
+				sp->texture_subdata(sp, rsc->sp_twin, l, 0, &box,
+						    base + rsc->level_off[l] + (uint64_t)f * h * rsc->level_stride[l],
+						    rsc->level_stride[l], 0);
+			}
+		}
+		rsc->sp_dirty = false;
+		return rsc->sp_twin;
+	}
 	if (!rsc->tex || !(base = mbx_bo_map(rsc->bo)))
 		return rsc->sp_twin;
 	for (l = 0; l <= rsc->base.last_level; l++) {

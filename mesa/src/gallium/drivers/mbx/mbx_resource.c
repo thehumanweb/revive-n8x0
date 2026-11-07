@@ -90,6 +90,20 @@ static struct pipe_resource *mbx_resource_create(struct pipe_screen *pscreen,
 	} else if (util_format_is_depth_or_stencil(templ->format)) {
 		rsc->on_chip = true;
 		size = 4096;
+	} else if (templ->target == PIPE_TEXTURE_CUBE && templ->last_level < MBX_MAX_LEVELS) {
+		unsigned bpp = util_format_get_blocksize(templ->format), l;
+		uint64_t off = 0;
+
+		rsc->cube = true;
+		for (l = 0; l <= templ->last_level; l++) {
+			unsigned w = u_minify(templ->width0, l), h = u_minify(templ->height0, l);
+
+			rsc->level_off[l] = (uint32_t)off;
+			rsc->level_stride[l] = w * bpp;
+			off = align64(off + 6ull * w * bpp * h, 128);
+		}
+		rsc->stride = rsc->level_stride[0];
+		size = off;
 	} else if (templ->target == PIPE_TEXTURE_2D && (templ->bind & PIPE_BIND_SAMPLER_VIEW) &&
 		   !(templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
 		   mbx_chip_tex_format(templ->format) >= 0 && templ->last_level > 0 && templ->last_level < MBX_MAX_LEVELS &&
@@ -311,6 +325,15 @@ static void *mbx_transfer_map(struct pipe_context *pctx, struct pipe_resource *p
 		trans->base.layer_stride = 0;
 		*ptransfer = &trans->base;
 		return base + box->x;
+	}
+	if (rsc->cube) {
+		unsigned face = u_minify(prsc->height0, level) * rsc->level_stride[level];
+
+		trans->base.stride = rsc->level_stride[level];
+		trans->base.layer_stride = face;
+		*ptransfer = &trans->base;
+		return base + rsc->level_off[level] + (uint64_t)box->z * face + (uint64_t)box->y * rsc->level_stride[level] +
+		       (uint64_t)box->x * util_format_get_blocksize(prsc->format);
 	}
 	if (rsc->twiddled) {
 		unsigned bpp = util_format_get_blocksize(prsc->format);

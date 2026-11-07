@@ -110,6 +110,9 @@ static bool state_needs_fallback(struct mbx_context *ctx)
 		return true;			/* no stencil on the chip */
 	if (ctx->dsa && ctx->dsa->alpha_enabled)
 		return true;
+	for (unsigned u = 0; u < MBX_MAX_SAMPLERS; u++)
+		if (ctx->views[u] && ctx->views[u]->texture && ctx->views[u]->texture->target == PIPE_TEXTURE_CUBE)
+			return true;		/* cube maps: softpipe samples them */
 	if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture && mbx_resource(ctx->fb.cbufs[0].texture)->twiddled)
 		return true;			/* a mipmapped texture is twiddled: the chip cannot render into it */
 	if (ctx->fs && ctx->fs->fs_info.kind == MBX_FS_MATCHED)

@@ -122,6 +122,12 @@ static const char *fs_text =
 	"varying vec4 v_color;\n"
 	"void main() { gl_FragColor = vec4(v_color.rgb, v_color.a * texture2D(u_tex, v_uv).a); }\n";
 
+static const char fs_cube[] =
+	"precision mediump float;\n"
+	"uniform samplerCube u_tex;\n"
+	"varying vec2 v_uv;\n"
+	"void main() { gl_FragColor = textureCube(u_tex, vec3(v_uv.x - 0.5, (v_uv.y - 0.5) * 0.2, 0.0)); }\n";
+
 static GLuint compile(GLenum type, const char *src)
 {
 	GLuint s = glCreateShader(type);
@@ -592,6 +598,45 @@ static int t_clear_flat(char *why)
 	CHECK(2, 2, 0, 255, 0);
 	CHECK(32, 24, 0, 0, 255);
 	return 1;
+}
+
+/* a cube map: sampled by the CPU fallback; the left half of the quad reads -X, the right half +X */
+static int t_cube(char *why)
+{
+	static const unsigned char col[6][3] = { { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 255, 0 }, { 0, 255, 255 }, { 255, 0, 255 } };
+	unsigned char px[4 * 4 * 4];
+	GLuint t, p;
+	int ok;
+
+	begin();
+	glGenTextures(1, &t);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, t);
+	for (int f = 0; f < 6; f++) {
+		for (int i = 0; i < 16; i++) {
+			px[i * 4] = col[f][0]; px[i * 4 + 1] = col[f][1]; px[i * 4 + 2] = col[f][2]; px[i * 4 + 3] = 255;
+		}
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+	}
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	p = link_tex(fs_cube);
+	glUseProgram(p);
+	glUniform1i(glGetUniformLocation(p, "u_tex"), 0);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	ok = is(8, 32, 0, 255, 0, why, 200) && is(56, 32, 255, 0, 0, why, 200);	/* -X green, +X red */
+	/* change one face and draw again: the CPU's copy follows */
+	if (ok) {
+		for (int i = 0; i < 16; i++) {
+			px[i * 4] = 0; px[i * 4 + 1] = 0; px[i * 4 + 2] = 255;
+		}
+		glTexSubImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, 0, 0, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, px);
+		quad(0, 0, 1, 1, 1, 1, 1);
+		ok = is(56, 32, 0, 0, 255, why, 200) && is(8, 32, 0, 255, 0, why, 200);
+	}
+	glUseProgram(prog);
+	glDeleteProgram(p);
+	glDeleteTextures(1, &t);
+	return ok;
 }
 
 static int t_scissor_clear(char *why)
@@ -1337,6 +1382,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },
+	{ "cube", t_cube },
 	{ "tex_replace", t_tex_replace },
 	{ "tex_modulate", t_tex_modulate },
 	{ "tex_npot", t_tex_npot },

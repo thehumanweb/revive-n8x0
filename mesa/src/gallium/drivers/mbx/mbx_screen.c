@@ -89,6 +89,8 @@ static bool mbx_screen_is_format_supported(struct pipe_screen *pscreen, enum pip
 		return false;
 	if (target >= PIPE_MAX_TEXTURE_TYPES)
 		return false;
+	if (target == PIPE_TEXTURE_CUBE && (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)))
+		return false;		/* a cube map is only sampled (on the CPU) */
 
 	if (usage & PIPE_BIND_VERTEX_BUFFER) {
 		switch (format) {
@@ -213,7 +215,7 @@ static void mbx_init_screen_caps(struct mbx_screen *screen)
 	caps->uma = true;
 	caps->graphics = true;
 	caps->max_texture_2d_size = 2048;
-	caps->max_texture_cube_levels = 1;
+	caps->max_texture_cube_levels = 9;	/* 256: cube maps are sampled on the CPU (softpipe) */
 	caps->max_texture_3d_levels = 0;
 	caps->max_varyings = 8;
 	caps->clip_planes = 8;

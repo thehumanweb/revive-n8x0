@@ -3,7 +3,7 @@ pass spec@!opengl es 2.0@fbo_discard_gles2
 pass spec@!opengl es 2.0@glsl-fs-pointcoord
 pass spec@!opengl es 2.0@invalid-es3-queries_gles2
 pass spec@!opengl es 2.0@link-no-vsfs
-fail spec@!opengl es 2.0@minmax_gles2
+pass spec@!opengl es 2.0@minmax_gles2
 pass spec@!opengl es 2.0@multiple-shader-objects_gles2
 skip spec@arb_blend_func_extended@arb_blend_func_extended-blend-api_gles2
 skip spec@arb_blend_func_extended@arb_blend_func_extended-builtins_gles2

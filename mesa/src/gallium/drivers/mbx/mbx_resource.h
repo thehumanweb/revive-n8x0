@@ -24,6 +24,7 @@ struct mbx_resource {
 	/* a sampled 2D texture: linear (the chip reads linear textures with a stride), every level's
 	 * width and height padded to a power of two of at least 8, the edge texels repeated into the padding */
 	bool tex;
+	bool cube;				/* six linear faces per level, sampled by the CPU fallback only (level_off: the level, 6 faces) */
 	bool twiddled;				/* the levels are one chain, each in the chip's twiddled order (power-of-two textures with mipmaps) */
 	bool bind_rt;				/* made with a render target bind (softpipe then shares its memory) */
 	struct pipe_resource *sp_twin;		/* the CPU fallback's view of it (mbx_fallback.c) */
