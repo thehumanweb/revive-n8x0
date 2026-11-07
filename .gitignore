@@ -1,3 +1,4 @@
 src/
 !/mesa/src/
 build/
+core
