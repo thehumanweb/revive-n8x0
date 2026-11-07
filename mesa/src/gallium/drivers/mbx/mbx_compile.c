@@ -324,6 +324,33 @@ static void write_dest(struct cc *c, struct vsrc v, enum dkind dk, int reg, int 
 		c->max_uniform = v.idx;
 }
 
+/* One NIR operation of the fragment shader on values in the vertex program (the same rules as lower_alu) */
+static struct vsrc eval_nir_op(struct cc *c, nir_op op, struct vsrc a, struct vsrc b, struct vsrc cc)
+{
+	struct vsrc t;
+
+	switch (op) {
+	case nir_op_fmin: return op2(c, MBX_VGP_MIN, a, b);
+	case nir_op_fmax: return op2(c, MBX_VGP_MAX, a, b);
+	case nir_op_fabs: return op2(c, MBX_VGP_MAX, a, negated(a));
+	case nir_op_slt: return op2(c, MBX_VGP_SLT, a, b);
+	case nir_op_sge: return op2(c, MBX_VGP_SGE, a, b);
+	case nir_op_seq: return op2(c, MBX_VGP_MUL, op2(c, MBX_VGP_SGE, a, b), op2(c, MBX_VGP_SGE, b, a));
+	case nir_op_sne: return op2(c, MBX_VGP_ADD, op2(c, MBX_VGP_SLT, a, b), op2(c, MBX_VGP_SLT, b, a));
+	case nir_op_frcp: return op1(c, MBX_VGP_RCP, a);
+	case nir_op_frsq: return op1(c, MBX_VGP_RSQ, a);
+	case nir_op_fexp2: return op1(c, MBX_VGP_EXP, a);
+	case nir_op_flog2: return op1(c, MBX_VGP_LOG, a);
+	case nir_op_ffract: return op1(c, MBX_VGP_FRC, a);
+	case nir_op_fcsel:	/* the condition is 1.0 or 0.0: b + c * (a - b) */
+		t = op2(c, MBX_VGP_ADD, b, negated(cc));
+		return op3(c, MBX_VGP_MAD, a, t, cc);
+	default:
+		fail(c, "an operation the grid cannot evaluate");
+		return imm(0.0f);
+	}
+}
+
 /* An expression of the fragment shader's non-texel part, in the vertex program */
 static struct vsrc fs_eval(struct cc *c, int n)
 {
@@ -358,6 +385,16 @@ static struct vsrc fs_eval(struct cc *c, int n)
 		a = fs_eval(c, nd->a);
 		b = fs_eval(c, nd->b);
 		return op2(c, MBX_VGP_MUL, a, b);
+	case FSN_OP: {
+		nir_op op = (nir_op)nd->loc;
+		unsigned nin = nir_op_infos[op].num_inputs;
+		struct vsrc cc;
+
+		a = fs_eval(c, nd->a);
+		b = nin > 1 ? fs_eval(c, nd->b) : a;
+		cc = nin > 2 ? fs_eval(c, nd->c) : a;
+		return eval_nir_op(c, op, a, b, cc);
+	}
 	}
 	return r;
 }
@@ -774,7 +811,7 @@ struct fs_term {
 
 #define FS_MAX_TERMS 8
 
-static int fs_node(struct fsp *p, enum mbx_fs_op op, int a, int b, float k, unsigned loc, unsigned comp)
+static int fs_node3(struct fsp *p, enum mbx_fs_op op, int a, int b, int cc, float k, unsigned loc, unsigned comp)
 {
 	struct mbx_fs_info *i = p->info;
 	struct mbx_fs_node *n;
@@ -787,10 +824,16 @@ static int fs_node(struct fsp *p, enum mbx_fs_op op, int a, int b, float k, unsi
 	n->op = op;
 	n->a = (uint16_t)a;
 	n->b = (uint16_t)b;
+	n->c = (uint16_t)cc;
 	n->k = k;
 	n->loc = loc;
 	n->comp = comp;
 	return (int)i->nnode++;
+}
+
+static int fs_node(struct fsp *p, enum mbx_fs_op op, int a, int b, float k, unsigned loc, unsigned comp)
+{
+	return fs_node3(p, op, a, b, 0, k, loc, comp);
 }
 
 static int fs_one(struct fsp *p, int c)
@@ -834,6 +877,81 @@ static unsigned fs_uniform_index(struct fsp *p, unsigned slot)
 }
 
 static int fs_terms(struct fsp *p, nir_scalar s, struct fs_term *out);
+
+static bool fs_has_tex(struct fsp *p, nir_scalar s)
+{
+	s = nir_scalar_chase_movs(s);
+	if (nir_scalar_is_const(s))
+		return false;
+	for (unsigned k = 0; k < MBX_MAX_TEX; k++)
+		if (p->tex[k] && nir_def_instr(s.def) == &p->tex[k]->instr)
+			return true;
+	if (nir_scalar_is_alu(s)) {
+		for (unsigned i = 0; i < nir_op_infos[nir_scalar_alu_op(s)].num_inputs; i++)
+			if (fs_has_tex(p, nir_scalar_chase_alu_src(s, i)))
+				return true;
+	}
+	return false;
+}
+
+/* The operations the vertex program can do on the fragment shader's behalf beyond sums and products (README assumption 48) */
+static bool fs_op_ok(nir_op op)
+{
+	switch (op) {
+	case nir_op_fmin: case nir_op_fmax: case nir_op_fabs: case nir_op_slt: case nir_op_sge: case nir_op_seq: case nir_op_sne:
+	case nir_op_frcp: case nir_op_frsq: case nir_op_fexp2: case nir_op_flog2: case nir_op_ffract: case nir_op_fcsel:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* A texel-free expression as a tree of nodes (any shape the vertex program can evaluate), or -1 */
+static int fs_expr(struct fsp *p, nir_scalar s)
+{
+	int a, b, c3;
+	nir_op op;
+
+	s = nir_scalar_chase_movs(s);
+	if (nir_scalar_is_const(s))
+		return fs_node(p, FSN_CONST, 0, 0, nir_scalar_as_float(s), 0, 0);
+	if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_input) {
+		nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+
+		return fs_node(p, FSN_VAR, 0, 0, 0, nir_intrinsic_io_semantics(in).location, nir_intrinsic_component(in) + s.comp);
+	}
+	if (nir_scalar_is_intrinsic(s) && nir_scalar_intrinsic_op(s) == nir_intrinsic_load_uniform) {
+		nir_intrinsic_instr *un = nir_def_as_intrinsic(s.def);
+
+		if (!nir_src_is_const(un->src[0]))
+			return -1;
+		return fs_node(p, FSN_UNI, 0, 0, 0, fs_uniform_index(p, nir_intrinsic_base(un) + nir_src_as_uint(un->src[0])), s.comp);
+	}
+	if (!nir_scalar_is_alu(s))
+		return -1;
+	op = nir_scalar_alu_op(s);
+	a = fs_expr(p, nir_scalar_chase_alu_src(s, 0));
+	if (a < 0)
+		return -1;
+	if (op == nir_op_fneg)
+		return fs_node(p, FSN_NEG, a, 0, 0, 0, 0);
+	b = nir_op_infos[op].num_inputs > 1 ? fs_expr(p, nir_scalar_chase_alu_src(s, 1)) : 0;
+	c3 = nir_op_infos[op].num_inputs > 2 ? fs_expr(p, nir_scalar_chase_alu_src(s, 2)) : 0;
+	if (b < 0 || c3 < 0)
+		return -1;
+	switch (op) {
+	case nir_op_fmul: return fs_node(p, FSN_MUL, a, b, 0, 0, 0);
+	case nir_op_fadd: return fs_node(p, FSN_ADD, a, b, 0, 0, 0);
+	case nir_op_fsub: return fs_node(p, FSN_SUB, a, b, 0, 0, 0);
+	case nir_op_ffma: return fs_node(p, FSN_ADD, fs_node(p, FSN_MUL, a, b, 0, 0, 0), c3, 0, 0, 0);
+	case nir_op_flrp:	/* a + t * (b - a) */
+		return fs_node(p, FSN_ADD, a, fs_node(p, FSN_MUL, c3, fs_node(p, FSN_SUB, b, a, 0, 0, 0), 0, 0, 0), 0, 0, 0);
+	default:
+		if (!fs_op_ok(op))
+			return -1;
+		return fs_node3(p, FSN_OP, a, b, c3, 0, (unsigned)op, 0);
+	}
+}
 
 static int fs_concat(struct fs_term *out, int na, const struct fs_term *b, int nb)
 {
@@ -952,8 +1070,18 @@ static int fs_terms(struct fsp *p, nir_scalar s, struct fs_term *out)
 		return fs_concat(out, n1, p2, n2);
 	}
 	default:
-		return -1;
+		break;
 	}
+	/* anything else without a texel in it: an expression the vertex program evaluates (grid mode) */
+	if (!fs_has_tex(p, s)) {
+		int e = fs_expr(p, s);
+
+		if (e >= 0) {
+			out[0] = (struct fs_term){ e, 0 };
+			return 1;
+		}
+	}
+	return -1;
 }
 
 /* The degree in the varyings (the coefficient must be affine) and whether the expression subtracts */
@@ -965,6 +1093,8 @@ static int fs_degree(const struct mbx_fs_info *i, int n, bool *subtracts)
 	switch (nd->op) {
 	case FSN_VAR: return 1;
 	case FSN_CONST: case FSN_UNI: return 0;
+	case FSN_OP:
+		return 2;			/* not affine: the grid */
 	case FSN_NEG:
 		*subtracts = true;
 		return fs_degree(i, nd->a, subtracts);
@@ -1079,7 +1209,7 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 			if (alu->op != nir_op_mov && alu->op != nir_op_vec2 && alu->op != nir_op_vec3 && alu->op != nir_op_vec4 &&
 			    alu->op != nir_op_fmul && alu->op != nir_op_fadd && alu->op != nir_op_fsub && alu->op != nir_op_fneg &&
 			    alu->op != nir_op_ffma && alu->op != nir_op_flrp && alu->op != nir_op_slt && alu->op != nir_op_sge &&
-			    alu->op != nir_op_flt && alu->op != nir_op_fge)
+			    alu->op != nir_op_flt && alu->op != nir_op_fge && !fs_op_ok(alu->op))
 				return;
 			break;
 		}
@@ -1165,13 +1295,15 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 
 		if (L->prim >= 0) {
 			if (fs_degree(info, L->prim, &sub) > 1)
-				return;	/* not affine in the varyings: the hardware's interpolation is not the shader's */
+				info->grid = true;	/* not affine in the varyings: evaluated on a fine grid, the hardware interpolates between its corners */
 			if (L->tex && info->node[L->prim].op == FSN_CONST &&
 			    (info->node[L->prim].k > 1.0f || info->node[L->prim].k < 0.0f))
 				return;	/* the primary colour is clamped to 0..1 on the chip: it cannot scale a texel up */
 		}
 		if (L->off >= 0) {
-			if (fs_degree(info, L->off, &sub_off) > 1 || sub_off)
+			if (fs_degree(info, L->off, &sub_off) > 1)
+				info->grid = true;
+			if (sub_off)
 				return;	/* the offset colour is clamped at 0: nothing can be taken away with it */
 			if (i == 3 || !info->tex)
 				return;	/* no alpha lane in the offset colour */

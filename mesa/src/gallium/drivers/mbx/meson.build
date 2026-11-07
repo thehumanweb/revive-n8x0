@@ -6,6 +6,8 @@ files_libmbx = files(
   'mbx_compile.c',
   'mbx_context.c',
   'mbx_context.h',
+  'mbx_cpuvs.c',
+  'mbx_vgp_exec.c',
   'mbx_draw.c',
   'mbx_fallback.c',
   'mbx_fallback.h',

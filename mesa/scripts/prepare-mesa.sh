@@ -32,4 +32,8 @@ cp -u mbx/lib/mbx_vgp.h $M/src/gallium/drivers/mbx/mbx_vgp.h
 E=$M/src/gallium/drivers/mbx/drm-shim/emu
 mkdir -p $E
 cp -u mbx/core.c mbx/ta.c mbx/vgp.c mbx/render.c mbx/rcptab.c mbx/texture.c mbx/twod.c mbx/pb.c mbx/emu.h mbx/mbxemu.h mbx/lib/mbx_contract.h $E/
+# the interpreter again, for the driver's grid mode (mbx_cpuvs.c)
+D=$M/src/gallium/drivers/mbx
+cp -u mbx/vgp.c $D/mbx_vgp_exec.c
+cp -u mbx/emu.h mbx/mbxemu.h $D/
 echo "prepared $M"

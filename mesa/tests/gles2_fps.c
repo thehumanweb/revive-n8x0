@@ -26,7 +26,9 @@ static const char *fs_tex = "precision mediump float;\nuniform sampler2D u_tex;\
 static const char *fs_mod = "precision mediump float;\nuniform sampler2D u_tex;\nvarying vec2 v_uv;\nvarying vec4 v_color;\n"
 	"void main() { gl_FragColor = texture2D(u_tex, v_uv) * v_color; }\n";
 static const char *fs_cpu = "precision mediump float;\nvarying vec4 v_color;\n"
-	"void main() { gl_FragColor = vec4(v_color.rgb * v_color.rgb, 1.0); }\n";	/* a varying squared: not affine, so the CPU draws it */
+	"void main() { if (v_color.r > 0.9) discard; gl_FragColor = vec4(v_color.rgb, 1.0); }\n";	/* a discard that is not on alpha: the CPU draws it */
+static const char *fs_grid = "precision mediump float;\nvarying vec4 v_color;\n"
+	"void main() { gl_FragColor = vec4(v_color.rgb * v_color.rgb, 1.0); }\n";	/* a varying squared: not affine, so the grid mode */
 
 static GLuint link_prog(const char *fs)
 {
@@ -72,7 +74,7 @@ static const float quad[] = {
 int main(int argc, char **argv)
 {
 	int w = 400, h = 240, frames = 30, o, i, f;
-	static const char *all[] = { "flat", "fill", "tex", "mod", "many", "cpu" };
+	static const char *all[] = { "flat", "fill", "tex", "mod", "many", "cpu", "grid" };
 	PFNEGLGETPLATFORMDISPLAYEXTPROC gd = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
 	EGLDisplay d = gd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
 	static const EGLint ca[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE, 0, EGL_NONE };
@@ -109,6 +111,7 @@ int main(int argc, char **argv)
 	prog[1] = link_prog(fs_tex);
 	prog[2] = link_prog(fs_mod);
 	prog[3] = link_prog(fs_cpu);
+	prog[4] = link_prog(fs_grid);
 	tp = malloc(256 * 256 * 4);
 	for (i = 0; i < 256 * 256; i++) {
 		tp[4 * i] = i & 255;
@@ -135,7 +138,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	for (i = 0; i < 6; i++) {
+	for (i = 0; i < 7; i++) {
 		double t0 = 0, t1;
 		int want = argc - optind == 0, nf = frames;
 
@@ -162,6 +165,7 @@ int main(int argc, char **argv)
 			case 3: glUseProgram(prog[2]); glUniform1i(glGetUniformLocation(prog[2], "u_tex"), 0); draw_verts(quad, 6); break;
 			case 4: glUseProgram(prog[0]); draw_verts(many, 400 * 3); break;
 			case 5: glUseProgram(prog[3]); draw_verts(quad, 6); break;
+			case 6: glUseProgram(prog[4]); draw_verts(quad, 6); break;
 			}
 			glFinish();
 		}

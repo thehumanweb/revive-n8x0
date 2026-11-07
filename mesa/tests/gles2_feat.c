@@ -11,6 +11,7 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -704,6 +705,83 @@ static int t_alpha_discard(char *why)
 	glUseProgram(prog);
 	glDeleteProgram(p);
 	glDeleteTextures(1, &t);
+	return ok;
+}
+
+/* gl_FragDepthEXT written by the shader: the chip has no per-pixel depth output, so softpipe draws it (piglit's fragdepth_gles2) */
+static int t_frag_depth(char *why)
+{
+	static const char vs[] =
+		"attribute vec4 a_pos;\nvarying float z;\n"
+		"void main() { gl_Position = a_pos; z = a_pos.x * 0.5 + 0.5; }\n";
+	static const char fs[] =
+		"#extension GL_EXT_frag_depth : enable\nprecision mediump float;\nvarying float z;\nuniform vec4 color;\n"
+		"void main() { if (color.g == 1.0) gl_FragDepthEXT = z; else gl_FragDepthEXT = 0.5; gl_FragColor = color; }\n";
+	static const float red[] = { -0.5f, -0.5f, 0, 1, 0.5f, -0.5f, 0, 1, -0.5f, 0.5f, 0, 1, 0.5f, 0.5f, 0, 1 };
+	static const float green[] = { -0.75f, -0.25f, 0, 1, 0.75f, -0.25f, 0, 1, -0.75f, 0.25f, 0, 1, 0.75f, 0.25f, 0, 1 };
+	GLuint p = glCreateProgram();
+	GLint loc;
+	int ok;
+
+	if (!strstr((const char *)glGetString(GL_EXTENSIONS), "GL_EXT_frag_depth"))
+		return 1;		/* not offered: nothing to test */
+	glAttachShader(p, compile(GL_VERTEX_SHADER, vs));
+	glAttachShader(p, compile(GL_FRAGMENT_SHADER, fs));
+	glBindAttribLocation(p, 0, "a_pos");
+	glLinkProgram(p);
+	glUseProgram(p);
+	loc = glGetUniformLocation(p, "color");
+	begin();
+	glEnable(GL_DEPTH_TEST);
+	glEnableVertexAttribArray(0);
+	glUniform4f(loc, 1, 0, 0, 1);
+	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, red);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glUniform4f(loc, 0, 1, 0, 1);
+	glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, green);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glDisable(GL_DEPTH_TEST);
+	/* the green rectangle's depth grows from left to right and the red one's is 0.5: green wins on the left of the middle */
+	ok = is(26, 32, 0, 255, 0, why, 200) && is(38, 32, 255, 0, 0, why, 200);
+	glUseProgram(prog);
+	glDeleteProgram(p);
+	return ok;
+}
+
+/* a shader that is not affine in its varying (normalize and dot per pixel): the chip evaluates it at the corners of a fine grid
+ * and interpolates (README assumption 48); the quad's normals run from (-1,-1,1) to (1,1,1), so d = 1 / sqrt(u * u + v * v + 1) */
+static int t_grid_light(char *why)
+{
+	static const char fs[] =
+		"precision mediump float;\nvarying vec4 v_color;\n"
+		"void main() { vec3 n = normalize(v_color.xyz); float d = max(dot(n, vec3(0.0, 0.0, 1.0)), 0.0); gl_FragColor = vec4(d, d * 0.5, 1.0 - d, 1.0); }\n";
+	static const float v[] = { -1, -1, -1, -1, 1, 1,	1, -1, 1, -1, 1, 1,	-1, 1, -1, 1, 1, 1,	1, 1, 1, 1, 1, 1 };
+	GLuint p = glCreateProgram();
+	struct { int x, y; } pt[] = { { 32, 32 }, { 8, 32 }, { 32, 8 }, { 6, 6 }, { 56, 40 }, { 20, 52 } };
+	int ok = 1;
+
+	glAttachShader(p, compile(GL_VERTEX_SHADER, vs_src));
+	glAttachShader(p, compile(GL_FRAGMENT_SHADER, fs));
+	glBindAttribLocation(p, 0, "a_pos");
+	glBindAttribLocation(p, 1, "a_color");
+	glLinkProgram(p);
+	glUseProgram(p);
+	begin();
+	draw(GL_TRIANGLE_STRIP, v, 4);
+	for (unsigned i = 0; i < sizeof(pt) / sizeof(pt[0]) && ok; i++) {
+		float u = (pt[i].x + 0.5f) / 32.0f - 1.0f, w = 1.0f - (pt[i].y + 0.5f) / 32.0f;
+		float d = 1.0f / sqrtf(u * u + w * w + 1.0f);
+		struct px a = probe(pt[i].x, pt[i].y);
+
+		if (abs(a.c[0] - (int)(d * 255.0f + 0.5f)) > 14 || abs(a.c[1] - (int)(d * 127.5f + 0.5f)) > 10 ||
+		    abs(a.c[2] - (int)((1.0f - d) * 255.0f + 0.5f)) > 14) {
+			snprintf(why, 200, "(%d,%d) is %d %d %d, expected about %d %d %d", pt[i].x, pt[i].y, a.c[0], a.c[1], a.c[2],
+				 (int)(d * 255.0f + 0.5f), (int)(d * 127.5f + 0.5f), (int)((1.0f - d) * 255.0f + 0.5f));
+			ok = 0;
+		}
+	}
+	glUseProgram(prog);
+	glDeleteProgram(p);
 	return ok;
 }
 
@@ -1489,6 +1567,8 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },
+	{ "grid_light", t_grid_light },
+	{ "frag_depth", t_frag_depth },
 	{ "alpha_discard", t_alpha_discard },
 	{ "cube", t_cube },
 	{ "tex_replace", t_tex_replace },

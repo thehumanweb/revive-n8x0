@@ -126,6 +126,7 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 		return NULL;
 	}
 	p->gouraud = !ctx->fs->fs_info.flat;
+	p->grid = ctx->fs->fs_info.grid;
 	p->tex_scale_slot[0] = p->tex_scale_slot[1] = -1;
 	if (ctx->fs->fs_info.tex) {
 		const struct mbx_fs_info *fi = &ctx->fs->fs_info;

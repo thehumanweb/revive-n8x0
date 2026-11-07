@@ -1,0 +1,24 @@
+/* SPDX-License-Identifier: MIT */
+/*
+ * The vertex program on the CPU, for the grid mode (README assumption 48): where a vertex lands on the screen decides how
+ * finely a triangle is cut. The interpreter is the emulator's (mbx/vgp.c, copied beside this file by
+ * mesa/scripts/prepare-mesa.sh); it is kept to this file because its header names things Mesa's do.
+ */
+#include <string.h>
+
+#include "emu.h"
+#include "mbx_program.h"
+
+void mbx_cpuvs_run(const uint32_t code[][2], unsigned ninsn, const float k[][4], unsigned nk, const float in[8][4],
+		   float pos[4])
+{
+	static struct vgp g;		/* a constant file of 192 vec4s; the driver is single-threaded per context */
+	struct vgp_regs r;
+
+	memset(&r, 0, sizeof(r));
+	memcpy(r.v, in, sizeof(r.v));
+	memcpy(g.code, code, ninsn * sizeof(g.code[0]));
+	memcpy(g.k, k, (nk > 192 ? 192 : nk) * sizeof(g.k[0]));
+	vgp_exec(&g, &r, 0, (int)ninsn - 1, 0);
+	memcpy(pos, r.o[0], 4 * sizeof(float));
+}

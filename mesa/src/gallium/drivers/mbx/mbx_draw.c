@@ -17,6 +17,8 @@
 #include "mbx_program.h"
 #include "mbx_vgp.h"
 
+#include <math.h>
+
 /* The ISP/TSP state word (mbx/emu.h, render.c): the bits the model reads */
 #define ST_NODEPTHWRITE	(1u << 7)
 #define ST_SRC_ONE	(1u << 29)
@@ -405,6 +407,137 @@ static void emit_vertex(struct mbx_context *ctx, const unsigned *attr_comps, uns
 	}
 }
 
+/*
+ * Grid mode (README assumption 48): a fragment shader that is smooth but not affine in its varyings is evaluated by the vertex
+ * program at the corners of a fine grid (about 8 pixels), and the chip interpolates the colour between them. A triangle is cut
+ * into N x N small ones from its attributes (linear in object space, so exact for a vertex shader that is affine in them); N
+ * follows from where its corners land on the screen (the vertex program run on the CPU).
+ */
+#define GRID_PX 8.0f
+#define GRID_MAX_N 16
+#define GRID_BUDGET 12000	/* small triangles a draw may become */
+
+static void fetch_vertex(struct mbx_context *ctx, const unsigned *attr_comps, unsigned index, unsigned instance,
+			 uint8_t **vb_ptr, float out[MBX_MAX_ATTRS][4])
+{
+	for (unsigned k = 0; k < MBX_MAX_ATTRS; k++) {
+		out[k][0] = out[k][1] = out[k][2] = 0.0f;
+		out[k][3] = 1.0f;
+	}
+	for (unsigned k = 0; k < ctx->velems->count && k < MBX_MAX_ATTRS; k++) {
+		const struct pipe_vertex_element *e = &ctx->velems->e[k];
+		const uint8_t *p;
+
+		if (!attr_comps[k])
+			continue;
+		p = vb_ptr[e->vertex_buffer_index] + e->src_offset +
+		    (uint64_t)(e->instance_divisor ? instance / e->instance_divisor : index) * e->src_stride;
+		if (e->src_format == PIPE_FORMAT_R32_FLOAT || e->src_format == PIPE_FORMAT_R32G32_FLOAT ||
+		    e->src_format == PIPE_FORMAT_R32G32B32_FLOAT || e->src_format == PIPE_FORMAT_R32G32B32A32_FLOAT)
+			memcpy(out[k], p, util_format_get_blocksize(e->src_format));
+		else
+			util_format_unpack_rgba(e->src_format, out[k], p, 1);
+	}
+}
+
+static void emit_values(struct mbx_context *ctx, const unsigned *attr_comps, float v[MBX_MAX_ATTRS][4])
+{
+	for (unsigned k = 0; k < MBX_MAX_ATTRS; k++) {
+		if (!attr_comps[k])
+			continue;
+		if (attr_comps[k] == 5) {	/* four unorm bytes in one word */
+			uint32_t w = 0;
+
+			for (unsigned c = 0; c < 4; c++)
+				w |= (uint32_t)(CLAMP(v[k][c], 0.0f, 1.0f) * 255.0f + 0.5f) << (8 * c);
+			mbx_emit(ctx, MBX_CH_TA, w);
+		} else {
+			for (unsigned c = 0; c < attr_comps[k]; c++)
+				mbx_emit_f(ctx, MBX_CH_TA, v[k][c]);
+		}
+	}
+}
+
+/* The constants the program reads, as the header would send them (without the scissor planes and texture scales) */
+static void cpu_constants(struct mbx_context *ctx, const struct mbx_vgp_program *prog, float k[MBX_MAX_CONSTS][4])
+{
+	const float *uniforms = NULL, *fs_uniforms = NULL;
+
+	if (ctx->cb[0].user_buffer)
+		uniforms = (const float *)((const uint8_t *)ctx->cb[0].user_buffer + ctx->cb[0].buffer_offset);
+	else if (ctx->cb[0].buffer)
+		uniforms = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[0].buffer)->bo) + ctx->cb[0].buffer_offset);
+	if (ctx->cb[1].user_buffer)
+		fs_uniforms = (const float *)((const uint8_t *)ctx->cb[1].user_buffer + ctx->cb[1].buffer_offset);
+	else if (ctx->cb[1].buffer)
+		fs_uniforms = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[1].buffer)->bo) + ctx->cb[1].buffer_offset);
+	for (unsigned i = 0; i < prog->nconst && i < MBX_MAX_CONSTS; i++)
+		for (unsigned c = 0; c < 4; c++) {
+			if (prog->nfsu && (int)i >= prog->fsu_base && (int)i < prog->fsu_base + (int)prog->nfsu)
+				k[i][c] = fs_uniforms ? fs_uniforms[prog->fsu_vec[i - prog->fsu_base] * 4 + c] : 0.0f;
+			else if (i < prog->nuniform)
+				k[i][c] = uniforms ? uniforms[i * 4 + c] : 0.0f;
+			else
+				k[i][c] = prog->consts[i][c];
+		}
+}
+
+/* The number of cuts along a triangle's longest screen side (1: not cut) */
+static unsigned grid_cuts(struct mbx_context *ctx, const struct mbx_vgp_program *prog, const float k[MBX_MAX_CONSTS][4],
+			  float va[MBX_MAX_ATTRS][4], float vb[MBX_MAX_ATTRS][4], float vc[MBX_MAX_ATTRS][4])
+{
+	float (*v[3])[4] = { va, vb, vc };
+	float x[3], y[3], ext = 0.0f;
+	const struct pipe_viewport_state *vp = &ctx->viewport;
+
+	for (unsigned i = 0; i < 3; i++) {
+		float pos[4];
+
+		mbx_cpuvs_run(prog->code, prog->ninsn, k, prog->nconst, (const float (*)[4])v[i], pos);
+		if (!(pos[3] > 1e-4f))
+			return 1;			/* behind the eye: the TA clips it, the grid has nothing to measure */
+		x[i] = pos[0] / pos[3] * vp->scale[0];
+		y[i] = pos[1] / pos[3] * vp->scale[1];
+	}
+	for (unsigned i = 0; i < 3; i++) {
+		float dx = fabsf(x[i] - x[(i + 1) % 3]), dy = fabsf(y[i] - y[(i + 1) % 3]);
+
+		ext = MAX3(ext, dx, dy);
+	}
+	return (unsigned)CLAMP(ceilf(ext / GRID_PX), 1.0f, (float)GRID_MAX_N);
+}
+
+static void grid_lerp(float out[MBX_MAX_ATTRS][4], float a[MBX_MAX_ATTRS][4], float b[MBX_MAX_ATTRS][4],
+		      float c[MBX_MAX_ATTRS][4], float wa, float wb, float wc)
+{
+	for (unsigned k = 0; k < MBX_MAX_ATTRS; k++)
+		for (unsigned i = 0; i < 4; i++)
+			out[k][i] = a[k][i] * wa + b[k][i] * wb + c[k][i] * wc;
+}
+
+/* One triangle as N x N small ones, in a triangle list */
+static void grid_triangle(struct mbx_context *ctx, const unsigned *comps, float va[MBX_MAX_ATTRS][4],
+			  float vb[MBX_MAX_ATTRS][4], float vc[MBX_MAX_ATTRS][4], unsigned n)
+{
+	float p[GRID_MAX_N + 1][GRID_MAX_N + 1][MBX_MAX_ATTRS][4];
+	unsigned i, j;
+
+	for (i = 0; i <= n; i++)
+		for (j = 0; i + j <= n; j++)
+			grid_lerp(p[i][j], va, vb, vc, 1.0f - (float)(i + j) / (float)n, (float)i / (float)n, (float)j / (float)n);
+	for (i = 0; i < n; i++)
+		for (j = 0; i + j < n; j++) {
+			emit_values(ctx, comps, p[i][j]);
+			emit_values(ctx, comps, p[i + 1][j]);
+			emit_values(ctx, comps, p[i][j + 1]);
+			if (i + j + 1 < n) {
+				emit_values(ctx, comps, p[i + 1][j]);
+				emit_values(ctx, comps, p[i + 1][j + 1]);
+				emit_values(ctx, comps, p[i][j + 1]);
+			}
+		}
+}
+
 static uint32_t hw_prim_word(unsigned mode)
 {
 	switch (mode) {
@@ -568,6 +701,44 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		emit_header(ctx, prog, layout);
 		mbx_dbg("draw %u: program", d);
 		emit_program(ctx, prog);
+		if (prog->grid && (info->mode == MESA_PRIM_TRIANGLES || info->mode == MESA_PRIM_TRIANGLE_STRIP ||
+				   info->mode == MESA_PRIM_TRIANGLE_FAN) && draws[d].count >= 3) {
+			static float k[MBX_MAX_CONSTS][4];
+			float va[MBX_MAX_ATTRS][4], vb[MBX_MAX_ATTRS][4], vc[MBX_MAX_ATTRS][4];
+			unsigned ntri = info->mode == MESA_PRIM_TRIANGLES ? draws[d].count / 3 : draws[d].count - 2, t, used = 0;
+
+			cpu_constants(ctx, prog, k);
+			mbx_emit(ctx, MBX_CH_TA, 0x70000000 | hw_cull_bits(ctx));	/* a triangle list, whatever the draw's mode was */
+			mbx_emit(ctx, MBX_CH_TA, prog->sections);
+			for (t = 0; t < ntri; t++) {
+				unsigned ix[3], q, n;
+
+				for (q = 0; q < 3; q++) {
+					unsigned s = info->mode == MESA_PRIM_TRIANGLES ? 3 * t + q :
+						     info->mode == MESA_PRIM_TRIANGLE_STRIP ? t + (q ^ ((t & 1) && q < 2 ? 1 : 0)) :
+						     (q == 0 ? 0 : t + q);
+
+					ix[q] = draws[d].start + s;
+					if (info->index_size == 1)
+						ix[q] = ((const uint8_t *)indices)[ix[q]];
+					else if (info->index_size == 2)
+						ix[q] = ((const uint16_t *)indices)[ix[q]];
+					else if (info->index_size == 4)
+						ix[q] = ((const uint32_t *)indices)[ix[q]];
+					if (info->index_size)
+						ix[q] += draws[d].index_bias;
+				}
+				fetch_vertex(ctx, comps, ix[0], info->start_instance, vb_ptr, va);
+				fetch_vertex(ctx, comps, ix[1], info->start_instance, vb_ptr, vb);
+				fetch_vertex(ctx, comps, ix[2], info->start_instance, vb_ptr, vc);
+				n = used < GRID_BUDGET ? grid_cuts(ctx, prog, (const float (*)[4])k, va, vb, vc) : 1;
+				used += n * n;
+				grid_triangle(ctx, comps, va, vb, vc, n);
+			}
+			mbx_emit(ctx, MBX_CH_CTL, 1);
+			ctx->job.ndraws++;
+			continue;
+		}
 		mbx_dbg("draw %u: %u vertices", d, draws[d].count);
 		mbx_dbg("cull: face %d front_ccw %d scale1 %g -> bits %08x", ctx->rast ? ctx->rast->cull_face : -1,
 			ctx->rast ? ctx->rast->front_ccw : -1, ctx->viewport.scale[1], hw_cull_bits(ctx));

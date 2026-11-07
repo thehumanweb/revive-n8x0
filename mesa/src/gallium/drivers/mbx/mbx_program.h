@@ -27,11 +27,11 @@ enum mbx_fs_kind {
  * (everything but the texels): constants, the vertex shader's outputs (varyings), fragment uniforms, and sums and
  * products of those. Affine in the varyings, so it is exact when the hardware interpolates the result.
  */
-enum mbx_fs_op { FSN_CONST, FSN_VAR, FSN_UNI, FSN_ADD, FSN_SUB, FSN_MUL, FSN_NEG };
+enum mbx_fs_op { FSN_CONST, FSN_VAR, FSN_UNI, FSN_ADD, FSN_SUB, FSN_MUL, FSN_NEG, FSN_OP };
 
 struct mbx_fs_node {
 	uint8_t op;
-	uint16_t a, b;			/* operands (node indices) */
+	uint16_t a, b, c;		/* operands (node indices); FSN_OP: the nir op in loc, up to three operands */
 	float k;			/* FSN_CONST */
 	unsigned loc, comp;		/* FSN_VAR: slot and component; FSN_UNI: index in fsu_vec and component */
 };
@@ -59,6 +59,7 @@ struct mbx_fs_info {
 	bool pass_c, pass_a;	/* the colour lanes / the alpha lane have a primary colour (a coefficient other than 1) */
 	unsigned uv_loc[MBX_MAX_TEX][2], uv_comp[MBX_MAX_TEX][2];	/* where each unit's coordinate comes from in the vertex shader's outputs */
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* the fragment uniform vec4s read */
+	bool grid;		/* a coefficient that is not affine in the varyings: evaluated at the corners of a fine grid (README assumption 48) */
 	uint32_t alpha_word;	/* the alpha-test word for a "discard if alpha is on one side of a constant" (README assumption 45); 0: always */
 };
 
@@ -76,6 +77,7 @@ struct mbx_vgp_program {
 	float consts[MBX_MAX_CONSTS][4];	/* the immediates (from nuniform on) */
 	bool attr_used[MBX_MAX_ATTRS];	/* input registers the program reads */
 	bool gouraud;			/* the varying colour is interpolated */
+	bool grid;			/* the colour is not affine in the varyings: triangles are cut into a fine grid (README assumption 48) */
 	uint32_t st_extra;		/* ISP/TSP state bits the shader wants */
 	uint32_t sections;		/* the sections word this program's draws send */
 	bool scissor;			/* the variant with the scissor as four user clip planes (o5.xyzw) */
@@ -98,6 +100,9 @@ struct mbx_vgp_program {
 extern const struct nir_shader_compiler_options mbx_nir_options;
 void mbx_nir_prepare(struct nir_shader *s);
 /* mbx_compile.c */
+/* The vertex program on the CPU (mbx_cpuvs.c): the clip position of one vertex */
+void mbx_cpuvs_run(const uint32_t code[][2], unsigned ninsn, const float k[][4], unsigned nk, const float in[8][4],
+		   float pos[4]);
 void mbx_fs_match(struct nir_shader *fs, struct mbx_fs_info *info);
 bool mbx_compile_vs(struct nir_shader *vs, const struct mbx_fs_info *fs, struct mbx_vgp_program *prog);
 
