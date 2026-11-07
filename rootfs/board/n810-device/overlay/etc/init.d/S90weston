@@ -1,0 +1,24 @@
+#!/bin/sh
+# Weston on the N810's panel: the DRM backend with the GL renderer on the mbx driver (the render node
+# is picked by WESTON_RENDER_DEVICE, EGL cannot name a device), no idle blanking or lock, libseat's
+# built-in seat (nothing else owns the VT). To keep the console free of it: touch /etc/noweston.
+# Logs: /tmp/weston.log (Weston), /tmp/weston.out (its stderr, Mesa's errors included).
+PIDFILE=/var/run/weston.pid
+
+case "$1" in
+	start)
+		[ -e /etc/noweston ] && exit 0
+		mkdir -p /run/user/0
+		chmod 700 /run/user/0
+		XDG_RUNTIME_DIR=/run/user/0 WESTON_RENDER_DEVICE=/dev/dri/card0 \
+			nohup weston --backend=drm --renderer=gl --continue-without-input --idle-time=0 \
+			--log=/tmp/weston.log >/tmp/weston.out 2>&1 </dev/null &
+		echo $! > $PIDFILE
+		;;
+	stop)
+		[ -f $PIDFILE ] && kill "$(cat $PIDFILE)" 2>/dev/null
+		rm -f $PIDFILE
+		;;
+	restart) "$0" stop; sleep 2; "$0" start ;;
+esac
+exit 0
