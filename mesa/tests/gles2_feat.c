@@ -830,6 +830,53 @@ static int t_grid_tex(char *why)
 	return ok;
 }
 
+/* depth carried between chip and CPU draws (README assumption 7): green at 0.6 on the chip, white at 0.3 through the CPU fallback
+ * (a red-only colour mask), blue at 0.45 on the chip again: the blue one must lose to the CPU's depth */
+static int t_depth_chip_cpu_chip(char *why)
+{
+	begin();
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+	tri_z(0.6f, 0, 1, 0, 1, 0);
+	CHECK(32, 24, 0, 255, 0);
+	glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_TRUE);
+	tri_z(0.3f, 1, 1, 1, 1, 0);
+	glColorMask(1, 1, 1, 1);
+	tri_z(0.45f, 0, 0, 1, 1, 0);
+	glDisable(GL_DEPTH_TEST);
+	CHECK(32, 24, 255, 255, 0);
+	return 1;
+}
+
+/* a chip draw's depth reaches a later CPU draw: the one behind it is not drawn */
+static int t_depth_chip_cpu(char *why)
+{
+	begin();
+	glEnable(GL_DEPTH_TEST);
+	tri_z(0.3f, 0, 1, 0, 1, 0);
+	glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_TRUE);
+	tri_z(0.45f, 1, 1, 1, 1, 0);
+	glColorMask(1, 1, 1, 1);
+	glDisable(GL_DEPTH_TEST);
+	CHECK(32, 24, 0, 255, 0);
+	return 1;
+}
+
+/* two CPU draws: the second, behind the first, is not drawn */
+static int t_depth_cpu_cpu(char *why)
+{
+	begin();
+	glEnable(GL_DEPTH_TEST);
+	glColorMask(GL_TRUE, GL_FALSE, GL_FALSE, GL_TRUE);
+	tri_z(0.3f, 1, 1, 1, 1, 0);
+	glColorMask(GL_FALSE, GL_TRUE, GL_FALSE, GL_TRUE);
+	tri_z(0.45f, 1, 1, 1, 1, 0);
+	glColorMask(1, 1, 1, 1);
+	glDisable(GL_DEPTH_TEST);
+	CHECK(32, 24, 255, 0, 0);
+	return 1;
+}
+
 static int t_scissor_clear(char *why)
 {
 	begin();
@@ -1612,6 +1659,9 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },
+	{ "depth_cpu_cpu", t_depth_cpu_cpu },
+	{ "depth_chip_cpu", t_depth_chip_cpu },
+	{ "depth_chip_cpu_chip", t_depth_chip_cpu_chip },
 	{ "grid_light", t_grid_light },
 	{ "grid_tex", t_grid_tex },
 	{ "frag_depth", t_frag_depth },

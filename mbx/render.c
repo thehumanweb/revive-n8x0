@@ -1563,10 +1563,9 @@ void render_kick(struct mbxemu *e)
 	rc.h = (R[R_HEIGHT / 4] >> 16 & 0x7ff) + 1;
 	rc.zaddr = R[R_ZBUF / 4] & ~0xffu;
 	rc.zrow = ((rc.ctl >> 8 & 0xff) + 1) * TILE;
-	rc.zload_ok = (rc.ctl & 2) && !(rc.ctl & 0x30000) && rc.zaddr;
-	/* depth is stored only by a partial render (0x85c bit 3) */
-	rc.zstore = (rc.ctl & 1) && !(rc.ctl & 0x30000) && rc.zaddr &&
-		    (R[R_TA_CONFIG / 4] & TAC_PARTIAL);
+	/* as the unit does it (README assumption 7, measured): bit 0 loads, for tiles whose region entry has bit 29; bit 1 stores */
+	rc.zload_ok = (rc.ctl & 1) && !(rc.ctl & 0x30000) && rc.zaddr;
+	rc.zstore = (rc.ctl & 2) && !(rc.ctl & 0x30000) && rc.zaddr;
 	rc.zclear = R[R_6DC / 4] ? u2f(R[R_6DC / 4] & ~1u) : 1.0f;
 	rc.fog[0] = (R[R_FOG_COLOUR / 4] >> 16 & 255) / 255.0f;
 	rc.fog[1] = (R[R_FOG_COLOUR / 4] >> 8 & 255) / 255.0f;
@@ -1702,7 +1701,7 @@ void render_kick(struct mbxemu *e)
 		if (w0 & 0x80000000)
 			break;
 	}
-	if (rc.s && !rc.s->has_clear && rc.s->nprims) {
+	if (rc.s && !rc.s->has_clear && !(rc.s->has_nowrite_clear && rc.zload_ok) && rc.s->nprims) {
 		emu_violation(e, V_DEPTH_CLEAR, "the scene has no depth-only clear: the tile's depth starts as NaN and "
 			      "most depth tests fail");
 		rc.depth_nan = e->strict;

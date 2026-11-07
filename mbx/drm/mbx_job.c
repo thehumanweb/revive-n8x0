@@ -240,7 +240,7 @@ static int mbx_job_run(struct mbx_job *job)
 	if (kick_delay_us)
 		usleep_range(kick_delay_us, kick_delay_us + 200);
 
-	ret = mbx_job_region_bit30(job->vm, a);
+	ret = mbx_job_region_bit30(job->vm, a, a->flags & MBX_SUBMIT_ZLOAD ? 0x20000000 : 0);
 	if (ret)
 		goto reset;
 	{
@@ -371,7 +371,7 @@ int mbx_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *file)
 	u32 i;
 	int ret;
 
-	if ((a->flags & ~MBX_SUBMIT_FLAT_BG) || a->stream_words > MBX_MAX_STREAM_WORDS || a->n_bos > MBX_MAX_BOS)
+	if ((a->flags & ~(MBX_SUBMIT_FLAT_BG | MBX_SUBMIT_ZLOAD)) || a->stream_words > MBX_MAX_STREAM_WORDS || a->n_bos > MBX_MAX_BOS)
 		return -EINVAL;
 	job = kzalloc(sizeof(*job), GFP_KERNEL);
 	if (!job)

@@ -96,6 +96,9 @@ struct drm_mbx_submit_bo {
  * background object at it. Without it the background object is the target itself (what was drawn is kept).
  */
 #define MBX_SUBMIT_FLAT_BG	(1u << 0)
+/* MBX_SUBMIT_ZLOAD: every tile's region entry gets bit 29, so a render whose r_ctl has bit 0 loads the tile's depth from the external Z
+ * buffer at r_zbuf (bit 1 stores it after the render); the depth-only clear object must not write depth then (README assumption 7). */
+#define MBX_SUBMIT_ZLOAD	(1u << 1)
 
 struct drm_mbx_submit {
 	__u64 stream;		/* in: user pointer to the chunks */

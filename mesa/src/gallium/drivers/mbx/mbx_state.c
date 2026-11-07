@@ -43,7 +43,9 @@ static void mbx_set_framebuffer_state(struct pipe_context *pctx, const struct pi
 	struct mbx_context *ctx = mbx_context(pctx);
 
 	/* what is recorded belongs to the old target */
+	ctx->zkeep = true;		/* depth the framebuffer holds may be used again when it is bound again */
 	mbx_job_flush(ctx);
+	ctx->zkeep = false;
 	if (ctx->clear.pending && !(fb->nr_cbufs && fb->cbufs[0].texture == &ctx->clear.rsc->base && fb->width == ctx->clear.w &&
 				    fb->height == ctx->clear.h && fb->cbufs[0].level == ctx->clear.level))
 		mbx_clear_materialize(ctx);	/* another target or size: the CPU fills the old one's clear */

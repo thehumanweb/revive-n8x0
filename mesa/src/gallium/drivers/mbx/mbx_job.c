@@ -59,6 +59,8 @@ void mbx_job_reset(struct mbx_context *ctx)
 	job->loaded_prog = NULL;
 	job->loaded_const_serial = ~0u;
 	job->depth_cleared = false;
+	job->zr = NULL;
+	job->zload = job->zuse = false;
 	job->clear_depth = ctx->next_clear_depth;
 	pipe_resource_reference((struct pipe_resource **)&job->color, NULL);
 	for (unsigned i = 0; i < MBX_MAX_TEX; i++)
@@ -116,7 +118,7 @@ static bool target_bos(struct mbx_context *ctx, unsigned w, unsigned h)
  * fail. Section bit 11 names the passthrough (o0 = v0) the clear's vertices go through, kept in the
  * last VGP instruction slot, clear of any program the compiler makes.
  */
-static void emit_frame_start(struct mbx_context *ctx, float depth)
+static void emit_frame_start(struct mbx_context *ctx, float depth, bool zload)
 {
 	mbx_emit(ctx, MBX_CH_TA, 0x10000010);	/* an object header naming the one-word region clip control */
 	mbx_emit(ctx, MBX_CH_TA, 0);
@@ -126,7 +128,7 @@ static void emit_frame_start(struct mbx_context *ctx, float depth)
 	mbx_emit(ctx, MBX_CH_TA, 0xe4e4e401);	/* MOV o0, v0 */
 	mbx_emit(ctx, MBX_CH_TA, 0x03c00000);
 	mbx_emit(ctx, MBX_CH_TA, 0x10000000 | 0x1 | 0x2 | 0x20);	/* state, alpha test, layout */
-	mbx_emit(ctx, MBX_CH_TA, 0xe00 | 0x100);	/* depth always, written; no colour */
+	mbx_emit(ctx, MBX_CH_TA, 0xe00 | 0x100 | (zload ? 0x80 : 0));	/* depth always, written (not when the render loads it); no colour */
 	mbx_emit(ctx, MBX_CH_TA, 0xe0000000);	/* alpha function ALWAYS */
 	mbx_emit(ctx, MBX_CH_TA, 0x3);		/* vertices: three floats */
 	mbx_emit(ctx, MBX_CH_TA, 0x70000000);	/* a triangle list */
@@ -152,7 +154,13 @@ bool mbx_job_begin(struct mbx_context *ctx)
 		mbx_clear_materialize(ctx);	/* a clear of another target: its memory is needed as it is */
 	pipe_resource_reference((struct pipe_resource **)&job->color, cbuf->texture);
 	job->active = true;
-	emit_frame_start(ctx, job->clear_depth);
+	if (ctx->fb.zsbuf.texture) {
+		struct mbx_resource *zr = mbx_resource(ctx->fb.zsbuf.texture);
+
+		job->zr = zr;
+		job->zload = zr->zvalid && zr->zbo && zr->zw == ctx->fb.width && zr->zh == ctx->fb.height && !getenv("MBX_NO_ZCARRY");
+	}
+	emit_frame_start(ctx, job->clear_depth, job->zload);
 	return true;
 }
 
@@ -161,10 +169,10 @@ void mbx_job_flush(struct mbx_context *ctx)
 	struct mbx_job *job = &ctx->job;
 	struct mbx_target_bos *t = &ctx->tbos;
 	struct drm_mbx_submit s;
-	struct drm_mbx_submit_bo bo[1 + MBX_MAX_TEX];
+	struct drm_mbx_submit_bo bo[2 + MBX_MAX_TEX];
 	unsigned nbo = 0;
 	struct mbx_resource *color = job->color;
-	bool flat;
+	bool flat, zstored = false;
 	uint32_t zclear;
 	float z = job->clear_depth;
 	int ret;
@@ -194,6 +202,19 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.r_stride = color->stride / 4;		/* words */
 	memcpy(&zclear, &z, 4);
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
+	if (job->zuse && job->zr && !(job->zload || ctx->zkeep))
+		job->zr->zvalid = false;	/* the depth stays on chip and is gone with the job: the memory no longer matches */
+	if (job->zuse && job->zr && (job->zload || ctx->zkeep) && !getenv("MBX_NO_ZCARRY") && mbx_z_ensure(ctx, job->zr)) {
+		/* the depth goes to memory after the render (ctl bit 1), and comes from it first when it is current (bit 0 and the
+		 * region entries' bit 29): chip and CPU draws and later jobs then share one depth buffer (README assumption 7) */
+		unsigned stride_px = align(ctx->fb.width, 16);
+
+		s.r_ctl = ((stride_px / 16 - 1) & 0xff) << 8 | 2 | (job->zload ? 1 : 0);
+		s.r_zbuf = job->zr->zbo->va;
+		if (job->zload)
+			s.flags |= MBX_SUBMIT_ZLOAD;
+		zstored = true;
+	}
 	flat = ctx->clear.pending && ctx->clear.rsc == color;
 	if (ctx->clear.pending && !flat)
 		mbx_clear_materialize(ctx);	/* another target's clear: the CPU fills it */
@@ -211,6 +232,10 @@ void mbx_job_flush(struct mbx_context *ctx)
 			bo[nbo].handle = job->tex[i]->bo->handle;
 			bo[nbo++].flags = 0;
 		}
+	if (zstored) {
+		bo[nbo].handle = job->zr->zbo->handle;
+		bo[nbo++].flags = MBX_SUBMIT_BO_WRITE;
+	}
 	s.bos = (uintptr_t)bo;
 	s.n_bos = nbo;
 
@@ -219,6 +244,10 @@ void mbx_job_flush(struct mbx_context *ctx)
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
+		if (zstored) {
+			job->zr->last_fence = s.fence;
+			job->zr->zvalid = true;
+		}
 		if (flat) {
 			ctx->clear.pending = false;
 			pipe_resource_reference((struct pipe_resource **)&ctx->clear.rsc, NULL);
@@ -263,4 +292,43 @@ void mbx_resource_wait(struct mbx_screen *screen, struct mbx_resource *rsc)
 {
 	if (rsc->last_fence)
 		mbx_fence_wait(screen, rsc->last_fence, 10ull * 1000000000ull);
+}
+
+bool mbx_z_ensure(struct mbx_context *ctx, struct mbx_resource *zr)
+{
+	unsigned w = ctx->fb.width, h = ctx->fb.height;
+
+	if (zr->zbo && (zr->zw != w || zr->zh != h)) {
+		mbx_bo_unref(zr->zbo);
+		zr->zbo = NULL;
+		zr->zvalid = false;
+		pipe_resource_reference(&zr->sp_twin, NULL);	/* it wrapped the old memory */
+	}
+	if (!zr->zbo) {
+		zr->zbo = mbx_bo_create(ctx->screen, align64((uint64_t)align(w, 16) * align(h, 16) * 4, 4096));
+		zr->zw = w;
+		zr->zh = h;
+		zr->zvalid = false;
+	}
+	return zr->zbo != NULL;
+}
+
+void mbx_z_fill_if_stale(struct mbx_context *ctx, struct mbx_resource *zr)
+{
+	uint32_t *p, v;
+	float z = ctx->next_clear_depth;
+	size_t n;
+
+	if (!zr->zbo || zr->zvalid)
+		return;
+	mbx_resource_wait(ctx->screen, zr);
+	p = mbx_bo_map(zr->zbo);
+	if (!p)
+		return;
+	memcpy(&v, &z, 4);
+	v |= 1;
+	n = (size_t)align(zr->zw, 16) * align(zr->zh, 16);
+	for (size_t i = 0; i < n; i++)
+		p[i] = v;
+	zr->zvalid = true;
 }

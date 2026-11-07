@@ -128,6 +128,7 @@ struct scene {
 	int used;		/* the slot holds a scene */
 	int complete;		/* its end word came: the next render consumes it */
 	int closed;		/* a close (0x808) came: a partial render may take it */
+	int has_nowrite_clear;	/* a screen-space object with no colour and no depth write: it only gives every tile a list (the render loads the depth) */
 	int has_clear;		/* a depth-only clear object (screen space, depth written, no colour) came */
 	uint32_t regions, tails, config, width, height;	/* the TA's registers at its start */
 	struct rstate *states;

@@ -196,12 +196,19 @@ static inline void mbx_contract_tails(const struct mbx_io *io, uint32_t tails_va
 }
 
 /* After the TA, before the render: bit 30 on every region entry (the stock daemon does it) */
-static inline void mbx_contract_prerender(const struct mbx_io *io, uint32_t regions_va, uint32_t tx, uint32_t ty)
+/* extra: more bits for every entry's word 0; 0x20000000 makes the render load the external Z buffer for the tile (README assumption 7) */
+static inline void mbx_contract_prerender_or(const struct mbx_io *io, uint32_t regions_va, uint32_t tx, uint32_t ty,
+					     uint32_t extra)
 {
 	uint32_t n = mbx_region_entries(tx, ty), k;
 
 	for (k = 0; k < n; k++)
-		io->wr32(io->opaque, regions_va + 8 * k, io->rd32(io->opaque, regions_va + 8 * k) | 0x40000000);
+		io->wr32(io->opaque, regions_va + 8 * k, io->rd32(io->opaque, regions_va + 8 * k) | 0x40000000 | extra);
+}
+
+static inline void mbx_contract_prerender(const struct mbx_io *io, uint32_t regions_va, uint32_t tx, uint32_t ty)
+{
+	mbx_contract_prerender_or(io, regions_va, tx, ty, 0);
 }
 
 #endif

@@ -146,6 +146,8 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 		mbx_fallback_clear_depth(ctx, depth);	/* softpipe's own depth, when it has drawn */
 		ctx->next_clear_depth = (float)depth;
 		ctx->job.clear_depth = (float)depth;
+		if (ctx->fb.zsbuf.texture)	/* the memory (if any) no longer holds the depth: the next job starts from the clear, the CPU fills it */
+			mbx_resource(ctx->fb.zsbuf.texture)->zvalid = false;
 	}
 	if ((buffers & PIPE_CLEAR_COLOR0) && ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture) {
 		struct mbx_resource *rsc = mbx_resource(ctx->fb.cbufs[0].texture);

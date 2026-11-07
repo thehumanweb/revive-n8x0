@@ -350,7 +350,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	uint32_t i, st;
 	int ret = 0;
 
-	if ((a->flags & ~MBX_SUBMIT_FLAT_BG) || a->stream_words > (256u << 10) || a->n_bos > 64)
+	if ((a->flags & ~(MBX_SUBMIT_FLAT_BG | MBX_SUBMIT_ZLOAD)) || a->stream_words > (256u << 10) || a->n_bos > 64)
 		return -EINVAL;
 	/* chunks whole and of a known type, as the kernel checks them */
 	for (i = 0; i < a->stream_words;) {
@@ -474,7 +474,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 		uint32_t tx = (a->ta_config >> 20 & 0x3ff) + 1, ty = (a->ta_config >> 10 & 0x3ff) + 1;
 
 		mbx_contract_render_regs(&SIM_IO, tx, ty);
-		mbx_contract_prerender(&SIM_IO, a->ta_regions, tx, ty);	/* bit 30 on every region entry */
+		mbx_contract_prerender_or(&SIM_IO, a->ta_regions, tx, ty, a->flags & MBX_SUBMIT_ZLOAD ? 0x20000000 : 0);	/* bit 30 on every region entry */
 	}
 	rw(R_6DC, a->r_6dc);
 	rw(R_HW_CONTEXT, a->ta_context);

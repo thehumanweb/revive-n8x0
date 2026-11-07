@@ -586,6 +586,8 @@ static void add_prim(struct mbxemu *e, const struct vtx *a, const struct vtx *b,
 	/* a depth-only clear: screen space, the depth written, no colour (state bits 8 set, 7 clear) */
 	if (screen_space(e) && (e->cur.st & 0x180) == 0x100)
 		s->has_clear = 1;
+	if (screen_space(e) && (e->cur.st & 0x180) == 0x180)
+		s->has_nowrite_clear = 1;	/* with an external Z load the tile's depth comes from memory */
 	/* found during device testing: a colour-writing prim without bit 25 gets its colour ANDed with the target.
 	 * (A never-passing alpha function with bit 25 set draws nothing; render.c models that.) */
 	if (!(e->cur.st & (1u << 25)) && !(e->cur.st & (1u << 8)))

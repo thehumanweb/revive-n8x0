@@ -74,7 +74,7 @@ static const float quad[] = {
 int main(int argc, char **argv)
 {
 	int w = 400, h = 240, frames = 30, o, i, f;
-	static const char *all[] = { "flat", "fill", "tex", "mod", "many", "cpu", "grid" };
+	static const char *all[] = { "flat", "fill", "tex", "mod", "many", "cpu", "grid", "depth" };
 	PFNEGLGETPLATFORMDISPLAYEXTPROC gd = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
 	EGLDisplay d = gd(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
 	static const EGLint ca[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE, 0, EGL_NONE };
@@ -138,7 +138,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	for (i = 0; i < 7; i++) {
+	for (i = 0; i < 8; i++) {
 		double t0 = 0, t1;
 		int want = argc - optind == 0, nf = frames;
 
@@ -166,6 +166,7 @@ int main(int argc, char **argv)
 			case 4: glUseProgram(prog[0]); draw_verts(many, 400 * 3); break;
 			case 5: glUseProgram(prog[3]); draw_verts(quad, 6); break;
 			case 6: glUseProgram(prog[4]); draw_verts(quad, 6); break;
+			case 7: glEnable(GL_DEPTH_TEST); glUseProgram(prog[0]); draw_verts(quad, 6); glDisable(GL_DEPTH_TEST); break;
 			}
 			glFinish();
 		}

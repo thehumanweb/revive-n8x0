@@ -302,18 +302,13 @@ static void region_init_fn(void *priv, u32 off, u32 *w, u32 n)
 	}
 }
 
-/* debug: bits ORed into every region entry before the render, besides bit 30 (0x20000000: the per-tile external Z load flag, from the user's notes) */
-static unsigned int region_or;
-module_param(region_or, uint, 0644);
-MODULE_PARM_DESC(region_or, "debug: bits ORed into every region entry's word 0 before the render (0x20000000 = load the external Z)");
-
 static void or_bit30_fn(void *priv, u32 off, u32 *w, u32 n)
 {
 	u32 k;
 
 	for (k = 0; k < n; k++)
 		if (!((off / 4 + k) & 1))
-			w[k] |= 0x40000000 | region_or;
+			w[k] |= 0x40000000 | (u32)(uintptr_t)priv;
 }
 
 static void zero_fn(void *priv, u32 off, u32 *w, u32 n)
@@ -354,7 +349,7 @@ int mbx_job_prepare_buffers(struct mbx_vm *vm, const struct drm_mbx_submit *a)
 }
 
 /* Bit 30 on every region entry: after the TA, before the render */
-int mbx_job_region_bit30(struct mbx_vm *vm, const struct drm_mbx_submit *a)
+int mbx_job_region_bit30(struct mbx_vm *vm, const struct drm_mbx_submit *a, u32 extra)
 {
-	return mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), or_bit30_fn, NULL);
+	return mbx_vm_cpu(vm, a->ta_regions, mbx_region_bytes(a), or_bit30_fn, (void *)(uintptr_t)extra);
 }

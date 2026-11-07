@@ -18,7 +18,12 @@ struct mbx_resource {
 	struct mbx_bo *bo;
 	uint32_t stride;	/* bytes a row; 0 for buffers */
 	uint32_t size;		/* bytes the layout takes */
-	bool on_chip;		/* a depth buffer: the MBX keeps depth on chip, there is no memory */
+	bool on_chip;		/* a depth buffer: the MBX keeps depth on chip, there is no memory ... */
+	/* ... unless a job must carry it (external Z, README assumption 7): memory of align(zw, 16) x align(zh, 16) floats, which a job
+	 * stores to when it tests depth and loads from when the memory holds the current depth (zvalid); softpipe's depth twin wraps it */
+	struct mbx_bo *zbo;
+	unsigned zw, zh;
+	bool zvalid;
 	uint64_t last_fence;	/* the last job that wrote it: the CPU waits for it before touching the memory */
 	struct renderonly_scanout *scanout;	/* the KMS device's buffer this is, when it is scanned out */
 	/* a sampled 2D texture: linear (the chip reads linear textures with a stride), every level's

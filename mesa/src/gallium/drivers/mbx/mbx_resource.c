@@ -254,6 +254,7 @@ static void mbx_resource_destroy(struct pipe_screen *pscreen, struct pipe_resour
 	if (rsc->scanout)
 		renderonly_scanout_destroy(rsc->scanout, mbx_screen(pscreen)->ro);
 	mbx_fallback_resource_destroy(rsc);
+	mbx_bo_unref(rsc->zbo);
 	mbx_bo_unref(rsc->bo);
 	FREE(rsc);
 }

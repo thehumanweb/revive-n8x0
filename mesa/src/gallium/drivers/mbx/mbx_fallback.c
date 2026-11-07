@@ -145,18 +145,24 @@ static struct pipe_resource *twin_shared(struct mbx_context *ctx, struct mbx_res
 	return rsc->sp_twin;
 }
 
-/* A depth buffer: the MBX has none in memory, so softpipe keeps its own */
-static struct pipe_resource *twin_private(struct mbx_context *ctx, struct mbx_resource *rsc)
+/* A depth buffer: softpipe wraps the external Z memory the chip's jobs store to and load from (floats, one a pixel; README assumption 7) */
+static struct pipe_resource *twin_zshared(struct mbx_context *ctx, struct mbx_resource *rsc)
 {
 	struct pipe_screen *sps = ctx->sp->screen;
+	struct fb_ws *ws = (struct fb_ws *)ctx->screen->sp_ws;
 	struct pipe_resource t = rsc->base;
+	struct winsys_handle w = { .type = WINSYS_HANDLE_TYPE_SHARED, .stride = align(rsc->zw, 16) * 4 };
 
 	if (rsc->sp_twin)
 		return rsc->sp_twin;
+	t.format = PIPE_FORMAT_Z32_FLOAT;
+	t.last_level = 0;
 	t.next = NULL;
 	t.screen = sps;
-	rsc->sp_twin = sps->resource_create(sps, &t);
-	rsc->sp_fresh = true;		/* its depth starts as the context's clear value, at the first use */
+	t.bind = PIPE_BIND_DEPTH_STENCIL;
+	ws->pending = rsc->zbo;
+	rsc->sp_twin = sps->resource_from_handle(sps, &t, &w, 0);
+	ws->pending = NULL;
 	return rsc->sp_twin;
 }
 
@@ -272,16 +278,27 @@ static void sync_framebuffer(struct mbx_context *ctx)
 			/* a twiddled texture the chip cannot render to: softpipe draws into its own copy, written back after */
 			fb.cbufs[i].texture = c->twiddled ? twin_texture(ctx, c) : twin_shared(ctx, c);
 		}
-	if (fb.zsbuf.texture)
-		fb.zsbuf.texture = twin_private(ctx, mbx_resource(ctx->fb.zsbuf.texture));
+	if (fb.zsbuf.texture) {
+		struct mbx_resource *zr = mbx_resource(ctx->fb.zsbuf.texture);
+
+		/* the chip's jobs and softpipe share one depth buffer in memory: current before the CPU draws into it */
+		if (mbx_z_ensure(ctx, zr)) {
+			mbx_resource_wait(ctx->screen, zr);
+			mbx_z_fill_if_stale(ctx, zr);
+			fb.zsbuf.texture = twin_zshared(ctx, zr);
+			fb.zsbuf.format = PIPE_FORMAT_Z32_FLOAT;
+		}
+	}
 	/* the surfaces are new each time, which also drops softpipe's tile caches: the CPU and the MBX have
 	 * written the memory since */
-	sp->set_framebuffer_state(sp, &fb);
-	if (ctx->fb.zsbuf.texture && mbx_resource(ctx->fb.zsbuf.texture)->sp_fresh) {
-		/* a new depth buffer holds nothing: the MBX starts every render from the clear value, so does this */
-		mbx_resource(ctx->fb.zsbuf.texture)->sp_fresh = false;
-		sp->clear(sp, PIPE_CLEAR_DEPTH, 0, 0, NULL, NULL, ctx->next_clear_depth, 0);
+	{
+		/* the chip has written the memory since softpipe last read it: unbind first so its tile caches (colour and depth) are dropped */
+		struct pipe_framebuffer_state none;
+
+		memset(&none, 0, sizeof(none));
+		sp->set_framebuffer_state(sp, &none);
 	}
+	sp->set_framebuffer_state(sp, &fb);
 }
 
 bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *info, unsigned drawid_offset,
@@ -301,7 +318,9 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 		return false;
 	mbx_dbg("fallback: a draw on the CPU (softpipe)");
 	/* what was recorded for the MBX finishes first, and the memory is settled */
+	ctx->zkeep = true;
 	mbx_clear_settle(ctx);
+	ctx->zkeep = false;
 	mbx_resource_wait(ctx->screen, mbx_resource(ctx->fb.cbufs[0].texture));
 	if (!(vs = fb_shader(ctx, ctx->vs)) || !(fs = fb_shader(ctx, ctx->fs)))
 		return false;
@@ -418,7 +437,9 @@ bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *inf
 	if (!sp || info->scissor_enable || info->render_condition_enable)
 		return false;
 	mbx_dbg("fallback: a blit on the CPU (softpipe)");
+	ctx->zkeep = true;
 	mbx_clear_settle(ctx);
+	ctx->zkeep = false;
 	mbx_resource_wait(ctx->screen, src);
 	mbx_resource_wait(ctx->screen, dst);
 	b.src.resource = twin_texture(ctx, src);
@@ -453,6 +474,7 @@ void mbx_fallback_clear_depth(struct mbx_context *ctx, double depth)
 		return;		/* softpipe has not drawn here: nothing to clear */
 	sync_framebuffer(ctx);
 	sp->clear(sp, PIPE_CLEAR_DEPTH, 0, 0, NULL, NULL, depth, 0);
+	sp->flush(sp, NULL, 0);		/* into the shared memory now: a later flush of its tile cache would overwrite what the chip stores */
 }
 
 void mbx_fallback_context_destroy(struct mbx_context *ctx)

@@ -147,7 +147,7 @@ void mbx_pb_set_background(struct mbx_device *m, const struct drm_mbx_submit *a)
 u32 mbx_region_bytes(const struct drm_mbx_submit *a);
 void mbx_grid(const struct drm_mbx_submit *a, u32 *tx, u32 *ty);	/* the tile grid from TA_CONFIG */
 int mbx_job_prepare_buffers(struct mbx_vm *vm, const struct drm_mbx_submit *a);	/* the region array and the tails */
-int mbx_job_region_bit30(struct mbx_vm *vm, const struct drm_mbx_submit *a);
+int mbx_job_region_bit30(struct mbx_vm *vm, const struct drm_mbx_submit *a, u32 extra);
 int mbx_ioctl_pb_dump(struct drm_device *dev, void *data, struct drm_file *file);
 
 /* mbx_gem.c */

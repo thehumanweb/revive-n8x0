@@ -604,6 +604,8 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		mbx_dbg("no job: framebuffer has %u colour buffers", ctx->fb.nr_cbufs);
 		return;
 	}
+	if (ctx->dsa && ctx->dsa->depth_enabled)
+		ctx->job.zuse = true;
 	mbx_dbg("program: %u instructions, %u uniform slots, %u constants", prog->ninsn, prog->nuniform, prog->nconst);
 	layout = vertex_layout(ctx, prog, comps);
 	if (getenv("MBX_DEBUG") && atoi(getenv("MBX_DEBUG")) > 1) {
