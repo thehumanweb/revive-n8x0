@@ -234,7 +234,16 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 	tr = unit_texture(ctx, unit);
 	if (!tr)
 		return false;
-	fmt = mbx_chip_tex_format(tr->base.format);
+	if (tr->imported && getenv("MBX_DEBUG")) {
+		const uint32_t *px = mbx_bo_map(tr->bo);
+
+		mbx_dbg("imported texture %ux%u fmt %s stride %u lw %u lh %u va %#llx fence %llu; texels: first %08x centre %08x last row %08x",
+			tr->base.width0, tr->base.height0, util_format_name(tr->base.format), tr->level_stride[0], tr->tex_lw, tr->tex_lh,
+			(unsigned long long)tr->bo->va, (unsigned long long)tr->last_fence, px ? px[0] : 0,
+			px ? px[(tr->base.height0 / 2) * (tr->level_stride[0] / 4) + tr->base.width0 / 2] : 0,
+			px ? px[(tr->base.height0 - 1) * (tr->level_stride[0] / 4) + 5] : 0);
+	}
+	fmt = tr->base.format == PIPE_FORMAT_B8G8R8X8_UNORM ? 6 : mbx_chip_tex_format(tr->base.format);	/* an imported XRGB buffer: its unused byte is read as alpha */
 	if (tr->twiddled) {
 		/* a twiddled chain: no stride; mipmapped when the sampler asks (word B bit 29, with the level
 		 * bias field 9: found on the chip, round to the nearest level); the chip's trilinear mode (bit 30) is not

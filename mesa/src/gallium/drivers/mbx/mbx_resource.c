@@ -207,8 +207,12 @@ static struct pipe_resource *mbx_resource_from_handle(struct pipe_screen *pscree
 	 * stride it came with: the same layout a texture of ours has (rows in 16-texel units, the sampled width the next
 	 * power of two of at least 8; the chip reads only the texels inside the real width and height).
 	 */
+	mbx_dbg("import: target %d %ux%u %s bind %x levels %u, handle stride %u, bo size %llu", templ->target, templ->width0,
+		templ->height0, util_format_name(templ->format), templ->bind, templ->last_level + 1, handle->stride,
+		(unsigned long long)rsc->bo->size);
 	if ((templ->target == PIPE_TEXTURE_2D || templ->target == PIPE_TEXTURE_RECT) && templ->last_level == 0 &&
-	    (templ->bind & PIPE_BIND_SAMPLER_VIEW) && mbx_chip_tex_format(templ->format) >= 0 &&
+	    (templ->bind & PIPE_BIND_SAMPLER_VIEW) &&
+	    (mbx_chip_tex_format(templ->format) >= 0 || templ->format == PIPE_FORMAT_B8G8R8X8_UNORM) &&
 	    handle->stride % (8 * util_format_get_blocksize(templ->format)) == 0 &&
 	    (uint64_t)handle->stride * templ->height0 <= rsc->bo->size) {
 		rsc->tex = true;
