@@ -253,6 +253,14 @@ circuit.
     and nowhere (dropped) after a reset, where the side starts on Y. The
     N810's Y also depends on what earlier objects wrote (unmapped pages after
     long X runs, `0x1000` for a scene's second object); that isn't modelled.
+    More, from the user (found during device testing; not re-run, not modelled): the three header words are `0x200` (address), `0x400`
+    (output select, bits 0-5) and `0x800` (enable), all required, last in the block after the viewport (`0x80`) and the W clamp
+    (`0x100`), in a scene where nothing renders after the TA. Vertices are taken before clipping (culled ones come out), with no
+    headers, outputs 0, 3, 4 and 5 exact as float32 and 1 and 2 clamped. X holds at most 223 position-only vertices (3572 bytes) or
+    44 with every output before it overruns the TA's own pages; Y is unpredictable (device 0 overwrites the background object).
+    Counting the stream scenes and renders keeps a scene on X; an extra stream scene flips the side. Cost about 0.9 ms a scene plus
+    0.58 us a vertex. Unknown: what sets the real destination (the address word is ignored), whether the words work in a state block
+    before the draw, whether a stream scene uses parameter-buffer pages, where `0x202e00` comes from. The Mesa driver does not use it.
 24. **Fixed-point colour arithmetic** (observed): blending works on 8-bit
     colours with factors in 256ths (ONE 256, 1 - x as 256 - x, the colour and
     alpha values as they are) and shifts the sum right by 8; the offset
