@@ -3,6 +3,7 @@
 #ifndef MBX_BO_H
 #define MBX_BO_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct mbx_screen;
@@ -15,6 +16,8 @@ struct mbx_bo {
 	uint64_t size;
 	uint64_t offset;	/* mmap offset on the DRM fd */
 	void *map;		/* CPU view (write-combined), made on first use */
+	struct mbx_bo *next_import;	/* an imported buffer is listed on its screen: importing the same dma-buf again returns the same GEM handle, so it must be the same mbx_bo (closing the handle once is closing it for everyone) */
+	bool imported;
 };
 
 struct mbx_bo *mbx_bo_create(struct mbx_screen *screen, uint64_t size);

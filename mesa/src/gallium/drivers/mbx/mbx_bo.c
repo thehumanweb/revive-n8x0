@@ -57,13 +57,36 @@ struct mbx_bo *mbx_bo_create_align64k(struct mbx_screen *screen, uint64_t size)
 	return bo_create(screen, size, MBX_BO_INFO_ALIGN_64K);
 }
 
+/*
+ * Importing a dma-buf this file already imported (or exported) returns the same GEM handle, not a new one: the
+ * second user must share the first's mbx_bo, or the first release closes the handle under the second (jobs then
+ * fail to find it, the mapping loses its permission). Imports are kept in a list on the screen, by handle.
+ */
 struct mbx_bo *mbx_bo_import(struct mbx_screen *screen, int prime_fd)
 {
 	uint32_t handle;
+	struct mbx_bo *bo;
 
 	if (drmPrimeFDToHandle(screen->fd, prime_fd, &handle))
 		return NULL;
-	return bo_from_handle(screen, handle, 0);
+	simple_mtx_lock(&screen->bo_lock);
+	for (bo = screen->imports; bo; bo = bo->next_import)
+		if (bo->handle == handle) {
+			if (p_atomic_inc_return(&bo->refcount) > 1) {
+				simple_mtx_unlock(&screen->bo_lock);
+				return bo;
+			}
+			p_atomic_dec(&bo->refcount);	/* it is being released: make a new one */
+			break;
+		}
+	bo = bo_from_handle(screen, handle, 0);
+	if (bo) {
+		bo->imported = true;
+		bo->next_import = screen->imports;
+		screen->imports = bo;
+	}
+	simple_mtx_unlock(&screen->bo_lock);
+	return bo;
 }
 
 void *mbx_bo_map(struct mbx_bo *bo)
@@ -92,8 +115,25 @@ void mbx_bo_unref(struct mbx_bo *bo)
 {
 	struct drm_mbx_bo_unmap unmap;
 
-	if (!bo || !p_atomic_dec_zero(&bo->refcount))
+	if (!bo)
 		return;
+	if (bo->imported) {
+		struct mbx_bo **pp;
+
+		simple_mtx_lock(&bo->screen->bo_lock);
+		if (!p_atomic_dec_zero(&bo->refcount)) {
+			simple_mtx_unlock(&bo->screen->bo_lock);
+			return;
+		}
+		for (pp = &bo->screen->imports; *pp; pp = &(*pp)->next_import)
+			if (*pp == bo) {
+				*pp = bo->next_import;
+				break;
+			}
+		simple_mtx_unlock(&bo->screen->bo_lock);
+	} else if (!p_atomic_dec_zero(&bo->refcount)) {
+		return;
+	}
 	if (bo->map)
 		munmap(bo->map, bo->size);
 	unmap.handle = bo->handle;

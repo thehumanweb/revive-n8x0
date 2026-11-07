@@ -288,6 +288,20 @@ void mbx_job_flush(struct mbx_context *ctx)
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
+		if (getenv("MBX_VERIFY")) {	/* debug: what the job drew */
+			const uint32_t *px;
+			unsigned nz = 0;
+
+			mbx_fence_wait(ctx->screen, s.fence, 5ull * 1000000000ull);
+			px = mbx_bo_map(color->bo);
+			if (px)
+				for (unsigned y = 0; y < color->base.height0; y++)
+					for (unsigned x = 0; x < color->base.width0; x++)
+						nz += px[y * (color->stride / 4) + x] != 0;
+			mbx_dbg("verify: job %llu rendered %ux%u (dma-buf inode %lu, stride %u, bo %p va %#llx, %u draws): %u non-zero pixels, flat bg %d, damage %#x",
+				(unsigned long long)s.fence, color->base.width0, color->base.height0, color->dmabuf_ino, color->stride, (void *)color->bo,
+				(unsigned long long)color->bo->va, job->ndraws, nz, flat, s.damage);
+		}
 		if (color->scanout)
 			report_scanout_damage(ctx, color, s.damage);
 		if (zstored) {

@@ -239,6 +239,7 @@ struct pipe_screen *mbx_screen_create(int fd, const struct pipe_screen_config *c
 
 	if (!screen)
 		return NULL;
+	simple_mtx_init(&screen->bo_lock, mtx_plain);
 	screen->fd = fd;
 	screen->ro = ro;
 	if (!ioctl(fd, DRM_IOCTL_MBX_GET_PARAM, &p))

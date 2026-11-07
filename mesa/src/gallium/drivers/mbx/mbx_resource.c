@@ -6,6 +6,7 @@
  * takes no memory: the MBX keeps depth on chip for a render.
  */
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -220,7 +221,14 @@ static struct pipe_resource *mbx_resource_from_handle(struct pipe_screen *pscree
 		rsc->level_off[0] = 0;
 		rsc->level_stride[0] = handle->stride;
 	}
-	mbx_dbg("import: -> %p tex %d lw %u lh %u stride %u", (void *)rsc, rsc->tex, rsc->tex_lw, rsc->tex_lh, rsc->level_stride[0]);
+	{
+		struct stat st;
+
+		if (!fstat((int)handle->handle, &st))
+			rsc->dmabuf_ino = st.st_ino;
+	}
+	mbx_dbg("import: -> %p tex %d lw %u lh %u stride %u va %#llx dma-buf inode %lu", (void *)rsc, rsc->tex, rsc->tex_lw, rsc->tex_lh,
+		rsc->level_stride[0], (unsigned long long)rsc->bo->va, rsc->dmabuf_ino);
 	return &rsc->base;
 }
 
@@ -241,6 +249,14 @@ static bool mbx_resource_get_handle(struct pipe_screen *pscreen, struct pipe_con
 		if (drmPrimeHandleToFD(screen->fd, rsc->bo->handle, DRM_CLOEXEC | DRM_RDWR, &fd))
 			return false;
 		handle->handle = (unsigned)fd;
+		{
+			struct stat st;
+
+			if (!fstat(fd, &st))
+				rsc->dmabuf_ino = st.st_ino;
+			mbx_dbg("export: resource %p %ux%u bo %p va %#llx dma-buf inode %lu", (void *)rsc, rsc->base.width0, rsc->base.height0,
+				(void *)rsc->bo, (unsigned long long)rsc->bo->va, rsc->dmabuf_ino);
+		}
 	}
 	handle->stride = rsc->stride;
 	handle->offset = 0;

@@ -4,6 +4,7 @@
  * takes vertex data inline, there is no vertex fetch), after an object header
  * and, when the vertex shader changed, the VGP program and its constants.
  */
+#include <poll.h>
 #include <string.h>
 
 #include "util/format/u_format.h"
@@ -239,13 +240,25 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 	if (!tr)
 		return false;
 	if (tr->imported && getenv("MBX_DEBUG")) {
-		const uint32_t *px = mbx_bo_map(tr->bo);
+		const uint32_t *px;
+		unsigned nz = 0, nff = 0;
+		struct pollfd pfd = { .fd = tr->dmabuf_fd, .events = POLLIN };
 
-		mbx_dbg("imported texture %ux%u fmt %s stride %u lw %u lh %u va %#llx fence %llu; texels: first %08x centre %08x last row %08x",
-			tr->base.width0, tr->base.height0, util_format_name(tr->base.format), tr->level_stride[0], tr->tex_lw, tr->tex_lh,
-			(unsigned long long)tr->bo->va, (unsigned long long)tr->last_fence, px ? px[0] : 0,
-			px ? px[(tr->base.height0 / 2) * (tr->level_stride[0] / 4) + tr->base.width0 / 2] : 0,
-			px ? px[(tr->base.height0 - 1) * (tr->level_stride[0] / 4) + 5] : 0);
+		if (tr->dmabuf_fd > 0)
+			poll(&pfd, 1, 1000);	/* the writer's fence (the client's job) */
+		px = mbx_bo_map(tr->bo);
+		if (px)
+			for (unsigned y = 0; y < tr->base.height0; y++)
+				for (unsigned x = 0; x < tr->base.width0; x++) {
+					uint32_t v = px[y * (tr->level_stride[0] / 4) + x];
+
+					nz += v != 0;
+					nff += (v >> 24) == 0xff;
+				}
+		mbx_dbg("imported texture (inode %lu) %ux%u fmt %s stride %u va %#llx: %u of %u texels non-zero, %u with a 0xff top byte; centre %08x",
+			tr->dmabuf_ino, tr->base.width0, tr->base.height0, util_format_name(tr->base.format), tr->level_stride[0],
+			(unsigned long long)tr->bo->va, nz, tr->base.width0 * tr->base.height0, nff,
+			px ? px[(tr->base.height0 / 2) * (tr->level_stride[0] / 4) + tr->base.width0 / 2] : 0);
 	}
 	fmt = mbx_chip_tex_format(tr->base.format);
 	if (tr->twiddled) {

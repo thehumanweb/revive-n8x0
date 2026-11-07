@@ -6,6 +6,7 @@
 
 #include "pipe/p_screen.h"
 #include "util/u_inlines.h"
+#include "util/simple_mtx.h"
 #include "renderonly/renderonly.h"
 
 #include <stdio.h>
@@ -31,6 +32,8 @@ struct mbx_screen {
 	int fd;
 	struct renderonly *ro;
 	uint32_t core_id, revision;
+	simple_mtx_t bo_lock;		/* guards the list of imported buffers */
+	struct mbx_bo *imports;
 };
 
 static inline struct mbx_screen *mbx_screen(struct pipe_screen *p)
