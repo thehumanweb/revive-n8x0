@@ -4,8 +4,7 @@ Measured with piglit's GLES2 tests on the host sim (`mesa/scripts/run-piglit.sh`
 `mesa/tests/piglit-gles2.txt`, the last result `mesa/tests/piglit-baseline.txt`): at the start 103 pass, 6 fail, 1 crash,
 31 skip. The driver's own feature tests (`mesa/tests/gles2_feat.c`, 31 probes: primitives, scissor, textures, fragment
 uniforms, blending, culling, depth, and the CPU fallback's cases) pass on the host sim **and on the N810** (Mesa on the real
-chip, softpipe on its ARM core, 2026-11-07). Piglit's GLES2 set on the sim: 2 failures (`minmax`, `built-in constants`), 1 crash
-(`fragdepth`, in piglit's own FBO set-up), 31 skips for missing extensions. Most passes are compile-only GLSL ES tests; almost no test that draws and reads back passes yet, because
+chip, softpipe on its ARM core, 2026-11-07). Piglit's GLES2 set on the sim: 117 pass, 0 fail, 0 crash, 31 skips (optional extensions: framebuffer fetch, blend_func_extended, s3tc, ES3 contexts; the `fragdepth` crash was piglit's window event loop without `PIGLIT_NO_WINDOW=1`, now set by `run-piglit.sh`). Most passes are compile-only GLSL ES tests; almost no test that draws and reads back passes yet, because
 the driver draws only untextured, unscissored, fixed-colour-pipe triangles.
 
 ## Baseline failures and skips (2026-11-06)

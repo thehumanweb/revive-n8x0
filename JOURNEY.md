@@ -781,3 +781,9 @@ A fragment shader that is smooth but not affine in its varyings (per-pixel light
 
 - Sources: the unit's runs (`gles2_feat grid_light`, `gles2_fps cpu grid`), the host sim, user (found during device testing) for the technique.
 
+
+### 2026-11-07: piglit's GLES2 set is clean
+
+The `fragdepth_gles2` crash was not the driver: a SIGABRT backtrace (a small `LD_PRELOAD` handler; the image has no debugger) put the `abort()` in piglit's `run_test` after `enter_event_loop`, which piglit takes when a test is run with `-auto` but `PIGLIT_NO_WINDOW` is not set. With `PIGLIT_NO_WINDOW=1` the test passes (our softpipe fallback handles `gl_FragDepthEXT`), and `mesa/scripts/run-piglit.sh` now sets it. The whole set on the host sim: 117 pass, 0 fail, 0 crash, 31 skips, all for optional extensions or ES3 contexts (framebuffer fetch, blend_func_extended, s3tc, INTEL blackhole, polygon offset clamp, ES 3.0 and ES 1.1 contexts, a desktop-GL test, a display). The baseline file is updated. Open items are now features, not failures: PVRTC, external Z (depth across chip and CPU draws), the 2D core, the per-point size word, stencil, partial colour mask, constant-colour blend.
+
+- Sources: `piglit run` on the host sim, the backtrace of the aborting test, piglit's `piglit_winsys_framework.c`.

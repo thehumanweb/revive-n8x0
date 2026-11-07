@@ -10,7 +10,7 @@ skip spec@arb_blend_func_extended@arb_blend_func_extended-builtins_gles2
 skip spec@arb_blend_func_extended@arb_blend_func_extended-fbo-extended-blend-pattern_gles2
 skip spec@egl_khr_create_context@valid debug flag gles2
 skip spec@ext_debug_label@object-label_gles2
-crash spec@ext_frag_depth@fragdepth_gles2
+pass spec@ext_frag_depth@fragdepth_gles2
 skip spec@ext_polygon_offset_clamp@ext_polygon_offset_clamp-draw_gles2
 skip spec@ext_shader_framebuffer_fetch@compiler@gles2@negative-gl_lastfragdata-write.frag
 skip spec@ext_shader_framebuffer_fetch@compiler@gles2@negative-inout-fragment-output.frag
