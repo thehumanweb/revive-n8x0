@@ -5,8 +5,10 @@
  * The TA's tile grid, region array, tail pointers and the background object
  * are per render-target size and kept between jobs.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <xf86drm.h>
 
 #include "util/u_inlines.h"
@@ -197,6 +199,45 @@ static void report_scanout_damage(struct mbx_context *ctx, struct mbx_resource *
 	}
 }
 
+/*
+ * MBX_PROF=1: each job's cost, measured in the process that submits it: the SUBMIT ioctl (the kernel builds the parameter
+ * buffer and starts the TA) and the time to completion (the job is waited for right after, so this changes the schedule
+ * it measures: it is for finding what a job costs, not for timing a pipeline). Printed every two seconds.
+ */
+static uint64_t prof_now_us(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+static void prof_job(struct mbx_context *ctx, uint64_t fence, uint64_t t_before, uint64_t t_after, unsigned ndraws)
+{
+	static struct { unsigned n; uint64_t submit, run, submit_max, run_max, draws, t0; } p;
+	uint64_t t_done;
+
+	mbx_fence_wait(ctx->screen, fence, 5ull * 1000000000ull);
+	t_done = prof_now_us();
+	if (!p.t0)
+		p.t0 = t_before;
+	p.n++;
+	p.submit += t_after - t_before;
+	p.run += t_done - t_after;
+	p.draws += ndraws;
+	if (t_after - t_before > p.submit_max)
+		p.submit_max = t_after - t_before;
+	if (t_done - t_after > p.run_max)
+		p.run_max = t_done - t_after;
+	if (t_done - p.t0 >= 2000000) {
+		fprintf(stderr, "mbx prof (%s): %u jobs in %.1f s, %.1f draws a job; SUBMIT ioctl avg %llu us max %llu us; to done avg %llu us max %llu us\n",
+			program_invocation_short_name, p.n, (double)(t_done - p.t0) / 1e6, (double)p.draws / p.n,
+			(unsigned long long)(p.submit / p.n), (unsigned long long)p.submit_max,
+			(unsigned long long)(p.run / p.n), (unsigned long long)p.run_max);
+		memset(&p, 0, sizeof(p));
+	}
+}
+
 void mbx_job_flush(struct mbx_context *ctx)
 {
 	struct mbx_job *job = &ctx->job;
@@ -209,6 +250,7 @@ void mbx_job_flush(struct mbx_context *ctx)
 	uint32_t zclear;
 	float z = job->clear_depth;
 	int ret;
+	uint64_t t_before;
 
 	mbx_dbg("flush: active %d, %u draws, %u stream words", job->active, job->ndraws, job->n);
 	if (!job->active || !job->ndraws) {
@@ -283,11 +325,14 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.bos = (uintptr_t)bo;
 	s.n_bos = nbo;
 
+	t_before = MBX_ENV_SET("MBX_PROF") ? prof_now_us() : 0;
 	ret = drmIoctl(ctx->screen->fd, DRM_IOCTL_MBX_SUBMIT, &s);
 	if (ret) {
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
+		if (t_before)
+			prof_job(ctx, s.fence, t_before, prof_now_us(), job->ndraws);
 		if (MBX_ENV_SET("MBX_VERIFY")) {	/* debug: what the job drew */
 			const uint32_t *px;
 			unsigned nz = 0;
