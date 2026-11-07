@@ -55,6 +55,7 @@ static inline int mbx_chip_tex_format(enum pipe_format f)
 {
 	switch (f) {
 	case PIPE_FORMAT_B8G8R8A8_UNORM: return 6;	/* ARGB8888 */
+	case PIPE_FORMAT_B8G8R8X8_UNORM: return 6;	/* the same, the unused byte read as alpha (nudge_black keeps it 0xff) */
 	case PIPE_FORMAT_B5G6R5_UNORM: return 1;	/* RGB565 */
 	case PIPE_FORMAT_B4G4R4A4_UNORM: return 2;	/* ARGB4444 */
 	case PIPE_FORMAT_B5G5R5A1_UNORM: return 0;	/* ARGB1555 */

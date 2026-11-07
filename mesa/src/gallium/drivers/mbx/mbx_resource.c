@@ -220,6 +220,7 @@ static struct pipe_resource *mbx_resource_from_handle(struct pipe_screen *pscree
 		rsc->level_off[0] = 0;
 		rsc->level_stride[0] = handle->stride;
 	}
+	mbx_dbg("import: -> %p tex %d lw %u lh %u stride %u", (void *)rsc, rsc->tex, rsc->tex_lw, rsc->tex_lh, rsc->level_stride[0]);
 	return &rsc->base;
 }
 
@@ -401,11 +402,13 @@ static void nudge_black(enum pipe_format format, uint8_t *p, unsigned stride, un
 {
 	unsigned x, y;
 
-	if (format == PIPE_FORMAT_B8G8R8A8_UNORM) {
+	if (format == PIPE_FORMAT_B8G8R8A8_UNORM || format == PIPE_FORMAT_B8G8R8X8_UNORM) {
 		for (y = 0; y < h; y++)
 			for (x = 0; x < w; x++) {
 				uint8_t *t = p + (uint64_t)y * stride + (uint64_t)x * 4;
 
+				if (format == PIPE_FORMAT_B8G8R8X8_UNORM)
+					t[3] = 0xff;	/* the chip reads the unused byte as alpha: opaque */
 				if (!(t[0] | t[1] | t[2]))
 					t[0] = 1;
 			}

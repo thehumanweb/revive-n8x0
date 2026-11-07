@@ -431,6 +431,32 @@ static int t_tex_replace(char *why)
 	return ok;
 }
 
+/* a GL_RGB texture is stored with an unused byte the chip reads as alpha: it must stay opaque (blended over green nothing mixes) */
+static int t_tex_rgb(char *why)
+{
+	unsigned char rgba[8 * 8 * 4], px[8 * 8 * 3];
+	GLuint t;
+	int ok;
+
+	quadrants(rgba, 8, 8);
+	for (int i = 0; i < 64; i++)
+		memcpy(px + 3 * i, rgba + 4 * i, 3);
+	begin();
+	glClearColor(0, 1, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	t = make_tex(8, 8, GL_RGB, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "u_tex"), 0);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	quad(0, 0, 1, 1, 1, 1, 1);
+	glDisable(GL_BLEND);
+	ok = quad_probes(why);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 static int t_tex_modulate(char *why)
 {
 	unsigned char px[8 * 8 * 4];
@@ -2001,6 +2027,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "alpha_discard", t_alpha_discard },
 	{ "cube", t_cube },
 	{ "tex_replace", t_tex_replace },
+	{ "tex_rgb", t_tex_rgb },
 	{ "tex_modulate", t_tex_modulate },
 	{ "tex_npot", t_tex_npot },
 	{ "tex_bilinear", t_tex_bilinear },
