@@ -140,6 +140,8 @@ static void mbx_clear(struct pipe_context *pctx, unsigned buffers, uint32_t colo
 {
 	struct mbx_context *ctx = mbx_context(pctx);
 
+	if ((buffers & PIPE_CLEAR_COLOR) && ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture)
+		mbx_resource(ctx->fb.cbufs[0].texture)->wver++;	/* a texture rendered into: its swapped copy is stale */
 	if (buffers & PIPE_CLEAR_DEPTH) {
 		/* depth lives on chip and starts every render at this value: what
 		 * was recorded finishes first */

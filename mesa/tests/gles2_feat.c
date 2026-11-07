@@ -1212,6 +1212,66 @@ static int t_tex_weston(char *why)
 	return ok;
 }
 
+/* Weston's vertex shader (the texcoord-from-attribute variant): two mat4 uniforms and the position through one */
+static const char *wvs_src =
+	"precision highp float;\n"
+	"uniform mat4 proj;\n"
+	"uniform mat4 surface_to_buffer;\n"
+	"attribute vec2 position;\n"
+	"attribute vec2 texcoord;\n"
+	"attribute vec4 barycentric;\n"
+	"varying mediump vec2 v_uv;\n"
+	
+	"void main() {\n"
+	"	gl_Position = proj * vec4(position, 0.0, 1.0);\n"
+	"	v_uv = texcoord;\n"
+	"}\n";
+
+static int t_weston_vs(char *why)
+{
+	unsigned char px[8 * 8 * 4];
+	static GLuint pw;
+	GLuint t;
+	int ok;
+	const float proj[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+	const float v[] = { -1, -1, 0, 0, 1, -1, 1, 0, 1, 1, 1, 1, -1, 1, 0, 1 };
+
+	if (!pw) {
+		GLint linked = 0;
+
+		pw = glCreateProgram();
+		glAttachShader(pw, compile(GL_VERTEX_SHADER, wvs_src));
+		glAttachShader(pw, compile(GL_FRAGMENT_SHADER, tfs_weston));
+		glBindAttribLocation(pw, 0, "position");
+		glBindAttribLocation(pw, 1, "texcoord");
+		glLinkProgram(pw);
+		glGetProgramiv(pw, GL_LINK_STATUS, &linked);
+		if (!linked)
+			fprintf(stderr, "weston_vs: link failed\n");
+	}
+	quadrants(px, 8, 8);
+	begin();
+	t = make_tex(8, 8, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(pw);
+	glUniform1i(glGetUniformLocation(pw, "tex"), 0);
+	glUniform1f(glGetUniformLocation(pw, "view_alpha"), 1.0f);
+	glUniform4f(glGetUniformLocation(pw, "swizzle_mask[0]"), 1, 1, 1, 1);
+	glUniform4f(glGetUniformLocation(pw, "swizzle_sub[0]"), 0, 0, 0, 0);
+	glUniform4i(glGetUniformLocation(pw, "swizzle_idx[0]"), 0, 1, 2, 3);
+	glUniformMatrix4fv(glGetUniformLocation(pw, "proj"), 1, GL_FALSE, proj);
+	glUniformMatrix4fv(glGetUniformLocation(pw, "surface_to_buffer"), 1, GL_FALSE, proj);
+	glEnableVertexAttribArray(0);
+	glEnableVertexAttribArray(1);
+	glDisableVertexAttribArray(2);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, v);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, v + 2);
+	glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+	ok = is(16, 16, 255, 0, 0, why, 200) && is(48, 16, 0, 255, 0, why, 200) && is(16, 48, 0, 0, 255, why, 200);
+	glUseProgram(prog);
+	glDeleteTextures(1, &t);
+	return ok;
+}
+
 /* a triangle (x, y, z, r, g, b, a) per vertex */
 static void draw_z(GLenum mode, const float *v, int n)
 {
@@ -1923,6 +1983,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "fs_var_uniform", t_fs_var_uniform },
 	{ "tex_uniform", t_tex_uniform },
 	{ "tex_weston", t_tex_weston },
+	{ "weston_vs", t_weston_vs },
 	{ "scissor_draw", t_scissor_draw },
 	{ "scissor_clear", t_scissor_clear },
 	{ "clear_flat", t_clear_flat },

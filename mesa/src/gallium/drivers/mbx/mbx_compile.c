@@ -655,8 +655,10 @@ static bool pass_two(struct cc *c)
 		for (int k = 0; k < c->ops[i].n; k++)
 			if (c->ops[i].src[k].kind == V_IMM)
 				imm_slot(&p, c->ops[i].src[k].imm);
-	if (p.imm_base + (p.nimm + 3) / 4 > MBX_MAX_CONSTS)
+	if (p.imm_base + (p.nimm + 3) / 4 > MBX_MAX_CONSTS) {
+		mbx_dbg("constants: uniforms %d (max_uniform %d), immediates %d", p.imm_base, c->max_uniform, p.nimm);
 		return fail(c, "more than 128 constants");
+	}
 
 	for (i = 0; i < c->nops; i++) {
 		struct vop *o = &c->ops[i];

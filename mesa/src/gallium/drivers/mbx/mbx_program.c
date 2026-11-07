@@ -9,6 +9,7 @@
 #include "nir/nir_serialize.h"
 #include "util/log.h"
 #include "util/ralloc.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 
 #include "mbx_context.h"
@@ -117,8 +118,13 @@ static void mbx_variant_make(struct mbx_shader *so, struct mbx_fs_variant *v)
 				;
 			if (k == so->nuslot || !(v->fold >> k & 1))
 				continue;
-			for (unsigned i = 0; i < un->def.num_components; i++)
-				c[i].u32 = v->val[k][i];
+			for (unsigned i = 0; i < un->def.num_components; i++) {
+				float f;
+
+				memcpy(&f, &v->val[k][i], 4);
+				/* the data is float (no native integers); an integer-typed load of it gets the integer */
+				c[i].u32 = nir_alu_type_get_base_type(nir_intrinsic_dest_type(un)) == nir_type_float ? v->val[k][i] : (uint32_t)(int32_t)f;
+			}
 			b = nir_builder_at(nir_before_instr(instr));
 			nir_def_rewrite_uses(&un->def, nir_build_imm(&b, un->def.num_components, 32, c));
 			nir_instr_remove(instr);
@@ -195,6 +201,41 @@ const struct mbx_fs_info *mbx_fs_specialize(struct mbx_context *ctx, const struc
 	return &v->info;
 }
 
+/*
+ * The screen has no native integers: glUniform*i data is stored as floats, so softpipe, which has them, would read the
+ * bits of 1.0 for an integer 1. The fallback's fragment shader gets its integer operations as float ones, with the
+ * constant offsets of its loads kept integers (the pass converts those too).
+ */
+static void mbx_fallback_ints_to_float(nir_shader *n)
+{
+	nir_function_impl *impl = nir_shader_get_entrypoint(n);
+
+	nir_lower_int_to_float(n);
+	nir_foreach_block(block, impl) {
+		nir_foreach_instr(instr, block) {
+			nir_intrinsic_instr *in;
+			nir_load_const_instr *lc;
+			nir_src *off;
+
+			if (instr->type != nir_instr_type_intrinsic)
+				continue;
+			in = nir_instr_as_intrinsic(instr);
+			if (in->intrinsic != nir_intrinsic_load_uniform && in->intrinsic != nir_intrinsic_load_input)
+				continue;
+			off = &in->src[0];
+			if (!nir_src_is_const(*off))
+				continue;
+			lc = nir_def_as_load_const(off->ssa);
+			for (unsigned k = 0; k < lc->def.num_components; k++) {
+				float f = uif(lc->value[k].u32);
+
+				if (lc->value[k].u32 >= 0x3f800000u && f == floorf(f) && f < 65536.0f)
+					lc->value[k].u32 = (uint32_t)f;	/* an offset the pass turned into a float */
+			}
+		}
+	}
+}
+
 static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shader_state *templ)
 {
 	struct mbx_shader *so = CALLOC_STRUCT(mbx_shader);
@@ -205,10 +246,9 @@ static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shad
 		FREE(so);
 		return NULL;
 	}
-	/* the screen has no native integers: glUniform*i data is stored as floats, so the integer operations become float ones
-	 * (for the chip's matcher and for softpipe alike) */
-	NIR_PASS(_, templ->ir.nir, nir_lower_int_to_float);
 	so->nir_orig = nir_shader_clone(NULL, templ->ir.nir);	/* the fallback's, before our lowering */
+	if (templ->ir.nir->info.stage == MESA_SHADER_FRAGMENT)
+		mbx_fallback_ints_to_float(so->nir_orig);
 	so->nir = templ->ir.nir;	/* ours now */
 	so->stage = so->nir->info.stage;
 	mbx_nir_prepare(so->nir);

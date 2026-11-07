@@ -463,8 +463,7 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 /*
  * Weston's wl_shm textures reach the shader with their red and blue exchanged (GLES2 has no texture swizzle, so its shader
  * swaps them back with integer uniforms). The chip cannot swap channels, so the draw samples a copy with the two swapped:
- * made at the first draw and again when the texture was written since (the CPU writes are counted in wver; a texture a
- * job renders into is not copied).
+ * made at the first draw and again when the texture was written since (CPU writes, clears and draws into it count in wver).
  */
 struct mbx_resource *mbx_texture_swapped(struct mbx_context *ctx, struct mbx_resource *rsc)
 {
@@ -474,7 +473,7 @@ struct mbx_resource *mbx_texture_swapped(struct mbx_context *ctx, struct mbx_res
 	uint32_t *dst;
 	uint64_t n;
 
-	if (!rsc->tex || rsc->twiddled || rsc->cube || rsc->bind_rt || rsc->scanout || rsc->base.last_level ||
+	if (!rsc->tex || rsc->twiddled || rsc->cube || rsc->scanout || rsc->base.last_level ||
 	    rsc->base.format != PIPE_FORMAT_B8G8R8A8_UNORM)
 		return NULL;
 	if (!rsc->swap) {
@@ -488,6 +487,7 @@ struct mbx_resource *mbx_texture_swapped(struct mbx_context *ctx, struct mbx_res
 		return NULL;
 	sw = mbx_resource(rsc->swap);
 	if (rsc->swap_wver != rsc->wver) {
+		mbx_flush_for_resource(ctx, rsc);	/* a render into it still recorded */
 		mbx_resource_wait(screen, rsc);
 		mbx_resource_wait(screen, sw);	/* a job may still read the older copy */
 		src = mbx_bo_map(rsc->bo);
