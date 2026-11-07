@@ -994,6 +994,53 @@ static int t_damage(char *why)
 	return 1;
 }
 
+/* depth carried between chip and CPU draws in a framebuffer with stencil (README assumption 49): the CPU draws with the stencil test on */
+static int t_stencil_depth(char *why)
+{
+	GLuint fbo, rb, ds;
+	int ok = 1;
+
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+	glGenRenderbuffers(1, &rb);
+	glBindRenderbuffer(GL_RENDERBUFFER, rb);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8_OES, W, H);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+	glGenRenderbuffers(1, &ds);
+	glBindRenderbuffer(GL_RENDERBUFFER, ds);
+	glRenderbufferStorage(GL_RENDERBUFFER, 0x88F0 /* GL_DEPTH24_STENCIL8_OES */, W, H);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ds);
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, ds);
+	glViewport(0, 0, W, H);
+	begin();
+	glClearStencil(0);
+	glClear(GL_STENCIL_BUFFER_BIT);
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
+	/* no read-back in between (that would end the chip's job without keeping its depth): the colour channels tell the steps apart */
+	tri_z(0.6f, 0, 1, 0, 1, 0);			/* the chip: green at 0.6 */
+	glEnable(GL_STENCIL_TEST);
+	glStencilFunc(GL_ALWAYS, 1, 0xff);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+	glColorMask(1, 0, 0, 1);
+	tri_z(0.8f, 1, 1, 1, 1, 0);			/* the CPU: red channel behind the chip's depth: must not be drawn */
+	glColorMask(0, 0, 1, 1);
+	tri_z(0.3f, 1, 1, 1, 1, 0);			/* the CPU: blue channel in front: drawn */
+	glColorMask(1, 1, 1, 1);
+	glDisable(GL_STENCIL_TEST);
+	tri_z(0.5f, 1, 0, 0, 1, 0);			/* the chip again: red behind the CPU's depth: must not be drawn */
+	if (!is(32, 24, 0, 255, 255, why, 200))
+		ok = 0;
+out:
+	glDisable(GL_DEPTH_TEST);
+	glDisable(GL_STENCIL_TEST);
+	glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+	glDeleteFramebuffers(1, &fbo);
+	glDeleteRenderbuffers(1, &rb);
+	glDeleteRenderbuffers(1, &ds);
+	return ok;
+}
+
 static int t_scissor_clear(char *why)
 {
 	begin();
@@ -1779,6 +1826,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "damage", t_damage },
 	{ "stencil", t_stencil },
 	{ "stencil_only", t_stencil_only },
+	{ "stencil_depth", t_stencil_depth },
 	{ "depth_cpu_cpu", t_depth_cpu_cpu },
 	{ "depth_chip_cpu", t_depth_chip_cpu },
 	{ "depth_chip_cpu_chip", t_depth_chip_cpu_chip },

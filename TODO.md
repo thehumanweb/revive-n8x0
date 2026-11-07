@@ -44,7 +44,6 @@ Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` c
 
 - Fast stencil on the chip with the depth tricks the stock stack uses (clip masks as depth-ALWAYS quads, each-pixel-once as a depth test),
   with the external Z load and store (README assumption 7); stencil works on the CPU only (assumption 49).
-- Depth does not carry between chip and CPU draws in a framebuffer with stencil (a depth copy corrupted the stencil plane).
 - The per-point size word inside one list draw (untested; one object per point today).
 - PVRTC textures, the 2D core for blits and `glGenerateMipmap`, constant-colour blend (no factor code on the chip).
 - A frame-diff fallback (`mbx_frame_damage`) for apps that give no damage.

@@ -288,10 +288,104 @@ static struct pipe_resource *zs_twin(struct mbx_context *ctx, struct mbx_resourc
 	return zr->zs_twin;
 }
 
+/*
+ * The combined twin's memory, written directly (no softpipe clear: its tile cache keeps a lazy clear across a rebind and rewrote the
+ * stencil plane). Z24_UNORM_S8_UINT: depth in bits 0-23, stencil above; S8_UINT: a byte. Softpipe is flushed and the framebuffer unbound
+ * first by the callers, so no tile of this resource is cached.
+ */
+/* depth 0..1 to 24 bits; in float 1.0 * 16777215 + 0.5 rounds to 16777216 and carries into the stencil byte, so double and a mask */
+static uint32_t z24_of(float d)
+{
+	return (uint32_t)((double)CLAMP(d, 0.0f, 1.0f) * 16777215.0 + 0.5) & 0xffffffu;
+}
+
+static uint8_t *zs_map(struct mbx_context *ctx, struct mbx_resource *zr, unsigned flags, struct pipe_transfer **xfer)
+{
+	struct pipe_box box = { .width = (int)zr->base.width0, .height = (int)zr->base.height0, .depth = 1 };
+
+	return ctx->sp->texture_map(ctx->sp, zr->zs_twin, 0, flags, &box, xfer);
+}
+
+static void zs_unbind(struct mbx_context *ctx)
+{
+	struct pipe_framebuffer_state none;
+
+	memset(&none, 0, sizeof(none));
+	ctx->sp->flush(ctx->sp, NULL, 0);
+	ctx->sp->set_framebuffer_state(ctx->sp, &none);
+}
+
+/* depth: set the depth plane to d when set_depth; stencil: set the stencil plane to s when set_stencil */
+static void zs_fill(struct mbx_context *ctx, struct mbx_resource *zr, bool set_depth, float d, bool set_stencil, unsigned s)
+{
+	struct pipe_transfer *xfer;
+	uint8_t *p = zs_map(ctx, zr, PIPE_MAP_READ | PIPE_MAP_WRITE, &xfer);
+	uint32_t z24 = z24_of(d);
+
+	if (!p)
+		return;
+	for (unsigned y = 0; y < zr->base.height0; y++) {
+		if (zr->base.format == PIPE_FORMAT_Z24_UNORM_S8_UINT) {
+			uint32_t *row = (uint32_t *)(p + (size_t)y * xfer->stride);
+
+			for (unsigned x = 0; x < zr->base.width0; x++) {
+				uint32_t v = row[x];
+
+				if (set_depth)
+					v = (v & 0xff000000u) | z24;
+				if (set_stencil)
+					v = (v & 0x00ffffffu) | (s & 0xff) << 24;
+				row[x] = v;
+			}
+		} else if (set_stencil) {	/* S8_UINT */
+			memset(p + (size_t)y * xfer->stride, (int)(s & 0xff), zr->base.width0);
+		}
+	}
+	ctx->sp->texture_unmap(ctx->sp, xfer);
+}
+
+/* The Z memory's depth into the twin's depth plane (when the twin has one), and back after the CPU drew */
+static void zs_copy(struct mbx_context *ctx, struct mbx_resource *zr, bool in)
+{
+	struct pipe_transfer *xfer;
+	uint8_t *p;
+	float *zm = zr->zbo ? mbx_bo_map(zr->zbo) : NULL;
+	unsigned stride_px = align(zr->zw, 16);
+
+	if (!zm || zr->base.format != PIPE_FORMAT_Z24_UNORM_S8_UINT)
+		return;
+	p = zs_map(ctx, zr, in ? PIPE_MAP_READ | PIPE_MAP_WRITE : PIPE_MAP_READ, &xfer);
+	if (!p)
+		return;
+	for (unsigned y = 0; y < zr->zh && y < zr->base.height0; y++) {
+		uint32_t *row = (uint32_t *)(p + (size_t)y * xfer->stride);
+		uint32_t *mem = (uint32_t *)(zm + (size_t)y * stride_px);
+
+		for (unsigned x = 0; x < zr->zw && x < zr->base.width0; x++) {
+			if (in) {
+				float f;
+
+				memcpy(&f, &mem[x], 4);
+				row[x] = (row[x] & 0xff000000u) | z24_of(f);
+			} else {
+				float f = (float)(row[x] & 0xffffffu) / 16777215.0f;
+				uint32_t v;
+
+				memcpy(&v, &f, 4);
+				mem[x] = v | 1;			/* stored with the low bit set, as the chip does */
+			}
+		}
+	}
+	ctx->sp->texture_unmap(ctx->sp, xfer);
+	if (!in)
+		zr->zvalid = true;
+}
+
 static void sync_framebuffer(struct mbx_context *ctx)
 {
 	struct pipe_context *sp = ctx->sp;
 	struct pipe_framebuffer_state fb = ctx->fb;
+	struct mbx_resource *zs_in = NULL;
 	unsigned i;
 
 	for (i = 0; i < fb.nr_cbufs; i++)
@@ -306,9 +400,9 @@ static void sync_framebuffer(struct mbx_context *ctx)
 
 		/* the chip's jobs and softpipe share one depth buffer in memory: current before the CPU draws into it */
 		if (zs_has_stencil(zr)) {
-			/* a stencil plane lives only in softpipe's combined twin, and so does its depth: depth does not carry between chip
-			 * and CPU draws in a framebuffer with stencil (README assumption 49) */
+			/* a stencil plane lives only in softpipe's combined twin; its depth is a copy of the Z memory around each CPU draw */
 			fb.zsbuf.texture = zs_twin(ctx, zr);
+			zs_in = zr;
 		} else if (mbx_z_ensure(ctx, zr)) {
 			mbx_resource_wait(ctx->screen, zr);
 			mbx_z_fill_if_stale(ctx, zr);
@@ -318,18 +412,20 @@ static void sync_framebuffer(struct mbx_context *ctx)
 	}
 	/* the surfaces are new each time, which also drops softpipe's tile caches: the CPU and the MBX have
 	 * written the memory since */
-	{
-		/* the chip has written the memory since softpipe last read it: unbind first so its tile caches (colour and depth) are dropped */
-		struct pipe_framebuffer_state none;
-
-		memset(&none, 0, sizeof(none));
-		sp->set_framebuffer_state(sp, &none);
+	/* the chip has written the memory since softpipe last read it: unbind first so its tile caches (colour and depth) are dropped */
+	zs_unbind(ctx);
+	if (zs_in) {
+		if (zs_in->sp_fresh) {			/* a new combined twin: depth as cleared, stencil zero */
+			zs_in->sp_fresh = false;
+			zs_fill(ctx, zs_in, true, ctx->next_clear_depth, true, 0);
+		}
+		if (mbx_z_ensure(ctx, zs_in)) {	/* the chip's depth, when the memory holds the current one */
+			mbx_resource_wait(ctx->screen, zs_in);
+			mbx_z_fill_if_stale(ctx, zs_in);
+			zs_copy(ctx, zs_in, true);
+		}
 	}
 	sp->set_framebuffer_state(sp, &fb);
-	if (ctx->fb.zsbuf.texture && mbx_resource(ctx->fb.zsbuf.texture)->sp_fresh && mbx_resource(ctx->fb.zsbuf.texture)->zs_twin) {
-		mbx_resource(ctx->fb.zsbuf.texture)->sp_fresh = false;
-		sp->clear(sp, PIPE_CLEAR_DEPTHSTENCIL, 0, 0xff, NULL, NULL, ctx->next_clear_depth, 0);
-	}
 }
 
 bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *info, unsigned drawid_offset,
@@ -423,6 +519,10 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 	sp->set_stencil_ref(sp, ctx->stencil_ref);
 	sp->draw_vbo(sp, &di, drawid_offset, NULL, draws, num_draws);
 	sp->flush(sp, NULL, 0);		/* softpipe's tiles are written back to the memory */
+	if (ctx->fb.zsbuf.texture && zs_has_stencil(mbx_resource(ctx->fb.zsbuf.texture)) && mbx_resource(ctx->fb.zsbuf.texture)->zs_twin) {
+		zs_unbind(ctx);
+		zs_copy(ctx, mbx_resource(ctx->fb.zsbuf.texture), false);
+	}
 
 	if (mbx_resource(ctx->fb.cbufs[0].texture)->twiddled) {
 		struct pipe_box box = { .width = ctx->fb.width, .height = ctx->fb.height, .depth = 1 };
@@ -514,10 +614,15 @@ bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *inf
 void mbx_fallback_clear_depth(struct mbx_context *ctx, double depth)
 {
 	struct pipe_context *sp = ctx->sp;
+	struct mbx_resource *zr = ctx->fb.zsbuf.texture ? mbx_resource(ctx->fb.zsbuf.texture) : NULL;
 
-	if (!sp || !ctx->fb.zsbuf.texture ||
-	    !(mbx_resource(ctx->fb.zsbuf.texture)->sp_twin || mbx_resource(ctx->fb.zsbuf.texture)->zs_twin))
+	if (!sp || !zr || !(zr->sp_twin || zr->zs_twin))
 		return;		/* softpipe has not drawn here: nothing to clear */
+	if (zr->zs_twin) {	/* the combined twin's depth plane, directly */
+		zs_unbind(ctx);
+		zs_fill(ctx, zr, true, (float)depth, false, 0);
+		return;
+	}
 	sync_framebuffer(ctx);
 	sp->clear(sp, PIPE_CLEAR_DEPTH, 0, 0, NULL, NULL, depth, 0);
 	sp->flush(sp, NULL, 0);		/* into the shared memory now: a later flush of its tile cache would overwrite what the chip stores */
@@ -526,12 +631,17 @@ void mbx_fallback_clear_depth(struct mbx_context *ctx, double depth)
 void mbx_fallback_clear_stencil(struct mbx_context *ctx, unsigned stencil)
 {
 	struct pipe_context *sp = fb_context(ctx);
+	struct mbx_resource *zr = ctx->fb.zsbuf.texture ? mbx_resource(ctx->fb.zsbuf.texture) : NULL;
 
-	if (!sp || !ctx->fb.zsbuf.texture || !zs_has_stencil(mbx_resource(ctx->fb.zsbuf.texture)))
+	if (!sp || !zr || !zs_has_stencil(zr))
 		return;
-	sync_framebuffer(ctx);
-	sp->clear(sp, PIPE_CLEAR_STENCIL, 0, 0xff, NULL, NULL, 0.0, stencil);
-	sp->flush(sp, NULL, 0);
+	zs_twin(ctx, zr);
+	zs_unbind(ctx);
+	if (zr->sp_fresh) {
+		zr->sp_fresh = false;
+		zs_fill(ctx, zr, true, ctx->next_clear_depth, true, 0);
+	}
+	zs_fill(ctx, zr, false, 0.0f, true, stencil);
 }
 
 void mbx_fallback_context_destroy(struct mbx_context *ctx)
