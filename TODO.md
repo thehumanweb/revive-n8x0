@@ -43,10 +43,10 @@ Tools: `mesa/tests/gbm_damage.c` (`-D 0|1`, `-z size`, `-l` per-flip log, `-v` c
 ## Weston
 
 Runs on the unit with the GL renderer, every draw on the chip, shm and dmabuf clients both verified by screenshot (JOURNEY.md,
-2026-11-07, "Weston on the unit" and "A Wayland client in Weston"; `docs/weston-simple-egl.png`). Touch input works (user, by hand on the unit, with the calibration rule). `weston-terminal` next to `weston-simple-egl` fits easily: 41 MB used before, 45 MB with the terminal (47 MB free of 123; measured, not yet looked at by eye). Open: other clients, the frame rate of Weston
+2026-11-07, "Weston on the unit" and "A Wayland client in Weston"; `docs/weston-simple-egl.png`). Touch input works (user, by hand on the unit, with the calibration rule). Weston starts at boot (`S90weston`, `--idle-time=0`; `touch /etc/noweston` skips it). `weston-terminal` next to `weston-simple-egl` fits easily: 41 MB used before, 45 MB with the terminal (47 MB free of 123; measured, not yet looked at by eye). Open: other clients, the frame rate of Weston
 itself against the display update, the cost of the red-blue swapped texture copy (write-combined reads; track the dirty box instead
 of the whole texture), the colour of the unused byte when a client renders fragments with alpha below 1 into an XRGB buffer, a
-Weston start script (and `--idle-time`) in the image, the debug code's per-draw `getenv` calls, and a feature test for a
+the debug code's per-draw `getenv` calls, and a feature test for a
 dma-buf export and re-import in one process (the shared-handle bug had no test).
 
 - The client's `DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied` (Mesa's `renderonly.c`, so our scanout path): the wayland EGL
