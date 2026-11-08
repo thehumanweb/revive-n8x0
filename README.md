@@ -76,7 +76,7 @@ cd ../../../..
 (Without the MBX, QEMU 9.1.3 with the N810 patches is also a container image:
 `qemu/fetch-qemu.sh; docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -f qemu/docker/Dockerfile.9.1 -t n810-qemu:9.1 qemu`.)
 
-**2. Kernel** Linux 6.18.58 with the 62 patches, and the MBX DRM driver (about 15 minutes from clean):
+**2. Kernel** Linux 6.18.58 with the 66 patches, and the MBX DRM driver (about 15 minutes from clean):
 
 ```sh
 docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t n810-kbuild:6 kernel/docker/kbuild-6
