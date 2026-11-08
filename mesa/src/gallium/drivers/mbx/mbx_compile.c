@@ -441,14 +441,20 @@ static bool pass_one(struct cc *c)
 	}
 
 	/* outputs: the position into r13 (and the clip distances after it), the colour into o1 */
-	for (lane = 0; lane < 4; lane++) {
-		struct vsrc v = c->outs[VARYING_SLOT_POS][lane];
+	{
+		/* every lane's use is counted before any is written: a value used by two lanes (x and y of one product) must not be
+		 * taken for a single-use one and made to write its first lane's register directly */
+		struct vsrc pv[4];
 
-		if (v.kind == V_NONE)
-			v = imm(lane == 3 ? 1.0f : 0.0f);
-		if (v.kind == V_VREG)
-			c->vuse[v.idx]++;
-		write_dest(c, v, D_FIXED, POS_REG, lane);
+		for (lane = 0; lane < 4; lane++) {
+			pv[lane] = c->outs[VARYING_SLOT_POS][lane];
+			if (pv[lane].kind == V_NONE)
+				pv[lane] = imm(lane == 3 ? 1.0f : 0.0f);
+			if (pv[lane].kind == V_VREG)
+				c->vuse[pv[lane].idx]++;
+		}
+		for (lane = 0; lane < 4; lane++)
+			write_dest(c, pv[lane], D_FIXED, POS_REG, lane);
 	}
 	if (c->prog->scissor) {
 		/* the scissor as four clip planes in o5.xyzw: each a dot product of the clip position with a constant
