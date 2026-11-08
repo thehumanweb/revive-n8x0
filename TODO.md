@@ -68,6 +68,25 @@ dma-buf export and re-import in one process (the shared-handle bug had no test).
 - `weston-simple-egl -f` at about 20 fps is consistent with the display update (a whole-frame manual update took 75 ms in `gbm_damage`),
   not the render; unmeasured for Weston itself.
 
+## Pipeline: what is left after the measurements (2026-11-08)
+
+- Weston's CPU per frame is about 7 ms (user 4.2 + sys 2.6 at 40 fps; 27% of the core), and our driver is a small part of it:
+  `MBX_PROF=2` shows `draw_vbo` 150 us a call (two a frame), the flush 7 us, the SUBMIT ioctl about 1.4 ms of wall time (preempted by the
+  previous job's kernel work on the one core); the rest is Weston and Mesa's state tracker above the driver, and the atomic commit.
+  No profiler on the unit (no perf, no gdb): the next step would be timers around Weston's `repaint`, `eglSwapBuffers` and
+  `drmModeAtomicCommit` (an `LD_PRELOAD` shim).
+- Nearest-neighbour sampling for 1:1 blits is moot: Weston already asks for `GL_NEAREST` when a view is not scaled.
+- Direct scanout of a fullscreen client's buffer would skip Weston's composition (10 ms a frame, the power it costs), but helps the frame
+  rate only for a fullscreen client that gives a partial damage rectangle (the chain then fits one 25 ms scan); a client that redraws
+  everything is held at 20 fps by the 42 ms full-frame transfer either way. It needs contiguous buffers (omapdrm has no DMM on the N810,
+  `DMM not available`, so it can only import a contiguous dma-buf): a new BO type in `mbx/drm` from CMA (the kernel has `CONFIG_DMA_CMA`,
+  24 MB; `DRM_GEM_DMA_HELPER` is not enabled), mapped into the MBX address space, plus an allocation path in Mesa for scanout-capable
+  client buffers that does not need DRM master (today `renderonly` asks `card0` for a dumb buffer and gets `Permission denied`), and
+  Weston accepting the buffer on a plane. Not started.
+- Power: the idle-poll stopgap (patch 0066) keeps the CPU out of sleep for the whole of an update, which at 40 fps is most of the time
+  (the `/proc/stat` idle share counts the polling as idle). The unit has no `power_supply` device, so the cost cannot be measured
+  here; the proper fix is the clock-domain hold in the first section of this file.
+
 ## Other open items
 
 - `gles2_feat point_sizes` failed once in a full host-sim run ("(16,32) is 0 0 0") and passed in 3 solo runs and the next full run: an
