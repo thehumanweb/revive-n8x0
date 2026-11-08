@@ -597,6 +597,23 @@ static uint32_t hw_prim_word(unsigned mode)
 	}
 }
 
+/*
+ * The kernel takes at most 256 K words of stream a job (and the parameter buffer holds a few hundred pages): a job that has
+ * grown past this is rendered, and the next object starts a new one (its background is what the target holds by then, as after
+ * any other flush). Checked between objects; one object (a draw's own vertices) is not split.
+ */
+#define JOB_SOFT_WORDS (160u * 1024)
+
+static bool split_job(struct mbx_context *ctx)
+{
+	if (ctx->job.active && ctx->job.n > JOB_SOFT_WORDS) {
+		mbx_dbg("the job's stream has %u words: rendered, a new job starts", ctx->job.n);
+		mbx_job_flush(ctx);
+		return mbx_job_begin(ctx);
+	}
+	return true;
+}
+
 static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_info *info,
 			 unsigned drawid_offset, const struct pipe_draw_indirect_info *indirect,
 			 const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
@@ -752,6 +769,8 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 					idx += draws[d].index_bias;
 				pp = vb_ptr[e->vertex_buffer_index] + e->src_offset + (uint64_t)idx * e->src_stride;
 				util_format_unpack_rgba(e->src_format, rgba, pp, 1);
+				if (!split_job(ctx))
+					return;
 				for (unsigned un = 0; un < prog->ntex; un++)
 					if ((prog->units >> un & 1) && ctx->views[un] && ctx->views[un]->texture)
 						mbx_job_use_texture(ctx, unit_texture(ctx, un));
@@ -766,6 +785,8 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 			}
 			continue;
 		}
+		if (!split_job(ctx))
+			return;
 		mbx_dbg("draw %u: header", d);
 		for (unsigned un = 0; un < prog->ntex; un++)
 			if ((prog->units >> un & 1) && ctx->views[un] && ctx->views[un]->texture)

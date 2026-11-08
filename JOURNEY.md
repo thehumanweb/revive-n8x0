@@ -906,3 +906,10 @@ Checks after the fixes: dEQP `vertex_arrays` 571/571, `gles2_feat` 64 of 64 on t
 
 - Sources: host sim dEQP runs, `MBX_DEBUG=2` program dump and the shader source from `--deqp-log-shader-sources`, `mesa/src/gallium/drivers/mbx/mbx_compile.c`.
 
+### 2026-11-09: dEQP buffer 49 of 49: a chunk's word count is 16 bits
+
+`buffer.write.random.4` and `.6` and `write.recreate_store.random_1`..`4` (each failed alone) drew the written buffer as thousands of single points, and the verification came out black. The log said only `SUBMIT failed (2)` with no `job failed` line before it: the sim refused the job before running it. A first guess, the 256 K-word stream limit, was wrong (the stream was 68741 words; the soft split I had added never triggered). The cause: `mbx_emit` counts a chunk's words in the header's low 16 bits, the type sits above them, and the stream check (the sim's and the kernel's `mbx_check_stream`) rejects a header with other bits set; one draw of 68741 words made one chunk of that length, so the count carried into the type bits. `mbx_emit` now starts another chunk of the same type when the count reaches 65535 (the words are fed in order whatever the chunk boundaries are). This is a bug on the unit as well, for any single draw over 65535 words. Also kept: `split_job` in `mbx_draw.c` renders the job and starts another when a stream passes 160 K words (between draws and between points), for streams that really approach the kernel's 256 K cap; it has not been exercised by a test yet (no case reaches it), and a single non-point draw of 85 K or more vertices is still not split.
+Checks on the sim: dEQP `buffer` 49 of 49, `draw` 101 of 101, `vertex_arrays` 571 of 571, `default_vertex_attrib` 40 of 40, `gles2_feat` 64 of 64. Not done: a flash with the compiler and chunk fixes and a run of these groups on the unit; the heavy groups (fragment_ops, texture, fbo, shaders); the other light groups' state.
+
+- Sources: host sim dEQP runs, the `MBX_DEBUG` lines (`draw 0: done, stream N words`), `mbx_check_stream` in `mbx/drm/mbx_job.c`, `mbx_sim.c`'s chunk check.
+

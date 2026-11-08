@@ -34,7 +34,8 @@ void mbx_emit(struct mbx_context *ctx, unsigned type, uint32_t v)
 		job->cap = job->cap ? job->cap * 2 : 4096;
 		job->stream = realloc(job->stream, job->cap * sizeof(uint32_t));
 	}
-	if (job->hdr < 0 || job->type != type) {
+	/* a chunk's word count is 16 bits (the header's upper bits are the type): a long run of one type goes in several chunks */
+	if (job->hdr < 0 || job->type != type || (job->stream[job->hdr] & 0xffff) == 0xffff) {
 		job->hdr = (int)job->n++;
 		job->stream[job->hdr] = MBX_CHUNK(type, 0);
 		job->type = type;
