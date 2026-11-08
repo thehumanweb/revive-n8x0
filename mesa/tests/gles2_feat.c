@@ -1806,6 +1806,77 @@ static int t_render_to_texture(char *why)
 	return ok;
 }
 
+/* a triangle into render targets of growing size. The chip's address space is 32 MB a process, so a 2048 x 2048 target (16 MB, and as much again for its depth memory) cannot be made: it stops at 1536 (dEQP's default 2048 target needs --deqp-surface-width/height) */
+static int t_big_target(char *why)
+{
+	static const int sizes[] = { 256, 512, 1024, 1536 };
+	static const float v[] = { -0.6f, -0.6f, 0, 1, 1, 1, 1,  0.6f, -0.6f, 0, 1, 1, 1, 1,  0, 0.6f, 0, 1, 1, 1, 1 };
+	int ok = 1;
+
+	for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]) && ok; i++) {
+		int n = sizes[i];
+		GLuint t, f;
+
+		glGenTextures(1, &t);
+		glBindTexture(GL_TEXTURE_2D, t);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glGenFramebuffers(1, &f);
+		glBindFramebuffer(GL_FRAMEBUFFER, f);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
+		if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+			snprintf(why, 200, "a %d x %d framebuffer is incomplete", n, n);
+			ok = 0;
+		} else {
+			glViewport(0, 0, n, n);
+			glClearColor(0, 0, 0, 1);
+			glClear(GL_COLOR_BUFFER_BIT);
+			draw_z(GL_TRIANGLES, v, 3);
+			if (!is(n / 2, n / 2, 255, 255, 255, why, 200) || !is(2, 2, 0, 0, 0, why, 200)) {
+				char tmp[200];
+
+				snprintf(tmp, sizeof(tmp), "%d x %d target: %s", n, n, why);
+				memcpy(why, tmp, sizeof(tmp));
+				ok = 0;
+			}
+		}
+		glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+		glViewport(0, 0, W, H);
+		glDeleteFramebuffers(1, &f);
+		glDeleteTextures(1, &t);
+	}
+	return ok;
+}
+
+/* dEQP's vertex-array shader: the colour is a scalar uniform times a constant vec3 (the other lanes of the uniform's slot are zero) */
+static int t_vs_scalar_colour(char *why)
+{
+	static const char vs[] =
+		"attribute highp vec2 a_0;\nuniform highp float u_coordScale;\nuniform highp float u_colorScale;\nvarying mediump vec4 v_color;\n"
+		"void main(void) {\n	gl_PointSize = 1.0;\n	highp vec2 coord = vec2(1.0, 1.0);\n	highp vec3 color = vec3(1.0, 1.0, 1.0);\n"
+		"	coord = a_0.xy;\n	v_color = vec4(u_colorScale * color, 1.0);\n	gl_Position = vec4(u_coordScale * coord, 1.0, 1.0);\n}\n";
+	static const float v[] = { -0.5f, -0.5f, 0.5f, -0.5f, 0, 0.5f };
+	GLuint p = glCreateProgram();
+	int ok;
+
+	glAttachShader(p, compile(GL_VERTEX_SHADER, vs));
+	glAttachShader(p, compile(GL_FRAGMENT_SHADER, fs_src));
+	glBindAttribLocation(p, 0, "a_0");
+	glLinkProgram(p);
+	glUseProgram(p);
+	begin();
+	glUniform1f(glGetUniformLocation(p, "u_coordScale"), 1.0f);
+	glUniform1f(glGetUniformLocation(p, "u_colorScale"), 1.0f);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, v);
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+	ok = is(32, 28, 255, 255, 255, why, 200);
+	glUseProgram(prog);
+	glDeleteProgram(p);
+	return ok;
+}
+
 static int t_mip_chip(char *why)
 {
 	/* mipmaps on the chip (a shader it can do): a 32 x 32 texture whose levels are flat colours (level 0 red, 1 green, 2 blue,
@@ -2074,6 +2145,8 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "tex_mix", t_tex_mix },
 	{ "tex_alpha_only", t_tex_alpha_only },
 	{ "bilinear_black", t_bilinear_black },
+	{ "big_target", t_big_target },
+	{ "vs_scalar_colour", t_vs_scalar_colour },
 	{ "mip_chip", t_mip_chip },
 	{ "trilinear", t_trilinear },
 	{ "copy_tex", t_copy_tex },

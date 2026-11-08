@@ -89,6 +89,11 @@ dma-buf export and re-import in one process (the shared-handle bug had no test).
 
 ## Other open items
 
+- `gles2_feat tex_subimage` fails when it runs after the first 11 tests of the table (alone and after any one predecessor it passes; dropping
+  any of `big_target`, `vs_scalar_colour`, `mip_chip` or `trilinear` from that prefix makes it pass): on the sim the log has `mbx sim:
+  job failed (-12), resetting` and `SUBMIT failed (2)`, so an accumulated resource (address space, buffers, a count) runs out; the cause is
+  not found. It appeared when the two newest tests were added; the driver's per-test cleanup of deleted textures and framebuffers is the
+  first thing to look at (deleted resources whose jobs are still pending, the 32 MB address space of README 34/46b).
 - VGP section loops (README 13b): a probe on the device for the unknowns (does the constant window advance per repeat; do temporaries and
   a0 carry over; do repeats count against the 256 instructions) with a section of count 4 through `mbxtri-drm`'s assembler, read back as
   colour. Then skinning and palettes in the compiler (the vertex shader's loops over a uniform array are unrolled today). Needs the unit

@@ -1,0 +1,14 @@
+#!/bin/sh
+# dEQP-GLES2 on the host sim (needs mesa/scripts/build-deqp.sh and build-host.sh first).
+# Usage: mesa/scripts/run-deqp.sh NAME 'dEQP-GLES2.functional.fbo.render.*' [more deqp-gles2 arguments]
+# Results: build/deqp-out/NAME.qpa (the log), NAME.txt (the console), summary printed.
+set -eu
+cd "$(dirname "$0")/../.."
+name=${1:?result name}; filter=${2:?case filter (a pattern)}; shift 2
+L=/work/build/mesa-host-install/lib/x86_64-linux-gnu
+mkdir -p build/deqp-out
+docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/work -w /work/build/deqp-build/modules/gles2 \
+	-e LD_LIBRARY_PATH=$L -e LD_PRELOAD=$L/libmbx_sim_drm_shim.so -e MESA_DEBUG -e MBX_DEBUG -e DEQP_IMAGES -e DEQP_SHADERS \
+	n810-piglit:1 sh -c "./deqp-gles2 --deqp-surface-type=fbo --deqp-gl-config-name=rgba8888d24s8 --deqp-surface-width=512 --deqp-surface-height=512 --deqp-log-images=${DEQP_IMAGES:-disable} --deqp-log-shader-sources=${DEQP_SHADERS:-disable} \
+		--deqp-log-filename=/work/build/deqp-out/$name.qpa --deqp-case='$filter' $* > /work/build/deqp-out/$name.txt 2>&1; \
+		grep -E 'Passed|Failed|Not supported|Warnings|Test case.*:' /work/build/deqp-out/$name.txt | tail -8"

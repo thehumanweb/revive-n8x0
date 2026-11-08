@@ -501,27 +501,38 @@ static bool pass_one(struct cc *c)
 		memcpy(c->prog->fsu_vec, fs->fsu_vec, sizeof(fs->fsu_vec));
 		c->max_uniform = slot + (int)fs->nfsu - 1;
 	}
-	for (lane = 0; lane < 4; lane++) {
-		const struct mbx_fs_lane *L = &fs->lane[lane];
-		struct vsrc v = L->prim >= 0 ? fs_eval(c, L->prim) : imm(1.0f);	/* the primary colour: the texel's factor, or the whole value */
+	/*
+	 * All four lanes are worked out and counted before any is written: a value that feeds several lanes (the vertex shader's
+	 * own varying read back, one scalar times a constant vector) has one register, and write_dest retargets a value's producer
+	 * to the output when it is the value's only use, which the first lane's write would be if the others were not counted yet.
+	 */
+	{
+		struct vsrc v4[4];
 
-		if (c->why)
-			return false;
-		if (v.kind == V_VREG)
-			c->vuse[v.idx]++;
-		write_dest(c, v, D_OUT, 1, bgra[lane]);
-	}
-	if (fs->has_off) {
-		/* the offset colour o2: the additive terms (red, green, blue; its alpha is the fog factor, unused) */
 		for (lane = 0; lane < 4; lane++) {
 			const struct mbx_fs_lane *L = &fs->lane[lane];
-			struct vsrc v = lane < 3 && L->off >= 0 ? fs_eval(c, L->off) : imm(0.0f);
 
+			v4[lane] = L->prim >= 0 ? fs_eval(c, L->prim) : imm(1.0f);	/* the primary colour: the texel's factor, or the whole value */
 			if (c->why)
 				return false;
-			if (v.kind == V_VREG)
-				c->vuse[v.idx]++;
-			write_dest(c, v, D_OUT, 2, bgra[lane]);
+			if (v4[lane].kind == V_VREG)
+				c->vuse[v4[lane].idx]++;
+		}
+		for (lane = 0; lane < 4; lane++)
+			write_dest(c, v4[lane], D_OUT, 1, bgra[lane]);
+		if (fs->has_off) {
+			/* the offset colour o2: the additive terms (red, green, blue; its alpha is the fog factor, unused) */
+			for (lane = 0; lane < 4; lane++) {
+				const struct mbx_fs_lane *L = &fs->lane[lane];
+
+				v4[lane] = lane < 3 && L->off >= 0 ? fs_eval(c, L->off) : imm(0.0f);
+				if (c->why)
+					return false;
+				if (v4[lane].kind == V_VREG)
+					c->vuse[v4[lane].idx]++;
+			}
+			for (lane = 0; lane < 4; lane++)
+				write_dest(c, v4[lane], D_OUT, 2, bgra[lane]);
 		}
 	}
 	for (unsigned u = 0; u < MBX_MAX_TEX; u++) {
