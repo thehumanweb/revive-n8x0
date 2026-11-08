@@ -116,7 +116,7 @@ rootfs/scripts/build-rootfs.sh      # rootfs/out/rootfs.{tar,ext4,jffs2}; the lo
 **6. The kexec loader** (only for installing on a device; needs step 5's toolchain):
 
 ```sh
-kernel/scripts/build-loader.sh      # kernel/out/zImage-loader
+kernel/scripts/build-loader.sh      # kernel/out/zImage-loader (N810) and zImage-loader-n800 (N800: built, not run on an N800)
 ```
 
 ## Run in QEMU
@@ -149,7 +149,8 @@ rootfs partition; `0xFFFF` can read partitions, see its manual). The scripts her
 the bootloader (NOLO), the initfs and the CAL stay as they are.
 
 **What the unit needs.** The N810's stock flow is NOLO, the kernel partition, the initfs, then the rootfs. Here the
-kernel partition holds the small kexec loader (`kernel/out/zImage-loader`, built in step 6), which mounts the rootfs
+kernel partition holds the small kexec loader (`kernel/out/zImage-loader`, built in step 6; an N800 takes
+`zImage-loader-n800`, which has the N800's device tree: untested on an N800), which mounts the rootfs
 and `kexec`s `/boot/zImage` from it (`/boot/zImage-n800` on an N800), with `/boot/zImage.old` as its fallback; the stock
 initfs stays and hands over to our `init`. Putting the loader into the kernel partition is **not scripted here** (with `0xFFFF`
 it is a `-m kernel:...` flash: read `0xFFFF -h`, and know that the unit then depends on the loader and on whatever

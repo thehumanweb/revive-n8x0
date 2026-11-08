@@ -3,7 +3,9 @@
 # kernel from allnoconfig plus config/loader-6.18, in build/obj-loader-$V
 # (the 6.18 tree as scripts/prepare-6.18.sh left it, patches and all) ->
 # out/zImage-loader (zImage with the N810 DTB appended, for the kernel
-# partition). The real kernel goes to the rootfs as /boot/zImage.
+# partition) and out/zImage-loader-n800 (the same with the N800's DTB, for an N800's kernel
+# partition: an appended DTB is one, so each device has its own loader image; the N800
+# one is built, not run on an N800). The real kernel goes to the rootfs as /boot/zImage.
 set -eu
 cd "$(dirname "$0")/.."
 V=6.18.58
@@ -29,11 +31,12 @@ docker run --rm -v "$PWD":/work n810-kbuild:6 sh -c "cd /work/$K &&
 	make O=/work/$O ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- \
 		KCONFIG_ALLCONFIG=/work/config/loader-6.18 allnoconfig > /work/$L/build.log 2>&1 &&
 	make O=/work/$O ARCH=arm CROSS_COMPILE=arm-linux-gnueabi- -j16 \
-		zImage ti/omap/omap2420-n810.dtb >> /work/$L/build.log 2>&1" ||
+		zImage ti/omap/omap2420-n810.dtb ti/omap/omap2420-n800.dtb >> /work/$L/build.log 2>&1" ||
 	{ grep -n -i "error" $L/build.log | tail -8; exit 1; }
 # what the fragment asked for and the config didn't keep (a dependency missing)
 grep '^CONFIG_.*=' config/loader-6.18 | while read -r l; do
 	grep -qx "$l" $O/.config || echo "loader config: $l not kept"
 done
 cat $O/arch/arm/boot/zImage $O/arch/arm/boot/dts/ti/omap/omap2420-n810.dtb > out/zImage-loader
-echo "out/zImage-loader: $(stat -c %s out/zImage-loader) bytes, init $(stat -c %s $L/init) bytes"
+cat $O/arch/arm/boot/zImage $O/arch/arm/boot/dts/ti/omap/omap2420-n800.dtb > out/zImage-loader-n800
+echo "out/zImage-loader: $(stat -c %s out/zImage-loader) bytes, out/zImage-loader-n800: $(stat -c %s out/zImage-loader-n800) bytes, init $(stat -c %s $L/init) bytes"

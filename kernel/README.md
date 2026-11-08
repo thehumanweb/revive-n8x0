@@ -10,7 +10,7 @@ configs, build scripts, a small kexec loader, and the MBX access driver
 | `patches/6.18/` | the patches on top of 6.18.58: device tree, display (RFBI/S1D1374x), power management, input, p54spi wifi, audio, Retu/Tahvo, MTD/OneNAND, ARMv6 fixes |
 | `config/` | config fragments merged over `omap2plus_defconfig`: `local-6.18`, `size-6.18` (fits NOLO's 2 MB kernel partition), `loader-6.18`, and `debug-6.18`, `test-*` for experiments |
 | `scripts/` | `fetch-linux.sh`, `prepare-6.18.sh`, `build-6.18.sh`, `build-mbx.sh`, `build-loader.sh` |
-| `loader/init.c` | the loader: a static, no-libc `/init` in a tiny kernel that NOLO boots; it mounts the rootfs and kexecs `/boot/zImage` (or `zImage-n800`) |
+| `loader/init.c` | the loader: a static, no-libc `/init` in a tiny kernel that NOLO boots; it mounts the rootfs and kexecs `/boot/zImage` (or `zImage-n800` on an N800, by NOLO's product tag). The loader kernel has one device tree appended, so there is one loader image per device (`zImage-loader`, `zImage-loader-n800`) |
 | `docker/` | `kbuild-6` (cross toolchain, image `n810-kbuild:6`) and `buildroot` (static compiler for the loader) |
 
 ## Build
@@ -24,7 +24,7 @@ scripts/fetch-linux.sh      # src/linux-6.18.58.tar.xz, sha256-checked
 scripts/prepare-6.18.sh     # extract, apply patches, configure (optional fragment: config/debug-6.18)
 scripts/build-6.18.sh       # out/zImage-6.18 (N810 DTB appended), out/zImage-6.18-n800
 scripts/build-mbx.sh        # out/mbxaccess.ko
-scripts/build-loader.sh     # out/zImage-loader (needs the n810-buildroot image and the rootfs build's toolchain, `../rootfs`)
+scripts/build-loader.sh     # out/zImage-loader (N810) and out/zImage-loader-n800 (the N800's device tree; built, not run on an N800); needs the n810-buildroot image and the rootfs build's toolchain, `../rootfs`
 ```
 
 `out/zImage-6.18` is what QEMU's `-kernel` takes (the DTB is appended because
