@@ -138,9 +138,9 @@ circuit.
    without one it flushes garbage, which the model shows in strict mode and,
    forgiving, reads as the colour buffer itself. Depth
    from 0x6dc (`0x3f800001`, taken as the clear depth 1.0) unless loaded.
-7. **External Z buffer**: loaded when 0x610 bit 1 is set, bits 16-17 are
-   clear and the entry has bit 29; stored only by a partial render (0x610
-   bit 0 and 0x85c bit 3), observed. Layout: one float a pixel with the
+7. **External Z buffer**: **0x610 bit 0 loads it** (bits 16-17 clear, and only for tiles whose region entry has bit 29) and **bit 1 stores
+   it** (measured on the unit, below; this paragraph used to say the reverse, which was the user's earlier reading: 0x85c bit 3 is not
+   needed). Layout: one float a pixel with the
    low bit set, rows of `((0x610 >> 8 & 0xff) + 1) * 16` pixels, at
    `0x674 & ~0xff`.
    Measured on the unit with `mbxtri-drm -q file -k fill -C ctl [-K 0xf80]` and the driver's `region_or` parameter (a 64 x 64 scene, the
