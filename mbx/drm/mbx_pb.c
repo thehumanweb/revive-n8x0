@@ -87,8 +87,14 @@ int mbx_pb_build(struct mbx_device *m, unsigned long ms)
 {
 	unsigned long flags;
 
-	if (m->pb_built && !pb_every)
+	/*
+	 * Built once, and again every pb_rebuild jobs (and after a reset): the model gives back all but the shared page of a
+	 * scene, a page a job; the chip is not known to lose any, but a rebuild between scenes (each starts with fresh
+	 * contexts) costs a few milliseconds and ends any such leak.
+	 */
+	if (m->pb_built && !pb_every && !(pb_rebuild && ++m->pb_jobs >= pb_rebuild))
 		return 0;
+	m->pb_jobs = 0;
 	spin_lock_irqsave(&m->irq_lock, flags);
 	m->pending &= ~MBX_INT_EVM_DALLOC;
 	spin_unlock_irqrestore(&m->irq_lock, flags);

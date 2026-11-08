@@ -93,6 +93,9 @@ MODULE_PARM_DESC(ta_reset, "debug: 1 = reset the TA context (0x81c) before each 
 unsigned int kick_delay_us;
 module_param(kick_delay_us, uint, 0644);
 MODULE_PARM_DESC(kick_delay_us, "debug: wait this long after TA_COMPLETE before the render (the stock daemon waits about 2500)");
+unsigned int pb_rebuild = 256;
+module_param(pb_rebuild, uint, 0644);
+MODULE_PARM_DESC(pb_rebuild, "rebuild the free list every this many jobs (0: only after a reset)");
 bool pb_every;
 module_param(pb_every, bool, 0644);
 bool ctx_every = true;	/* the stock daemon zeroes the EVM context before every scene (found during device testing) */

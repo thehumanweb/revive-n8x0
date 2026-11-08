@@ -77,6 +77,23 @@ static void mt_page_taken(struct mbxemu *e, uint32_t m, uint32_t a)
 		emu_log(e, "parameter buffer: macro tile %u has too many pages to track", m);
 }
 
+/* The pages on the free list from the one after the last handed out to the kept-back last page (a debugging count) */
+static uint32_t pb_free_count(struct mbxemu *e)
+{
+	struct pbw *w = &e->pbw;
+	uint32_t p = w->cur, n = 0;
+
+	while (n < 4096) {
+		p = fl_entry(e, p);
+		if (!p)
+			break;
+		n++;
+		if (p == w->tail)
+			break;
+	}
+	return n;
+}
+
 /*
  * A render: each macro tile's pages back on the free list, macro tile by
  * macro tile, after its last page; the shared page stays (after the
@@ -92,13 +109,18 @@ void pb_render(struct mbxemu *e)
 
 	if (!w->on || !w->fl_ok)
 		return;
+	uint32_t given = 0;
+
 	for (m = 0; m < w->nmx * w->nmy; m++) {
 		for (k = 0; k < w->mt_npages[m]; k++) {
 			fl_set(e, w->tail, w->mt_pages[m][k]);
 			w->tail = w->mt_pages[m][k];
+			given++;
 		}
 		w->mt_npages[m] = 0;
 	}
+	if (e->trace)
+		emu_log(e, "parameter buffer: the render gave back %u pages; %u are on the free list", given, pb_free_count(e));
 }
 
 /*

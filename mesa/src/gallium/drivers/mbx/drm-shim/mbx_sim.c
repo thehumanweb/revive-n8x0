@@ -108,6 +108,7 @@ static struct {
 	struct shim_bo ctx;	/* the TA and EVM contexts */
 	uint64_t seqno;		/* the last fence handed out: jobs run to completion inside the ioctl */
 	bool pb_built;
+	unsigned pb_jobs;	/* jobs since the free list was built */
 	struct sim_fd *fds;
 	mtx_t lock;
 	struct sim_fd *active;
@@ -412,7 +413,11 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	rw(R_INT_ENABLE, I_MASTER | I_RENDER | I_TA_DONE | I_TA_OFLOW | I_TA_STREAM);
 	rw(R_INT_CLEAR, 0x7fff);
 
+	/* as the kernel driver does: the free list is built again every 256 jobs (the model leaves a scene's shared page out of the list it gives back) */
+	if (sim.pb_built && ++sim.pb_jobs >= 256)
+		sim.pb_built = false;
 	if (!sim.pb_built) {
+		sim.pb_jobs = 0;
 		mbx_contract_pb_fill(&SIM_IO, PB_VA, PB_PAGES);
 		mbx_contract_freelist(&SIM_IO, PB_TABLE_VA, PB_VA, PB_LAST_PAGE);
 		rw(R_FL_BUILD, 1);

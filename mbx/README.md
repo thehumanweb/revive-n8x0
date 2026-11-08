@@ -265,6 +265,15 @@ circuit.
 22. **Free list**: the table is written (`entry[p] = p + 1`, entry 0 the
     head, the last entry itself) and EVM_DALLOC raised; the model's
     parameter memory doesn't come from it.
+22b. **The free list over many jobs** (model and driver, 2026-11-08; found as `gles2_feat tex_subimage` failing after eleven other tests on the sim with
+    `TA_OFLOW`): the model hands a scene's shared page (`page_alloc` for `gpage`, outside the macro tiles' tracking) out and never gives it back, so
+    the list loses one page a job and runs dry after about 768 jobs of one process; and it tracked only 64 pages per macro tile (now 768, the
+    buffer's size). The chip is not known to lose a page a scene (Weston has run thousands of jobs in a boot with no overflow, and the shared page
+    is a trace-derived rule of the model), but both the kernel driver (`pb_rebuild`, default 256) and the sim's shim now build the free list
+    again every 256 jobs, which costs a few milliseconds and ends any such leak (a scene starts with fresh contexts anyway, assumption 37). The
+    model's bookkeeping is not trusted for a scene that needs more pages than the buffer has (a 1024 x 1024 target with a triangle over a
+    third of it: the model gives back 100 of the pages it handed out); `big_target` stops at 512 x 512.
+
 23. **VGP stream-out** (header blocks 9-11), as the N810 does it
     (observed): the address word is ignored. An object whose header has the
     three blocks and a non-zero enable writes each vertex's selected

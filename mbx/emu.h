@@ -222,9 +222,9 @@ struct pbw {
 	uint32_t gpage, gbump;		/* the page the first blocks share */
 	struct pbjob job;
 	uint32_t mt_page[PB_MTS], mt_bump[PB_MTS];
-#define PB_MT_PAGES	64
+#define PB_MT_PAGES	768	/* the TA can hand out at most the 768 pages of the parameter buffer: a macro tile may hold them all */
 	uint16_t mt_pages[PB_MTS][PB_MT_PAGES];	/* each macro tile's pages, in order */
-	uint8_t mt_npages[PB_MTS];
+	uint16_t mt_npages[PB_MTS];
 	uint32_t list_at[PB_TILES];	/* each tile's current list block */
 	uint32_t list_head[PB_TILES];	/* and its first (the region array's) */
 	uint8_t list_n[PB_TILES];	/* and its entries */

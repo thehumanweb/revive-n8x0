@@ -88,6 +88,7 @@ struct mbx_device {
 	struct drm_gem_object *tbl;	/* the free list's table */
 	struct drm_gem_object *ctx;	/* the TA and EVM contexts */
 	bool pb_built;		/* the free list is built (not after a reset) */
+	unsigned int pb_jobs;	/* jobs since it was built */
 	u32 ctx_seq;		/* jobs so far, for the hardware context id (0 or 1) */
 	bool ctx_loaded;	/* the contexts are zeroed and loaded (not after a reset) */
 	void *dummy;		/* what unmapped pages point at */
@@ -117,6 +118,7 @@ static inline u32 mbx_read(struct mbx_device *m, u32 reg)
 }
 
 extern bool pb_every;	/* debug: fill the parameter buffer and build the free list before every job */
+extern unsigned int pb_rebuild;	/* jobs between free-list rebuilds (0: only after a reset) */
 extern bool ctx_every;	/* debug: zero and load the contexts before every job (the stock daemon zeroes the EVM context before every scene) */
 extern unsigned int tails_zero;	/* debug: bytes of the tail area zeroed per scene (default 64 KB) */
 extern bool mbx_trace;	/* debug: log every register write and TA word (KERN_DEBUG, in dmesg) */
