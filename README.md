@@ -1,23 +1,27 @@
-# qemu-n8x0
+# N8x0 Revival
 
-QEMU for the Nokia N800/N810 (OMAP2420), with a model of the N810's
-PowerVR MBX1 graphics core.
+The Nokia N800 and N810 (OMAP2420) on a current software stack: Linux 6.18, OpenGL ES 2.0 on the N810's PowerVR MBX1
+through a Mesa Gallium driver and a kernel DRM driver, Weston on the panel, and QEMU to develop all of it without the
+device. The build and install instructions are below; `JOURNEY.md` is the log of how each piece was found (with
+sources), `TODO.md` what is open, and `mesa/COVERAGE.md` what the GLES2 driver does on the chip and what falls back to
+the CPU.
 
-- `qemu/patches/`: 21 patches to QEMU 9.1.3's `n800`/`n810` machines,
-  9.1 being the last release with them (QEMU removed them in 9.2): UART,
-  PRCM, DSS/RFBI, DMA, I2C, watchdog, McSPI, MIPI display, TUSB6010/MUSB
-  host and gadget, LM8323 keyboard, RNG, sensors, MMC, switches, the real
-  partition table. Enough for Linux 6.18 to boot to a shell
-  with the RFBI panel, keyboard, touchscreen, eMMC and USB
-  networking.
-- `kernel/`: Linux 6.18.58 for the N810: 62 patches, configs, build scripts
-  and a kexec loader; see `kernel/README.md`.
-- `mbx/`: mbxemu, a functional model of the PowerVR MBX1 (TA, VGP, 3D
-  core, 2D core, parameter buffer), see `mbx/README.md`; its QEMU device is in
-  `qemu/device/`. Checked against the N810 frame by frame and
-  word by word.
-- `qemu/docker/Dockerfile.9.1`: the `n810-qemu:9.1` image (QEMU 9.1.3 with the
-  patches, without the MBX; it keeps the build tools for MBX trees).
+- `kernel/`: Linux 6.18.58 for the N800 and N810: 66 patches, configs, build scripts, a kexec loader and the build of
+  the MBX DRM driver (`mbx/drm`); see `kernel/README.md`. It builds **two kernels from one source**: `zImage-6.18`
+  (the N810's device tree appended) and `zImage-6.18-n800` (the N800's). The N800 kernel is built and staged on the
+  device image, which the loader picks by NOLO's product tag, but this repository has no record of it being run on an
+  N800.
+- `mbx/`: mbxemu, a functional model of the PowerVR MBX1 (TA, VGP, 3D core, 2D core, parameter buffer), see
+  `mbx/README.md`; its QEMU device is in `qemu/device/`. Checked against the N810 frame by frame and word by word.
+  The kernel DRM driver for the chip is `mbx/drm`.
+- `mesa/`: the `mbx` Gallium driver for Mesa 26.1.8 (GLES2, EGL, GBM), its tests and the piglit and dEQP scripts.
+- `rootfs/`: the Buildroot root filesystem (Mesa with the driver, Weston, the test programs) and the device image.
+- `qemu/patches/`: 21 patches to QEMU 9.1.3's `n800`/`n810` machines, 9.1 being the last release with them (QEMU
+  removed them in 9.2): UART, PRCM, DSS/RFBI, DMA, I2C, watchdog, McSPI, MIPI display, TUSB6010/MUSB host and gadget,
+  LM8323 keyboard, RNG, sensors, MMC, switches, the real partition table. Enough for Linux 6.18 to boot to a shell
+  with the RFBI panel, keyboard, touchscreen, eMMC and USB networking.
+- `qemu/docker/Dockerfile.9.1`: the `n810-qemu:9.1` image (QEMU 9.1.3 with the patches, without the MBX; it keeps the
+  build tools for MBX trees).
 
 ## Requirements
 
