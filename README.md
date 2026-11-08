@@ -192,7 +192,7 @@ Unplug the charger first unless you mean to charge under this system. After the 
 
 **First boot.** Log in as `root` (password `n810`) with `ssh root@192.168.2.15` over USB networking (no serial cable
 is needed). The kernel and the login prompt also run on the unit's serial console (the third UART, 115200 8N1), for
-anyone who has a serial jig. Weston starts at boot on the panel (`/etc/init.d/S90weston`;
+anyone who has a serial jig (see https://bues.ch/cms/unmaintained/n810-serial.html). Weston starts at boot on the panel (`/etc/init.d/S90weston`;
 `touch /etc/noweston` turns that off) and `weston-simple-egl`, `weston-terminal` and the other Weston clients are
 installed. The GPU driver is loaded at boot; if `dmesg | grep mbx` is empty, `modprobe mbx` loads it, and
 `touch /etc/mbx-autoload` makes `S35mbx` load it at every boot. The feature tests: `gles2_feat` (64 tests).
