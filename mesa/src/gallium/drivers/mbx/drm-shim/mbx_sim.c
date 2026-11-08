@@ -349,7 +349,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	const uint32_t *w = (const uint32_t *)(uintptr_t)a->stream;
 	struct sim_fd *f;
 	uint32_t i, st;
-	int ret = 0;
+	int ret = 0, retried = 0;
 
 	if ((a->flags & ~(MBX_SUBMIT_FLAT_BG | MBX_SUBMIT_ZLOAD)) || a->stream_words > (256u << 10) || a->n_bos > 64)
 		return -EINVAL;
@@ -363,6 +363,8 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 		i += 1 + count;
 	}
 	mtx_lock(&sim.lock);
+again:
+	ret = 0;
 	f = sim_fd_get(fd);
 	/* the contract's buffers: the tails 64 KB aligned and 64 KB, the regions big enough */
 	{
@@ -414,7 +416,7 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 	rw(R_INT_CLEAR, 0x7fff);
 
 	/* as the kernel driver does: the free list is built again every 256 jobs (the model leaves a scene's shared page out of the list it gives back) */
-	if (sim.pb_built && ++sim.pb_jobs >= 256)
+	if (sim.pb_built && ++sim.pb_jobs >= (getenv("MBX_SIM_REBUILD") ? (unsigned)atoi(getenv("MBX_SIM_REBUILD")) : 256u))
 		sim.pb_built = false;
 	if (!sim.pb_built) {
 		sim.pb_jobs = 0;
@@ -492,6 +494,10 @@ reset:
 	rw(R_SOFT_RESET, 0x111);
 	rw(R_SOFT_RESET, 0);
 	sim.pb_built = false;
+	if (ret == -ENOMEM && !retried) {	/* the parameter buffer ran dry: the free list is built afresh and the job runs again, as the kernel driver does */
+		retried = 1;
+		goto again;
+	}
 out:
 	a->fence = ++sim.seqno;
 	mtx_unlock(&sim.lock);

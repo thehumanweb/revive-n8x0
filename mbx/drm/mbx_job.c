@@ -382,6 +382,8 @@ static void mbx_job_work(struct work_struct *work)
 	for (i = 0; i < job->ndeps; i++)
 		dma_fence_wait(job->deps[i], false);
 	ret = mbx_job_run(job);
+	if (ret == -ENOMEM)	/* the parameter buffer ran dry (a long run of scenes leaves few pages): the reset rebuilt nothing, the retry builds the free list afresh */
+		ret = mbx_job_run(job);
 	if (ret)
 		dma_fence_set_error(job->done, ret);
 	spin_lock_irqsave(&m->fence_lock, flags);

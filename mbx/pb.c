@@ -147,6 +147,8 @@ void pb_fl_built(struct mbxemu *e, int built)
 	e->pbw.cur = 0;
 	e->pbw.tail = e->regs[R_FL_LAST / 4];
 	e->pbw.fl_ok = built;
+	if (e->trace)
+		emu_log(e, "parameter buffer: free list built, %u pages", pb_free_count(e));
 }
 
 void pb_scene_start(struct mbxemu *e, uint32_t config)
