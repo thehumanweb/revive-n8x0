@@ -102,6 +102,7 @@ the CPU fallback. Non-power-of-two and render-to-texture-only textures stay line
    refusing them at link time with an error (Mesa's GLES2 allows a link failure for an unsupported program).
 4. **Wider test coverage:** dEQP-GLES2 (piglit's `deqp_gles2` profile needs the dEQP binaries: a large build), and our own
    draw-and-probe tests in `mesa/tests/` for each feature above, with the model's picture as the expectation.
+   Status (2026-11-08): dEQP-GLES2 `functional.vertex_arrays` passes 571 of 571 on the host sim and on the unit (`mesa/scripts/build-deqp-arm.sh` builds the ARM binary); the other groups are not yet clean or not yet run (JOURNEY.md, "dEQP-GLES2 on the unit").
 
 ## Added 2026-11-07 (after the table above)
 
