@@ -62,6 +62,7 @@ static uint32_t page_alloc(struct mbxemu *e)
 	if (!p || (p == w->tail && !w->closing))
 		return 0;
 	w->cur = p;
+	w->taken++;
 	fl_set(e, 0, (uint16_t)p);
 	return p << 12;
 }
@@ -113,6 +114,8 @@ void pb_render(struct mbxemu *e)
 
 	for (m = 0; m < w->nmx * w->nmy; m++) {
 		for (k = 0; k < w->mt_npages[m]; k++) {
+			if (w->mt_pages[m][k] == w->cur)
+				continue;	/* the page the list's read position is on keeps its link to the rest of the list; linking it on would cut that off */
 			fl_set(e, w->tail, w->mt_pages[m][k]);
 			w->tail = w->mt_pages[m][k];
 			given++;
@@ -120,7 +123,7 @@ void pb_render(struct mbxemu *e)
 		w->mt_npages[m] = 0;
 	}
 	if (e->trace)
-		emu_log(e, "parameter buffer: the render gave back %u pages; %u are on the free list", given, pb_free_count(e));
+		emu_log(e, "parameter buffer: the render gave back %u pages (%u taken since the scene start); %u are on the free list", given, w->taken, pb_free_count(e));
 }
 
 /*

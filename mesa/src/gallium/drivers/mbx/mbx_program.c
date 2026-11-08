@@ -260,11 +260,33 @@ static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shad
 	return so;
 }
 
+void mbx_program_destroy(struct mbx_vgp_program *p)
+{
+	FREE(p);
+}
+
 static void mbx_shader_delete(struct pipe_context *pctx, void *hwcso)
 {
 	struct mbx_shader *so = hwcso;
+	struct mbx_context *ctx = mbx_context(pctx);
+	struct mbx_vgp_program **pp = &ctx->programs;
 
-	mbx_fallback_shader_delete(mbx_context(pctx), so);
+	/* the programs made for it go: they are found by the shaders' addresses, and the next shader may be allocated at this one's
+	 * (found with dEQP: a stale program, made for another shader, matched, and the draw came out wrong) */
+	while (*pp) {
+		struct mbx_vgp_program *p = *pp;
+		bool mine = p->vs == so || p->fs == so;
+
+		for (struct mbx_fs_variant *v = so->variants; v && !mine; v = v->next)
+			mine = p->fsv == v;
+		if (mine) {
+			*pp = p->next;
+			mbx_program_destroy(p);
+		} else {
+			pp = &p->next;
+		}
+	}
+	mbx_fallback_shader_delete(ctx, so);
 	while (so->variants) {
 		struct mbx_fs_variant *v = so->variants;
 
@@ -293,11 +315,6 @@ void mbx_program_init(struct pipe_context *pctx)
 	pctx->create_fs_state = mbx_shader_create;
 	pctx->delete_fs_state = mbx_shader_delete;
 	pctx->bind_fs_state = mbx_fs_bind;
-}
-
-void mbx_program_destroy(struct mbx_vgp_program *p)
-{
-	FREE(p);
 }
 
 /* The vertex and fragment shader bound, linked: compiled once for the pair and kept in the context */

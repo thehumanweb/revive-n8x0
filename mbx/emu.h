@@ -220,6 +220,7 @@ struct pbw {
 	uint32_t tx, ty, mx, my, nmx, nmy;
 	int first_done;			/* the first block since the TA started is out */
 	uint32_t gpage, gbump;		/* the page the first blocks share */
+	uint32_t taken;			/* pages handed out since the scene started (a trace) */
 	struct pbjob job;
 	uint32_t mt_page[PB_MTS], mt_bump[PB_MTS];
 #define PB_MT_PAGES	768	/* the TA can hand out at most the 768 pages of the parameter buffer: a macro tile may hold them all */

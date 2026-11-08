@@ -362,6 +362,14 @@ static int ioctl_submit(int fd, unsigned long request, void *arg)
 			return -EINVAL;
 		i += 1 + count;
 	}
+	if (getenv("MBX_SIM_CRC")) {	/* a debugging aid: a hash of the job's stream and its render registers, to compare two runs */
+		uint32_t h = 2166136261u;
+
+		for (i = 0; i < a->stream_words; i++)
+			h = (h ^ w[i]) * 16777619u;
+		mesa_loge("mbx sim: job %u words, hash %08x, regions %08x tails %08x addr %08x", a->stream_words, h, a->ta_regions,
+			  a->ta_tails, a->r_addr);
+	}
 	mtx_lock(&sim.lock);
 again:
 	ret = 0;
