@@ -173,6 +173,19 @@ circuit.
     zero for each vertex; sections run in bit order, each `(flags & 15) + 1`
     times. The rules "one constant register" and "one input register" an
     instruction apply among the sources the opcode reads.
+13b. **Section loops, the constant window and a0** (user-supplied, 2026-11-08, from the decoded headers of GLES's own programs and the user's
+    assembler tests; not re-measured here). A section is three header words and its instructions. In the second header word bits 16-19 are
+    the repeat count minus 1 (1 to 16 repeats of the section's instruction range: the "flags & 15" of assumption 13), bits 20-23 the
+    constant window in units of 16 constants, which the hardware adds to the 7-bit constant index of every instruction in the section
+    (tested: with a window of 0x550 or 0x650, c3 reads c83; a window of 8 reaches c131 and c188); bits 24-27, the window's end, gate
+    nothing (an index past the end reads 0). The AMV op sets a0 to its source's x, truncated, and constants can be indexed relative to a0:
+    small table lookups over the 192 constants with a per-vertex index (GLES's lighting does this for its lights). Not known: whether the
+    window advances at each repeat or stays fixed, whether temporaries and a0 carry over between repeats, whether GLES's own programs
+    use the count or unroll, whether repeats count against the 256 instructions, any timing cost. The count is fixed per section: no
+    data-dependent loop, no branch, no early exit, and no memory reads beyond the constants. Our compiler unrolls loops, turns an `if`
+    into a select (SLT, SGE, MAD) and indexes uniform arrays with AMV and a0. What a section loop could give: loops over lights or palette
+    matrices with the window moving at each repeat, and a longer unrolled body in 256 instructions. A probe would settle the unknowns (a
+    section with count 4 and a window, temporaries accumulating, through the existing assembler, read back as colour); it needs the device.
 14. **Clipping**: o7.x and o7.y >= 0 and the enabled user planes >= 0,
     and no guard band: the hardware draws vertices as far away as 1e36
     pixels (observed), with no wrap or saturation of coordinates. What ends it

@@ -89,6 +89,10 @@ dma-buf export and re-import in one process (the shared-handle bug had no test).
 
 ## Other open items
 
+- VGP section loops (README 13b): a probe on the device for the unknowns (does the constant window advance per repeat; do temporaries and
+  a0 carry over; do repeats count against the 256 instructions) with a section of count 4 through `mbxtri-drm`'s assembler, read back as
+  colour. Then skinning and palettes in the compiler (the vertex shader's loops over a uniform array are unrolled today). Needs the unit
+  and a go-ahead.
 - `gles2_feat point_sizes` failed once in a full host-sim run ("(16,32) is 0 0 0") and passed in 3 solo runs and the next full run: an
   intermittent failure, not investigated (per-point objects; a race in the sim shim?).
 - Fast stencil, stage 2: the stencil WRITES on the chip (README assumption 53 has the tests): render the draw's coverage into a mask target on the chip
