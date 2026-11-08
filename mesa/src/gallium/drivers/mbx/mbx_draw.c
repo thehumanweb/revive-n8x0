@@ -597,7 +597,7 @@ static uint32_t hw_prim_word(unsigned mode)
 	}
 }
 
-static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
+static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_info *info,
 			 unsigned drawid_offset, const struct pipe_draw_indirect_info *indirect,
 			 const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
 {
@@ -855,6 +855,17 @@ static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info 
 		ctx->job.ndraws++;
 	}
 	mbx_stencil_end(ctx);	/* a stencil-tested draw is rendered now and the depth of the rejected pixels put back */
+}
+
+static void mbx_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
+			 unsigned drawid_offset, const struct pipe_draw_indirect_info *indirect,
+			 const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
+{
+	uint64_t t0 = mbx_prof_level() ? prof_now_us() : 0;
+
+	mbx_draw_vbo_impl(pctx, info, drawid_offset, indirect, draws, num_draws);
+	if (t0)
+		mbx_prof_note(MBX_PROF_DRAW, prof_now_us() - t0);
 }
 
 void mbx_draw_init(struct pipe_context *pctx)

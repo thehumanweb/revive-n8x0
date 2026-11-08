@@ -204,12 +204,46 @@ static void report_scanout_damage(struct mbx_context *ctx, struct mbx_resource *
  * buffer and starts the TA) and the time to completion (the job is waited for right after, so this changes the schedule
  * it measures: it is for finding what a job costs, not for timing a pipeline). Printed every two seconds.
  */
-static uint64_t prof_now_us(void)
+uint64_t prof_now_us(void)
 {
 	struct timespec ts;
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+/* MBX_PROF=1 waits for every job and times it; 2 only times the driver's own calls (no waiting: the schedule is the real one) */
+int mbx_prof_level(void)
+{
+	static int level = -1;
+
+	if (level < 0) {
+		const char *e = getenv("MBX_PROF");
+
+		level = e ? (atoi(e) > 0 ? atoi(e) : 1) : 0;
+	}
+	return level;
+}
+
+/* Time spent in the driver's calls (draw_vbo, flush, the SUBMIT ioctl), printed every two seconds with their counts */
+void mbx_prof_note(unsigned what, uint64_t us)
+{
+	static struct { uint64_t n[MBX_PROF_N], us[MBX_PROF_N], t0; } p;
+	static const char *const name[MBX_PROF_N] = { "draw_vbo", "flush", "SUBMIT ioctl" };
+	uint64_t now = prof_now_us();
+
+	if (!p.t0)
+		p.t0 = now;
+	p.n[what]++;
+	p.us[what] += us;
+	if (now - p.t0 >= 2000000) {
+		fprintf(stderr, "mbx prof calls (%s), per second:", program_invocation_short_name);
+		for (unsigned k = 0; k < MBX_PROF_N; k++)
+			fprintf(stderr, " %s %llu calls %llu us;", name[k], (unsigned long long)(p.n[k] / 2), (unsigned long long)(p.us[k] / 2));
+		fprintf(stderr, "\n");
+		memset(&p, 0, sizeof(p));
+		p.t0 = now;
+	}
 }
 
 static void prof_job(struct mbx_context *ctx, uint64_t fence, uint64_t t_before, uint64_t t_after, unsigned ndraws, unsigned tiles, bool flat)
@@ -328,13 +362,15 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.bos = (uintptr_t)bo;
 	s.n_bos = nbo;
 
-	t_before = MBX_ENV_SET("MBX_PROF") ? prof_now_us() : 0;
+	t_before = mbx_prof_level() ? prof_now_us() : 0;
 	ret = drmIoctl(ctx->screen->fd, DRM_IOCTL_MBX_SUBMIT, &s);
 	if (ret) {
 		mesa_loge("mbx: SUBMIT failed (%d)", errno);
 	} else {
 		color->last_fence = s.fence;
-		if (t_before) {
+		if (t_before)
+			mbx_prof_note(MBX_PROF_SUBMIT, prof_now_us() - t_before);
+		if (t_before && mbx_prof_level() == 1) {
 			/* the tiles the job renders: its damage rectangle (x0 | y0 << 8 | x1 << 16 | y1 << 24, 0 all) or the whole frame */
 			unsigned gw = (color->base.width0 + 15) / 16, gh = (color->base.height0 + 15) / 16;
 			unsigned tiles = s.damage ? ((s.damage >> 16 & 0xff) - (s.damage & 0xff)) * ((s.damage >> 24) - (s.damage >> 8 & 0xff)) : gw * gh;

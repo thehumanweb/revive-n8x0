@@ -13,6 +13,12 @@
 
 struct nir_shader;
 
+/* MBX_PROF (mbx_job.c) */
+enum { MBX_PROF_DRAW, MBX_PROF_FLUSH, MBX_PROF_SUBMIT, MBX_PROF_N };
+int mbx_prof_level(void);
+uint64_t prof_now_us(void);
+void mbx_prof_note(unsigned what, uint64_t us);
+
 #define MBX_MAX_SAMPLERS 8	/* what GLES2 needs: the CPU fallback takes the draws that use more than the chip does */
 
 /* A shader as the state tracker hands it over; its VGP program is made at the first draw */

@@ -43,8 +43,11 @@ static void mbx_context_destroy(struct pipe_context *pctx)
 static void mbx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence, unsigned flags)
 {
 	struct mbx_context *ctx = mbx_context(pctx);
+	uint64_t t0 = mbx_prof_level() ? prof_now_us() : 0;
 
 	mbx_job_flush(ctx);
+	if (t0)
+		mbx_prof_note(MBX_PROF_FLUSH, prof_now_us() - t0);
 	if (fence) {
 		/* NULL means done; otherwise a fence for the last job */
 		struct pipe_fence_handle *f = NULL;
