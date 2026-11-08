@@ -7,7 +7,7 @@
 # (/tmp/mbx.ko) and the jig host reachable.
 set -eu
 cd "$(dirname "$0")/../.."
-S=carsten@storage.netbird.cloud
+S=${JIG_HOST:-carsten@storage.netbird.cloud}	# the jig host: user@host (JIG_HOST overrides)
 scp -q -o BatchMode=yes build/mbxtri-drm-arm $S:n810/mbx-test/
 ssh -o BatchMode=yes $S 'cd ~/n810 && sh n810-net.sh "cat > /tmp/mbxtri-drm-arm" < mbx-test/mbxtri-drm-arm'
 scp -q -o BatchMode=yes scripts/device/trace-on-unit.sh $S:n810/mbx-test/

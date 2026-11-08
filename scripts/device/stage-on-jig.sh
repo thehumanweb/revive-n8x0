@@ -4,7 +4,7 @@
 # sums on both ends. The N810 is not touched.
 set -eu
 cd "$(dirname "$0")/../.."
-H=carsten@storage.netbird.cloud
+H=${JIG_HOST:-carsten@storage.netbird.cloud}	# the jig host: user@host (JIG_HOST overrides)
 IMG=rootfs/out/rootfs-device.jffs2
 [ -f $IMG ] || { echo "build it first: cd rootfs && DEVICE=1 scripts/build-rootfs.sh" >&2; exit 1; }
 ssh -o BatchMode=yes $H 'mkdir -p ~/n810/mbx-test'
