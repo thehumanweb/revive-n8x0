@@ -1,6 +1,6 @@
 # kernel: Linux 6.18 for the Nokia N810
 
-Linux 6.18.58 with 66 patches for the N800/N810 (`patches/6.18/`), kernel
+Linux 6.18.58 with 65 patches for the N800/N810 (`patches/6.18/`), kernel
 configs, build scripts, a small kexec loader, and the MBX access driver
 (`../mbx/kmod`) built against it. The kernel boots on the patched QEMU in
 `../qemu` and is meant for the real device.

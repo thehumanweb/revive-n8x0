@@ -1,12 +1,20 @@
 # N8x0 Revival
 
+> **EXPERIMENTAL. This is research software and it may damage your device.** It replaces the system software of the
+> unit (kernel, kernel partition loader, root filesystem), including the code that talks to the power and charging
+> hardware, and drives the display and graphics hardware directly. It can leave a unit unbootable, lose data, or harm
+> the battery. Use it at your own risk and back your unit up first.
+>
+> **Tested only on a Nokia N810 with an AC-8E charger.** Nothing here has been run on an N800 (the N800 kernel and
+> loader are built, not tested) or with other chargers or batteries.
+
 The Nokia N800 and N810 (OMAP2420) on a current software stack: Linux 6.18, OpenGL ES 2.0 on the N810's PowerVR MBX1
 through a Mesa Gallium driver and a kernel DRM driver, Weston on the panel, and QEMU to develop all of it without the
 device. The build and install instructions are below; `JOURNEY.md` is the log of how each piece was found (with
 sources), `TODO.md` what is open, and `mesa/COVERAGE.md` what the GLES2 driver does on the chip and what falls back to
 the CPU.
 
-- `kernel/`: Linux 6.18.58 for the N800 and N810: 66 patches, configs, build scripts, a kexec loader and the build of
+- `kernel/`: Linux 6.18.58 for the N800 and N810: 65 patches, configs, build scripts, a kexec loader and the build of
   the MBX DRM driver (`mbx/drm`); see `kernel/README.md`. It builds **two kernels from one source**: `zImage-6.18`
   (the N810's device tree appended) and `zImage-6.18-n800` (the N800's). The N800 kernel is built and staged on the
   device image, which the loader picks by NOLO's product tag, but this repository has no record of it being run on an
@@ -76,7 +84,7 @@ cd ../../../..
 (Without the MBX, QEMU 9.1.3 with the N810 patches is also a container image:
 `qemu/fetch-qemu.sh; docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -f qemu/docker/Dockerfile.9.1 -t n810-qemu:9.1 qemu`.)
 
-**2. Kernel** Linux 6.18.58 with the 66 patches, and the MBX DRM driver (about 15 minutes from clean):
+**2. Kernel** Linux 6.18.58 with the 65 patches, and the MBX DRM driver (about 15 minutes from clean):
 
 ```sh
 docker build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t n810-kbuild:6 kernel/docker/kbuild-6
@@ -144,7 +152,8 @@ the MBX device, `mbx.ko` loads at boot and the demo programs (`gles2_tri`, `gles
 
 ## Install on a Nokia N810
 
-This is a research port; flashing can leave a unit unbootable. **Back up the unit first** (at least the CAL and the
+This is experimental (see the warning at the top: tested only on an N810 with an AC-8E charger); flashing can leave a unit
+unbootable. **Back up the unit first** (at least the CAL and the
 rootfs partition; `0xFFFF` can read partitions, see its manual). The scripts here only write the **rootfs partition**:
 the bootloader (NOLO), the initfs and the CAL stay as they are.
 
