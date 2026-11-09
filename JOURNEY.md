@@ -942,3 +942,7 @@ Not done: the unit with this change (a flash), the 48 left in `fragment_ops`, `f
 
 - Sources: host sim dEQP runs, `mbx_clear` in `mesa/src/gallium/drivers/mbx/mbx_context.c`, `mbx_screen.c`.
 
+On the unit (image 32: the scissored-clear change; Weston stopped, swap on; flashed, `gles2_feat` 66 of 66 twice): dEQP `fragment_ops.stencil` 17 of 17 and `fragment_ops.scissor` 17 of 17 (both had failures on the sim before the change), `depth_stencil.stencil_ops.keep_keep_*` 8 of 8, six more `stencil_ops` cases (`zero_replace_incr`, `replace_invert_decr`, `incr_decr_keep`, `decr_incr_invert`, `invert_zero_replace`, `incr_wrap_decr_wrap_zero`) all pass, four `stencil_depth_funcs` cases (`stencil_always_depth_less`, `stencil_always_depth_equal`, `stencil_less_depth_less`, `stencil_equal_depth_less`) all fail as they do on the sim, `depth_stencil.random` 11 pass and 7 fail of 18 run before it was stopped (the sim fails some of it as well). The CPU stencil path is slow on the ARM11 (about 80 seconds a `stencil_ops` case, about 7 minutes a `depth_stencil.random` case), so the full `depth_stencil` groups (25 + 3 + 81 + 512 cases) were not run on the unit; samples were, and the sim has the full counts. The chip and the sim agree on every sampled case.
+
+- Sources: the unit's dEQP logs (`/root/deqp/*.txt`), `gles2_feat`, kernel log (no job failure, no OOM kill).
+
