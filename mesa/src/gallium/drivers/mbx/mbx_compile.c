@@ -456,6 +456,21 @@ static bool pass_one(struct cc *c)
 		for (lane = 0; lane < 4; lane++)
 			write_dest(c, pv[lane], D_FIXED, POS_REG, lane);
 	}
+	{
+		/* x' = x + dx * w, dx a uniform the draw fills in from the viewport (mbx_draw.c): see struct mbx_vgp_program's vp_slot */
+		int slot = c->max_uniform + 1;
+		struct vop *o = add_op(c, MBX_VGP_MAD);
+
+		o->n = 3;
+		o->src[0] = fixed_temp(POS_REG, 3);
+		o->src[1] = (struct vsrc){ .kind = V_CONST, .idx = slot, .lane = 0 };
+		o->src[2] = fixed_temp(POS_REG, 0);
+		o->dk = D_FIXED;
+		o->dreg = POS_REG;
+		o->dlane = 0;
+		c->max_uniform = slot;
+		c->prog->vp_slot = slot;
+	}
 	if (c->prog->scissor) {
 		/* the scissor as four clip planes in o5.xyzw: each a dot product of the clip position with a constant
 		 * (a, 0, 0, b) the draw fills in from the viewport and the scissor rectangle */

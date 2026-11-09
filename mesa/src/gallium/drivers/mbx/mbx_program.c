@@ -335,6 +335,7 @@ struct mbx_vgp_program *mbx_program_get(struct mbx_context *ctx)
 	p->fsv = ctx->fsv;
 	p->fsi = ctx->fsi;
 	p->scissor = scissor;
+	p->vp_slot = -1;
 	p->next = ctx->programs;
 	ctx->programs = p;	/* kept even when it fails (ninsn 0), so it is not tried again */
 	if ((*ctx->fsi).kind != MBX_FS_MATCHED) {

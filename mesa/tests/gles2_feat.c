@@ -1849,6 +1849,113 @@ static int t_big_target(char *why)
 	return ok;
 }
 
+/* A textured quad away from the origin of a big target: dEQP puts its quads anywhere in a 512 x 512 surface, every other test here draws
+ * into 64 x 64 from the corner. A 64 x 64 gradient (R = 4 * column, G = 4 * row) on a 128 x 128 viewport at several offsets; each
+ * pixel's texel follows from its place in the viewport. */
+static int t_tex_offset(char *why)
+{
+	static const int offs[][2] = { { 0, 0 }, { 64, 0 }, { 0, 64 }, { 192, 128 }, { 335, 215 } };
+	unsigned char px[64 * 64 * 4];
+	GLuint t, tgt, f;
+	int ok = 1;
+
+	for (int j = 0; j < 64; j++)
+		for (int i = 0; i < 64; i++) {
+			unsigned char *p = px + (j * 64 + i) * 4;
+
+			p[0] = (unsigned char)(i * 4);
+			p[1] = (unsigned char)(j * 4);
+			p[2] = 0;
+			p[3] = 255;
+		}
+	glGenTextures(1, &tgt);
+	glBindTexture(GL_TEXTURE_2D, tgt);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 512, 512, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glGenFramebuffers(1, &f);
+	glBindFramebuffer(GL_FRAMEBUFFER, f);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tgt, 0);
+	t = make_tex(64, 64, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "tex"), 0);
+	for (unsigned k = 0; k < sizeof(offs) / sizeof(offs[0]) && ok; k++) {
+		int x0 = offs[k][0], y0 = offs[k][1];
+
+		glViewport(x0, y0, 128, 128);
+		begin();
+		quad(0, 0, 1, 1, 1, 1, 1);
+		if (!is(x0 + 10, y0 + 64, 20, 128, 0, why, 200) || !is(x0 + 110, y0 + 64, 220, 128, 0, why, 200) ||
+		    !is(x0 + 64, y0 + 10, 128, 20, 0, why, 200)) {
+			char tmp[200];
+
+			snprintf(tmp, sizeof(tmp), "viewport at (%d,%d): %s", x0, y0, why);
+			memcpy(why, tmp, sizeof(tmp));
+			ok = 0;
+		}
+	}
+	glUseProgram(prog);
+	glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+	glViewport(0, 0, W, H);
+	glDeleteFramebuffers(1, &f);
+	glDeleteTextures(1, &t);
+	glDeleteTextures(1, &tgt);
+	return ok;
+}
+
+/* a probe, not a check: a 64 x 64 gradient texture (R = column * 4) on viewports of several widths and x offsets in a 512 target: the red
+ * at 1/8, 1/2 and 7/8 of the viewport width (a correct draw: 32, 128, 224) */
+static int t_tex_offset_probe(char *why)
+{
+	static const int ws[] = { 64, 128, 256 };
+	static const int xs[] = { 0, 64, 128, 192 };
+	unsigned char px[64 * 64 * 4];
+	GLuint tgt, f, t;
+
+	for (int j = 0; j < 64; j++)
+		for (int i = 0; i < 64; i++) {
+			unsigned char *p = px + (j * 64 + i) * 4;
+
+			p[0] = (unsigned char)(i * 4);
+			p[1] = (unsigned char)(j * 4);
+			p[2] = 0;
+			p[3] = 255;
+		}
+	glGenTextures(1, &tgt);
+	glBindTexture(GL_TEXTURE_2D, tgt);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 512, 512, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glGenFramebuffers(1, &f);
+	glBindFramebuffer(GL_FRAMEBUFFER, f);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tgt, 0);
+	t = make_tex(64, 64, GL_RGBA, GL_UNSIGNED_BYTE, px, GL_NEAREST, GL_CLAMP_TO_EDGE);
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "tex"), 0);
+	for (unsigned wi = 0; wi < sizeof(ws) / sizeof(ws[0]); wi++)
+		for (unsigned k = 0; k < sizeof(xs) / sizeof(xs[0]); k++) {
+			int w = ws[wi], x0 = xs[k];
+			struct px a, b, c;
+
+			glViewport(x0, 0, w, w);
+			begin();
+			quad(0, 0, 1, 1, 1, 1, 1);
+			a = probe(x0 + w / 8, w / 2);
+			b = probe(x0 + w / 2, w / 2);
+			c = probe(x0 + w * 7 / 8, w / 2);
+			printf("probe width %3d at x0=%3d (scale %3d offset %3d): R %3d %3d %3d (want 32 128 224)\n", w, x0, w / 2, x0 + w / 2,
+			       a.c[0], b.c[0], c.c[0]);
+		}
+	glUseProgram(prog);
+	glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+	glViewport(0, 0, W, H);
+	glDeleteFramebuffers(1, &f);
+	glDeleteTextures(1, &t);
+	glDeleteTextures(1, &tgt);
+	(void)why;
+	return 1;
+}
+
 /* dEQP's vertex-array shader: the colour is a scalar uniform times a constant vec3 (the other lanes of the uniform's slot are zero) */
 static int t_vs_scalar_colour(char *why)
 {
@@ -2146,6 +2253,8 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "tex_alpha_only", t_tex_alpha_only },
 	{ "bilinear_black", t_bilinear_black },
 	{ "big_target", t_big_target },
+	{ "tex_offset", t_tex_offset },
+	{ "tex_offset_probe", t_tex_offset_probe },
 	{ "vs_scalar_colour", t_vs_scalar_colour },
 	{ "mip_chip", t_mip_chip },
 	{ "trilinear", t_trilinear },

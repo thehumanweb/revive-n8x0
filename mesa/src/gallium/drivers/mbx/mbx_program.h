@@ -85,6 +85,10 @@ struct mbx_vgp_program {
 	uint32_t sections;		/* the sections word this program's draws send */
 	bool scissor;			/* the variant with the scissor as four user clip planes (o5.xyzw) */
 	int scissor_slot;		/* its four planes: uniform slots scissor_slot .. +3 */
+	int vp_slot;			/* the uniform slot holding the viewport's x shift (dx, 0, 0, 0): the position's x is moved by dx * w before the header's
+					 * viewport (whose x translate is its scale) maps it: the chip bends the texture coordinates when the x translate
+					 * differs from the x scale (found with a 64 x 64 texture on viewports of several widths and offsets: README
+					 * assumption 54) */
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* fragment uniform vec4s the program carries as constants */
 	int fsu_base;			/* their first constant slot */
 	bool tex;			/* a texture is sampled */

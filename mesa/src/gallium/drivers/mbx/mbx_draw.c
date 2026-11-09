@@ -288,6 +288,12 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 	return true;
 }
 
+/* The shift of the position's x (in clip units of w) that makes up for the header's x offset being its x scale */
+static float vp_dx(const struct pipe_viewport_state *vp)
+{
+	return vp->scale[0] != 0.0f ? (vp->translate[0] - vp->scale[0]) / vp->scale[0] : 0.0f;
+}
+
 static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *prog, uint32_t layout)
 {
 	const struct pipe_viewport_state *vp = &ctx->viewport;
@@ -325,7 +331,7 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 	}
 	mbx_emit(ctx, MBX_CH_TA, layout);
 	mbx_emit_f(ctx, MBX_CH_TA, vp->scale[0]);	/* x scale, x offset, y offset, y scale */
-	mbx_emit_f(ctx, MBX_CH_TA, vp->translate[0]);
+	mbx_emit_f(ctx, MBX_CH_TA, vp->scale[0]);	/* the x offset is the x scale (the program moves the position by the difference: vp_slot) */
 	mbx_emit_f(ctx, MBX_CH_TA, vp->translate[1]);
 	mbx_emit_f(ctx, MBX_CH_TA, vp->scale[1]);
 	mbx_emit_f(ctx, MBX_CH_TA, vp->scale[2]);	/* depth: scale, offset, the unit of the offset */
@@ -373,12 +379,14 @@ static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *
 		mbx_emit(ctx, MBX_CH_TA, 0xa0000000 | (prog->nconst - 1));
 		for (i = 0; i < prog->nconst; i++) {
 			for (unsigned c = 0; c < 4; c++) {
-				if (prog->scissor && (int)i >= prog->scissor_slot && (int)i < prog->scissor_slot + 4) {
+				if ((int)i == prog->vp_slot) {
+					mbx_emit_f(ctx, MBX_CH_TA, c == 0 ? vp_dx(&ctx->viewport) : 0.0f);
+				} else if (prog->scissor && (int)i >= prog->scissor_slot && (int)i < prog->scissor_slot + 4) {
 					/* plane k of the window-space rectangle: a * clip x (or y) + b * clip w >= 0, with
 					 * x_win = x / w * scale + translate (the viewport the header sends) */
 					const struct pipe_viewport_state *vp = &ctx->viewport;
 					unsigned k = i - prog->scissor_slot;
-					float sc = k < 2 ? vp->scale[0] : vp->scale[1], tr = k < 2 ? vp->translate[0] : vp->translate[1];
+					float sc = k < 2 ? vp->scale[0] : vp->scale[1], tr = k < 2 ? vp->scale[0] : vp->translate[1];	/* x: the position is already shifted */
 					float lo = k < 2 ? ctx->scissor.minx : ctx->scissor.miny, hi = k < 2 ? ctx->scissor.maxx : ctx->scissor.maxy;
 					float v[4] = { 0, 0, 0, 0 };
 
@@ -519,7 +527,9 @@ static void cpu_constants(struct mbx_context *ctx, const struct mbx_vgp_program 
 		fs_uniforms = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[1].buffer)->bo) + ctx->cb[1].buffer_offset);
 	for (unsigned i = 0; i < prog->nconst && i < MBX_MAX_CONSTS; i++)
 		for (unsigned c = 0; c < 4; c++) {
-			if (prog->nfsu && (int)i >= prog->fsu_base && (int)i < prog->fsu_base + (int)prog->nfsu)
+			if ((int)i == prog->vp_slot)
+				k[i][c] = c == 0 ? vp_dx(&ctx->viewport) : 0.0f;
+			else if (prog->nfsu && (int)i >= prog->fsu_base && (int)i < prog->fsu_base + (int)prog->nfsu)
 				k[i][c] = fs_uniforms ? fs_uniforms[prog->fsu_vec[i - prog->fsu_base] * 4 + c] : 0.0f;
 			else if (i < prog->nuniform)
 				k[i][c] = uniforms ? uniforms[i * 4 + c] : 0.0f;
