@@ -1956,6 +1956,68 @@ static int t_tex_offset_probe(char *why)
 	return 1;
 }
 
+/* a probe, not a check: the alpha that comes back from an opaque black RGBA texture made three ways (uploaded, cleared in a framebuffer, drawn into
+ * as a black quad), sampled with NEAREST and LINEAR onto the main target; and a non-black texel for comparison (want alpha 255 everywhere) */
+static int t_black_alpha_probe(char *why)
+{
+	GLuint t, f;
+	static const char *how[] = { "uploaded", "glClear", "black quad", "dark grey quad" };
+
+	for (int mode = 0; mode < 4; mode++)
+		for (int filter = 0; filter < 2; filter++) {
+			struct px a;
+
+			glGenTextures(1, &t);
+			glBindTexture(GL_TEXTURE_2D, t);
+			if (mode == 0) {
+				unsigned char px[8 * 8 * 4] = { 0 };
+
+				for (int i = 0; i < 64; i++)
+					px[i * 4 + 3] = 255;
+				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+			} else {
+				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 8, 8, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+			}
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter ? GL_LINEAR : GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter ? GL_LINEAR : GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			if (mode > 0) {
+				glGenFramebuffers(1, &f);
+				glBindFramebuffer(GL_FRAMEBUFFER, f);
+				glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t, 0);
+				glViewport(0, 0, 8, 8);
+				if (mode == 1) {
+					glClearColor(0, 0, 0, 1);
+					glClear(GL_COLOR_BUFFER_BIT);
+				} else {
+					float v = mode == 2 ? 0.0f : 0.2f;
+
+					glDisable(GL_BLEND);
+					glUseProgram(prog);
+					const float q[] = { -1, -1, v, v, v, 1,  1, -1, v, v, v, 1,  1, 1, v, v, v, 1,
+							    -1, -1, v, v, v, 1,  1, 1, v, v, v, 1,  -1, 1, v, v, v, 1 };
+
+					draw(GL_TRIANGLES, q, 6);
+				}
+				glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
+				glDeleteFramebuffers(1, &f);
+				glViewport(0, 0, W, H);
+			}
+			begin();
+			glUseProgram(prog_tex);
+			glBindTexture(GL_TEXTURE_2D, t);
+			glUniform1i(glGetUniformLocation(prog_tex, "tex"), 0);
+			quad(0, 0, 1, 1, 1, 1, 1);
+			a = probe(W / 2, H / 2);
+			printf("probe alpha: %-14s %-7s -> r %3d g %3d b %3d a %3d (want a 255)\n", how[mode], filter ? "LINEAR" : "NEAREST", a.c[0], a.c[1], a.c[2], a.c[3]);
+			glUseProgram(prog);
+			glDeleteTextures(1, &t);
+		}
+	(void)why;
+	return 1;
+}
+
 /* dEQP's vertex-array shader: the colour is a scalar uniform times a constant vec3 (the other lanes of the uniform's slot are zero) */
 static int t_vs_scalar_colour(char *why)
 {
@@ -2255,6 +2317,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "big_target", t_big_target },
 	{ "tex_offset", t_tex_offset },
 	{ "tex_offset_probe", t_tex_offset_probe },
+	{ "black_alpha_probe", t_black_alpha_probe },
 	{ "vs_scalar_colour", t_vs_scalar_colour },
 	{ "mip_chip", t_mip_chip },
 	{ "trilinear", t_trilinear },
