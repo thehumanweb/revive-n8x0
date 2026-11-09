@@ -1127,6 +1127,54 @@ static int fs_terms(struct fsp *p, nir_scalar s, struct fs_term *out)
 }
 
 /* The degree in the varyings (the coefficient must be affine) and whether the expression subtracts */
+static int fs_degree(const struct mbx_fs_info *i, int n, bool *subtracts);
+/*
+ * A step in the colour: a comparison, a fract or a select whose input depends on a varying. The grid mode (README assumption 48) evaluates the
+ * colour at the corners of cells of about 8 pixels and the chip interpolates between them: right for smooth functions, a ramp where a step
+ * should be (dEQP shaders.operator.float_compare.*_fragment). Such a shader is left to the CPU, which draws it exactly.
+ */
+static bool fs_has_step(const struct mbx_fs_info *i, int n)
+{
+	const struct mbx_fs_node *nd = &i->node[n];
+	bool sub;
+
+	switch (nd->op) {
+	case FSN_CONST: case FSN_UNI: case FSN_VAR:
+		return false;
+	case FSN_NEG:
+		return fs_has_step(i, nd->a);
+	case FSN_ADD: case FSN_SUB: case FSN_MUL:
+		return fs_has_step(i, nd->a) || fs_has_step(i, nd->b);
+	case FSN_OP: {
+		unsigned nin = nir_op_infos[nd->loc].num_inputs;
+		const uint16_t ops[3] = { nd->a, nd->b, nd->c };
+
+		for (unsigned k = 0; k < nin && k < 3; k++) {
+			if (fs_has_step(i, ops[k]))
+				return true;
+		}
+		/* a comparison with a constant is a conversion to bool (vec to bvec), the dEQP conversion and swizzle shaders feed it constant varyings */
+		bool vs_const = (nd->loc == nir_op_slt || nd->loc == nir_op_sge || nd->loc == nir_op_seq || nd->loc == nir_op_sne) &&
+				(i->node[nd->a].op == FSN_CONST || i->node[nd->b].op == FSN_CONST);
+		if (!vs_const && (nd->loc == nir_op_slt || nd->loc == nir_op_sge || nd->loc == nir_op_seq || nd->loc == nir_op_sne ||
+				  nd->loc == nir_op_ffract || nd->loc == nir_op_fcsel))
+			for (unsigned k = 0; k < nin && k < 3; k++) {
+				sub = false;
+				const struct mbx_fs_node *in = &i->node[ops[k]];
+
+				/* the result of another comparison is 0 or 1 (a boolean): comparing booleans is not a step of the colour */
+				if (in->op == FSN_OP && (in->loc == nir_op_slt || in->loc == nir_op_sge || in->loc == nir_op_seq || in->loc == nir_op_sne))
+					continue;
+				if (fs_degree(i, ops[k], &sub) > 0)
+					return true;
+			}
+		return false;
+	}
+	default:
+		return false;
+	}
+}
+
 static int fs_degree(const struct mbx_fs_info *i, int n, bool *subtracts)
 {
 	const struct mbx_fs_node *nd = &i->node[n];
@@ -1341,6 +1389,8 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 		bool sub = false, sub_off = false;
 
 		if (L->prim >= 0) {
+			if (fs_has_step(info, L->prim))
+				return;	/* a step in the colour: the grid would blur it, the CPU draws it */
 			if (fs_degree(info, L->prim, &sub) > 1)
 				info->grid = true;	/* not affine in the varyings: evaluated on a fine grid, the hardware interpolates between its corners */
 			if (L->tex && info->node[L->prim].op == FSN_CONST &&
@@ -1348,6 +1398,8 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 				return;	/* the primary colour is clamped to 0..1 on the chip: it cannot scale a texel up */
 		}
 		if (L->off >= 0) {
+			if (fs_has_step(info, L->off))
+				return;
 			if (fs_degree(info, L->off, &sub_off) > 1)
 				info->grid = true;
 			if (sub_off)

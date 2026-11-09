@@ -508,10 +508,14 @@ static void project(const struct mbxemu *e, const struct cvtx *c, struct vtx *o)
 		float *d = k ? o->off : o->col;
 		const float *x = c->o[k];
 
-		d[0] = colour8(x[2]);
-		d[1] = colour8(x[1]);
-		d[2] = colour8(x[0]);
-		d[3] = colour8(x[3]);
+		static int noclamp = -1;
+
+		if (noclamp < 0)
+			noclamp = getenv("MBX_SIM_NOCLAMP") != NULL;	/* an experiment: how many dEQP failures are the vertex clamp of o1 and o2 */
+		d[0] = noclamp ? x[2] : colour8(x[2]);
+		d[1] = noclamp ? x[1] : colour8(x[1]);
+		d[2] = noclamp ? x[0] : colour8(x[0]);
+		d[3] = noclamp ? x[3] : colour8(x[3]);
 	}
 	for (k = 0; k < 2; k++) {
 		o->tc[k][0] = c->o[2 + k][0];

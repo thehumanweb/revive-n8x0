@@ -991,3 +991,15 @@ Not done: the clusters above, the unit (the shaders group on the chip needs many
 
 - Sources: host sim dEQP runs, `MBX_DEBUG` (`draw 0: N vertices`, stream words), `mesa/src/gallium/drivers/mbx/mbx_draw.c`, TODO.md.
 
+
+### dEQP shaders: a step in the colour goes to the CPU; booleans in the fallback (9493 of 10252)
+
+The fragment grid mode evaluates the colour at the corners of cells of about 8 pixels and the chip interpolates between them, so a comparison, `fract` or select of a varying-dependent value became a ramp (`operator.float_compare.*_fragment`). `fs_has_step` now leaves such a shader unmatched and the CPU fallback draws it (108 of 108 float_compare). Comparisons against a constant (a vec to bvec conversion) and comparisons of another comparison's result (booleans) are not steps; without that exemption the swizzle and conversion shaders went to the CPU and failed. The fallback also lowers 1-bit booleans to float before the int-to-float pass. A step shader is now slow on the ARM11 (CPU draw), a trade for exactness.
+
+`MBX_SIM_NOCLAMP=1` (model switch in `mbx/ta.c`, kept as a debug aid, default off) removes the chip's vertex clamp and 8-bit quantisation of o1/o2: 9697 of 10252 on the earlier build, so that limit (README, vertex clamp) accounts for about 357 failures; it is the chip's behaviour and stays modelled.
+
+Results on the sim (pbuffer, watchdog on): `shaders` 9493 of 10252 (707 fail, 52 not supported); swizzles 615/648, conversions 524/524; `gles2_feat` 67/67. Left: binary_operator 50, matrix_subscript 43, vector_swizzles 41, angle_and_trigonometry 40, matrix.mul 36, tmp_array 32, random.trigonometric 31, loops ~62.
+
+Found while doing this: `build-host.sh` does not copy edited driver sources into `build/mesa`; after an edit run `mesa/scripts/prepare-mesa.sh --sync` and `mesa/scripts/ninja-host.sh`, else run-deqp.sh tests a stale binary.
+
+- Sources: host sim dEQP runs, `MBX_DUMP_NIR`, `mesa/src/gallium/drivers/mbx/mbx_compile.c`, `mbx_program.c`. Not run on the unit.
