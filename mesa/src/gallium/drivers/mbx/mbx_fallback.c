@@ -258,10 +258,14 @@ static void *fb_shader(struct mbx_context *ctx, struct mbx_shader *so)
 void mbx_fallback_shader_delete(struct mbx_context *ctx, struct mbx_shader *so)
 {
 	if (so->sp_handle && ctx->sp) {
-		if (so->stage == MESA_SHADER_VERTEX)
+		/* softpipe keeps the shader it was last given bound: it is let go of before the shader is freed */
+		if (so->stage == MESA_SHADER_VERTEX) {
+			ctx->sp->bind_vs_state(ctx->sp, NULL);
 			ctx->sp->delete_vs_state(ctx->sp, so->sp_handle);
-		else
+		} else {
+			ctx->sp->bind_fs_state(ctx->sp, NULL);
 			ctx->sp->delete_fs_state(ctx->sp, so->sp_handle);
+		}
 	}
 	if (so->nir_orig)
 		ralloc_free(so->nir_orig);
@@ -544,6 +548,16 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 	sp->bind_rasterizer_state(sp, NULL);
 	sp->bind_depth_stencil_alpha_state(sp, NULL);
 	sp->bind_vertex_elements_state(sp, NULL);
+	/* nothing of this draw stays bound in softpipe: the sampler states and views are deleted below, the shaders may be next */
+	{
+		void *no_samplers[MBX_MAX_SAMPLERS] = { NULL };
+		struct pipe_sampler_view *no_views[MBX_MAX_SAMPLERS] = { NULL };
+
+		sp->bind_sampler_states(sp, MESA_SHADER_FRAGMENT, 0, MBX_MAX_SAMPLERS, no_samplers);
+		sp->set_sampler_views(sp, MESA_SHADER_FRAGMENT, 0, 0, MBX_MAX_SAMPLERS, no_views);
+	}
+	sp->bind_vs_state(sp, NULL);
+	sp->bind_fs_state(sp, NULL);
 	sp->delete_blend_state(sp, blend);
 	sp->delete_rasterizer_state(sp, rast);
 	sp->delete_depth_stencil_alpha_state(sp, dsa);

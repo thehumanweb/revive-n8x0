@@ -89,8 +89,18 @@ static bool mbx_screen_is_format_supported(struct pipe_screen *pscreen, enum pip
 		return false;
 	if (target >= PIPE_MAX_TEXTURE_TYPES)
 		return false;
-	if (target == PIPE_TEXTURE_CUBE && (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)))
-		return false;		/* a cube map is only sampled (on the CPU) */
+	if (target == PIPE_TEXTURE_CUBE && (usage & (PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)))
+		return false;
+	if (target == PIPE_TEXTURE_CUBE && (usage & PIPE_BIND_RENDER_TARGET)) {
+		/* a cube map is only sampled (on the CPU). Mesa asks for a render target format first when it picks the format of a texture
+		 * uploaded as GL_RGBA with a 4_4_4_4, 5_5_5_1 or 8_8_8_8 type or as 565 (it treats those as renderbuffer formats and does not
+		 * try again without), and the 2D map then gets ARGB8888: the cube map gets the same answer (rendering into a face is not
+		 * supported; Mesa checks colour-renderability with the 2D target, so this does not make a face an FBO attachment) */
+		if (format != PIPE_FORMAT_B8G8R8A8_UNORM && format != PIPE_FORMAT_B8G8R8X8_UNORM && format != PIPE_FORMAT_B5G6R5_UNORM &&
+		    format != PIPE_FORMAT_B4G4R4A4_UNORM && format != PIPE_FORMAT_B5G5R5A1_UNORM)
+			return false;
+		usage &= ~PIPE_BIND_RENDER_TARGET;
+	}
 
 	if (usage & PIPE_BIND_VERTEX_BUFFER) {
 		switch (format) {
@@ -217,7 +227,7 @@ static void mbx_init_screen_caps(struct mbx_screen *screen)
 	caps->fs_coord_pixel_center_half_integer = true;
 	caps->uma = true;
 	caps->graphics = true;
-	caps->max_texture_2d_size = 2048;
+	caps->max_texture_2d_size = 1024;	/* a 2048 wide texture does not sample right (word B's stride field is 7 bits of 16 texels: dEQP texture.size.2d.2048x2048_*, on the sim) */
 	caps->max_texture_cube_levels = 9;	/* 256: cube maps are sampled on the CPU (softpipe) */
 	caps->max_texture_3d_levels = 0;
 	caps->max_varyings = 8;
