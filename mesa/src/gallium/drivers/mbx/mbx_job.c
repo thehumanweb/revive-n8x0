@@ -325,7 +325,9 @@ void mbx_job_flush(struct mbx_context *ctx)
 	s.r_6dc = zclear | 1;			/* as GLES writes 1.0: 0x3f800001 */
 	/* a job that loads must load whether or not it tests depth (its clear object no longer writes depth: without the load the tile's
 	 * depth is NaN and nothing draws); one that only tests stores when something needs the depth afterwards */
-	use_ext = job->zr && (job->zload || (job->zuse && ctx->zkeep));
+	use_ext = job->zr && (job->zload || (job->zuse && (ctx->zkeep || !ctx->frame_end)));
+	mbx_dbg("flush: depth: zr %p zvalid %d zload %d zuse %d zkeep %d frame_end %d -> external Z %d (clear depth %g)", (void *)job->zr,
+		job->zr ? job->zr->zvalid : 0, job->zload, job->zuse, ctx->zkeep, ctx->frame_end, use_ext, z);
 	if (job->zuse && job->zr && !use_ext)
 		job->zr->zvalid = false;	/* the depth stays on chip and is gone with the job: the memory no longer matches */
 	if (use_ext && !MBX_ENV_SET("MBX_NO_ZCARRY") && mbx_z_ensure(ctx, job->zr)) {

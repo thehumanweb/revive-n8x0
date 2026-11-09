@@ -45,7 +45,9 @@ static void mbx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fenc
 	struct mbx_context *ctx = mbx_context(pctx);
 	uint64_t t0 = mbx_prof_level() ? prof_now_us() : 0;
 
+	ctx->frame_end = flags & PIPE_FLUSH_END_OF_FRAME;
 	mbx_job_flush(ctx);
+	ctx->frame_end = false;
 	if (t0)
 		mbx_prof_note(MBX_PROF_FLUSH, prof_now_us() - t0);
 	if (fence) {

@@ -84,6 +84,8 @@ struct mbx_context {
 		uint8_t *fail;			/* the pixels the stencil rejected */
 	} smask;
 	bool zkeep;			/* the job being flushed must leave its depth in memory: a CPU draw or a framebuffer switch follows */
+	bool frame_end;			/* the flush is the end of a frame (a buffer swap): the depth is not needed afterwards unless zkeep says so; any other flush
+					 * (a read, a delete, glFlush) may be followed by more draws that test against it */
 	struct pipe_framebuffer_state fb;
 	struct pipe_viewport_state viewport;
 	struct pipe_scissor_state scissor;

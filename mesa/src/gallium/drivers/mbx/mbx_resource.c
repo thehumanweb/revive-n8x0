@@ -574,7 +574,11 @@ void mbx_texture_nudge(struct mbx_context *ctx, struct mbx_resource *rsc)
 /* The window system is about to use a resource (a swap): what was drawn into it is rendered first */
 static void mbx_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
 {
-	mbx_flush_for_resource(mbx_context(pctx), mbx_resource(prsc));
+	struct mbx_context *ctx = mbx_context(pctx);
+
+	ctx->frame_end = true;		/* the buffer is about to go to the window system */
+	mbx_flush_for_resource(ctx, mbx_resource(prsc));
+	ctx->frame_end = false;
 }
 
 /* Same-format, unscaled copies only, through the CPU; the rest is not done yet */
