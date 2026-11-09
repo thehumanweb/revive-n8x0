@@ -27,6 +27,8 @@ struct mbx_shader {
 	struct nir_shader *nir;		/* owned */
 	struct mbx_fs_info fs_info;	/* fragment shaders: what the fixed pipe does with it */
 	struct nir_shader *nir_orig;	/* a copy from before our lowering, for the CPU fallback */
+	uint64_t int_slots[2];		/* vertex shaders: the constant vec4s that hold integers or booleans (they are stored as floats; the CPU draw turns them
+					 * back, softpipe has integers: dEQP shaders.indexing ...dynamic_loop_read looped for ever on the bits of 4.0) */
 	void *sp_handle;		/* its softpipe shader, made at the first fallback draw */
 	/* fragment shaders the matcher rejects that read uniforms (Weston's channel swizzle on GLES2): matched again per draw with the
 	 * whole-number uniforms (indices, switches, 0 and 1) folded in as constants (mbx_fs_specialize) */

@@ -226,6 +226,18 @@ static void mbx_fallback_ints_to_float(nir_shader *n)
 			if (!nir_src_is_const(*off))
 				continue;
 			lc = nir_def_as_load_const(off->ssa);
+			/* a constant that is also used as a float (the 1 of a loop's `i++` is an array offset too: dEQP indexing.tmp_array
+			 * ...dynamic_loop_read_fragment) is not changed for everyone: the offset gets a copy of its own */
+			if (!list_is_singular(&lc->def.uses)) {
+				nir_load_const_instr *nc = nir_load_const_instr_create(n, lc->def.num_components, lc->def.bit_size);
+
+				nc->value[0] = lc->value[0];
+				for (unsigned k = 0; k < lc->def.num_components; k++)
+					nc->value[k] = lc->value[k];
+				nir_instr_insert_before(&in->instr, &nc->instr);
+				nir_src_rewrite(off, &nc->def);
+				lc = nc;
+			}
 			for (unsigned k = 0; k < lc->def.num_components; k++) {
 				float f = uif(lc->value[k].u32);
 
@@ -234,6 +246,30 @@ static void mbx_fallback_ints_to_float(nir_shader *n)
 			}
 		}
 	}
+}
+
+/* The constant vec4 slots of a uniform's type that hold integers or booleans, struct fields and array elements one after another */
+static void mark_int_slots(struct mbx_shader *so, const struct glsl_type *type, unsigned *slot)
+{
+	if (glsl_type_is_array(type)) {
+		const struct glsl_type *e = glsl_get_array_element(type);
+
+		for (unsigned i = 0; i < glsl_get_length(type); i++)
+			mark_int_slots(so, e, slot);
+		return;
+	}
+	if (glsl_type_is_struct(type)) {
+		for (unsigned i = 0; i < glsl_get_length(type); i++)
+			mark_int_slots(so, glsl_get_struct_field(type, i), slot);
+		return;
+	}
+	unsigned n = glsl_count_attribute_slots(type, false);
+
+	if (glsl_base_type_is_integer(glsl_get_base_type(type)) || glsl_type_is_boolean(type))
+		for (unsigned k = 0; k < n; k++)
+			if (*slot + k < 128)
+				so->int_slots[(*slot + k) / 64] |= 1ull << ((*slot + k) % 64);
+	*slot += n;
 }
 
 static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shader_state *templ)
@@ -248,7 +284,17 @@ static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shad
 	}
 	so->nir_orig = nir_shader_clone(NULL, templ->ir.nir);	/* the fallback's, before our lowering */
 	if (templ->ir.nir->info.stage == MESA_SHADER_FRAGMENT)
+	{
 		mbx_fallback_ints_to_float(so->nir_orig);
+		if (getenv("MBX_DUMP_NIR"))
+			nir_print_shader(so->nir_orig, stderr);
+	}
+	else if (templ->ir.nir->info.stage == MESA_SHADER_VERTEX)
+		nir_foreach_variable_with_modes(var, so->nir_orig, nir_var_uniform) {
+			unsigned slot = var->data.driver_location;
+
+			mark_int_slots(so, var->type, &slot);
+		}
 	so->nir = templ->ir.nir;	/* ours now */
 	so->stage = so->nir->info.stage;
 	mbx_nir_prepare(so->nir);

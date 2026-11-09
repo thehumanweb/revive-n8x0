@@ -498,6 +498,8 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 		vb[i].buffer.user = buffer_ptr(&ctx->vb[i]);
 	}
 	sp->set_vertex_buffers(sp, ctx->num_vb, vb);
+	float vs_consts[MBX_MAX_CONSTS * 4];	/* the vertex shader's constants with its integers as integers (alive until the draw) */
+
 	for (i = 0; i < 2; i++) {
 		struct pipe_constant_buffer cb = { .buffer_size = ctx->cb[i].buffer_size };
 
@@ -505,6 +507,19 @@ bool mbx_fallback_draw(struct mbx_context *ctx, const struct pipe_draw_info *inf
 			cb.user_buffer = (const uint8_t *)ctx->cb[i].user_buffer + ctx->cb[i].buffer_offset;
 		else if (ctx->cb[i].buffer)
 			cb.user_buffer = (const uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[i].buffer)->bo) + ctx->cb[i].buffer_offset;
+		if (i == 0 && cb.user_buffer && ctx->vs && (ctx->vs->int_slots[0] | ctx->vs->int_slots[1])) {
+			unsigned n = MIN2(cb.buffer_size / 16, MBX_MAX_CONSTS);
+
+			memcpy(vs_consts, cb.user_buffer, (size_t)n * 16);
+			for (unsigned k = 0; k < n; k++)
+				if (ctx->vs->int_slots[k / 64] >> (k % 64) & 1)
+					for (unsigned c = 0; c < 4; c++) {
+						int32_t v = (int32_t)vs_consts[k * 4 + c];
+
+						memcpy(&vs_consts[k * 4 + c], &v, 4);
+					}
+			cb.user_buffer = vs_consts;
+		}
 		sp->set_constant_buffer(sp, i ? MESA_SHADER_FRAGMENT : MESA_SHADER_VERTEX, 0, &cb);
 	}
 	for (i = 0; i < MBX_MAX_SAMPLERS; i++) {
