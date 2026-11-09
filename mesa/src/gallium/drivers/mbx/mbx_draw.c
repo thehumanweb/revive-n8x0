@@ -627,6 +627,54 @@ static bool split_job(struct mbx_context *ctx)
 	return true;
 }
 
+/* The words that open an object: its primitive word, half the width or size of a line or point, the sections word */
+static void emit_prim_header(struct mbx_context *ctx, const struct mbx_vgp_program *prog, uint32_t prim)
+{
+	mbx_emit(ctx, MBX_CH_TA, prim | hw_cull_bits(ctx));
+	if (prim >> 28 == 0x6 || prim >> 28 == 0xe) {
+		/* lines and points carry half their width or size (one for the object) */
+		float w = ctx->rast ? (prim >> 28 == 0xe ? ctx->rast->point_size : ctx->rast->line_width) : 1.0f;
+
+		if (prim >> 28 == 0xe && prog->psize_kind == MBX_PSIZE_IMM) {
+			w = prog->psize;
+		} else if (prim >> 28 == 0xe && prog->psize_kind == MBX_PSIZE_UNIFORM) {
+			const float *u = NULL;
+
+			if (ctx->cb[0].user_buffer)
+				u = (const float *)((const uint8_t *)ctx->cb[0].user_buffer + ctx->cb[0].buffer_offset);
+			else if (ctx->cb[0].buffer)
+				u = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[0].buffer)->bo) + ctx->cb[0].buffer_offset);
+			if (u)
+				w = u[prog->psize_slot * 4 + prog->psize_lane];
+		}
+		mbx_emit_f(ctx, MBX_CH_TA, CLAMP(w, 1.0f, 32.0f) * 0.5f);
+	}
+	mbx_emit(ctx, MBX_CH_TA, prog->sections);
+}
+
+/*
+ * A draw whose stream has grown past the soft limit (dEQP's shader tests draw a grid of 50000 vertices, 600 K words; the kernel takes 256 K
+ * and the parameter buffer a few hundred pages) is cut between two primitives of a list: the object ends, the job is rendered (its depth
+ * kept) and the next one opens the same object again. false: no job could be opened.
+ */
+static bool split_draw(struct mbx_context *ctx, const struct mbx_vgp_program *prog, uint32_t layout, uint32_t prim)
+{
+	mbx_emit(ctx, MBX_CH_CTL, 1);
+	ctx->job.ndraws++;
+	ctx->zkeep = true;
+	mbx_job_flush(ctx);
+	ctx->zkeep = false;
+	if (!mbx_job_begin(ctx))
+		return false;
+	for (unsigned un = 0; un < prog->ntex; un++)
+		if ((prog->units >> un & 1) && ctx->views[un] && ctx->views[un]->texture)
+			mbx_job_use_texture(ctx, unit_texture(ctx, un));
+	emit_header(ctx, prog, layout);
+	emit_program(ctx, prog);
+	emit_prim_header(ctx, prog, prim);
+	return true;
+}
+
 static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_info *info,
 			 unsigned drawid_offset, const struct pipe_draw_indirect_info *indirect,
 			 const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
@@ -636,7 +684,8 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 	uint8_t *vb_ptr[PIPE_MAX_ATTRIBS] = { 0 };
 	uint32_t prim = hw_prim_word(info->mode);
 	const void *indices = NULL;
-	unsigned comps[MBX_MAX_ATTRS], d;
+	unsigned comps[MBX_MAX_ATTRS], d, list_unit = 0;
+	bool can_split = false;
 	uint32_t layout;
 
 	if (indirect && indirect->buffer) {
@@ -852,27 +901,12 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 		mbx_dbg("draw %u: %u vertices", d, draws[d].count);
 		mbx_dbg("cull: face %d front_ccw %d scale1 %g -> bits %08x", ctx->rast ? ctx->rast->cull_face : -1,
 			ctx->rast ? ctx->rast->front_ccw : -1, ctx->viewport.scale[1], hw_cull_bits(ctx));
-		mbx_emit(ctx, MBX_CH_TA, prim | hw_cull_bits(ctx));
-		if (prim >> 28 == 0x6 || prim >> 28 == 0xe) {
-			/* lines and points carry half their width or size (one for the object) */
-			float w = ctx->rast ? (prim >> 28 == 0xe ? ctx->rast->point_size : ctx->rast->line_width) : 1.0f;
-
-			if (prim >> 28 == 0xe && prog->psize_kind == MBX_PSIZE_IMM) {
-				w = prog->psize;
-			} else if (prim >> 28 == 0xe && prog->psize_kind == MBX_PSIZE_UNIFORM) {
-				const float *u = NULL;
-
-				if (ctx->cb[0].user_buffer)
-					u = (const float *)((const uint8_t *)ctx->cb[0].user_buffer + ctx->cb[0].buffer_offset);
-				else if (ctx->cb[0].buffer)
-					u = (const float *)((uint8_t *)mbx_bo_map(mbx_resource(ctx->cb[0].buffer)->bo) +
-							    ctx->cb[0].buffer_offset);
-				if (u)
-					w = u[prog->psize_slot * 4 + prog->psize_lane];
-			}
-			mbx_emit_f(ctx, MBX_CH_TA, CLAMP(w, 1.0f, 32.0f) * 0.5f);
+		emit_prim_header(ctx, prog, prim);
+		{
+			/* lists can be cut after any whole primitive; strips, fans and loops are not cut; a stencil-tested draw is one job */
+			list_unit = info->mode == MESA_PRIM_TRIANGLES ? 3 : info->mode == MESA_PRIM_LINES ? 2 : info->mode == MESA_PRIM_POINTS ? 1 : 0;
+			can_split = list_unit && !(ctx->dsa && ctx->fb.zsbuf.texture && (ctx->dsa->stencil[0].enabled || ctx->dsa->stencil[1].enabled));
 		}
-		mbx_emit(ctx, MBX_CH_TA, prog->sections);
 		for (i = 0; i < draws[d].count; i++) {
 			unsigned idx = draws[d].start + i;
 
@@ -887,6 +921,9 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 			emit_vertex(ctx, comps, idx, info->start_instance, vb_ptr);
 			if (info->mode == MESA_PRIM_LINES && (i & 1) && i + 1 < draws[d].count)
 				mbx_emit(ctx, MBX_CH_CTL, 0);	/* the next segment starts a new strip */
+			if (can_split && (i + 1) % list_unit == 0 && i + 1 < draws[d].count && ctx->job.n > JOB_SOFT_WORDS &&
+			    !split_draw(ctx, prog, layout, prim))
+				return;
 		}
 		mbx_emit(ctx, MBX_CH_CTL, 1);		/* the object ends */
 		mbx_dbg("draw %u: done, stream %u words", d, ctx->job.n);
