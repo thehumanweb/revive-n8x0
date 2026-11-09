@@ -37,6 +37,8 @@ struct mbx_resource {
 	int dmabuf_fd;				/* an imported buffer: a dup of its dma-buf, for waiting on its writers */
 	bool imported;				/* a buffer another process or device made (dmabuf import): written behind our back, so no copies of it are kept */
 	bool bind_rt;				/* made with a render target bind (softpipe then shares its memory) */
+	bool gpu_written;			/* a draw or a clear of the chip went into it (not only the CPU: uploads do not count) */
+	uint32_t nudge_wver;			/* the version whose black texels were last given a blue of 1 (mbx_texture_nudge) */
 	uint32_t wver, swap_wver;		/* CPU writes counted; the version the red-blue swapped copy was made from */
 	struct pipe_resource *swap;		/* the texture with red and blue exchanged, for shaders that swizzle them (mbx_texture_swapped) */
 	struct pipe_resource *sp_twin;		/* the CPU fallback's view of it (mbx_fallback.c) */
@@ -81,5 +83,6 @@ void mbx_flush_for_resource(struct mbx_context *ctx, struct mbx_resource *rsc);
 void mbx_resource_wait(struct mbx_screen *screen, struct mbx_resource *rsc);
 /* A copy of a linear B8G8R8A8 texture with red and blue exchanged (made again when the texture was written), or NULL */
 struct mbx_resource *mbx_texture_swapped(struct mbx_context *ctx, struct mbx_resource *rsc);
+void mbx_texture_nudge(struct mbx_context *ctx, struct mbx_resource *rsc);
 
 #endif

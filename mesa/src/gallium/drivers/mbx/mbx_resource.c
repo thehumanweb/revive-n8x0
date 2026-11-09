@@ -546,6 +546,31 @@ struct mbx_resource *mbx_texture_swapped(struct mbx_context *ctx, struct mbx_res
 	return sw;
 }
 
+/*
+ * The chip samples an ARGB8888 texel whose R, G and B are all zero with alpha 0, whatever its alpha (README assumption 55). Uploads get a
+ * blue of 1 for black (nudge_black); a texture the chip rendered into (a clear, a draw) is given the same when it is sampled, in place,
+ * once for each version of it (wver). CPU-written textures (shm buffers, uploads) are not scanned: only what the GPU wrote.
+ */
+void mbx_texture_nudge(struct mbx_context *ctx, struct mbx_resource *rsc)
+{
+	uint32_t *p;
+	uint64_t n;
+
+	if (!rsc->gpu_written || rsc->nudge_wver == rsc->wver || !rsc->tex || rsc->twiddled || rsc->cube || rsc->scanout || rsc->imported ||
+	    rsc->base.format != PIPE_FORMAT_B8G8R8A8_UNORM)
+		return;
+	mbx_flush_for_resource(ctx, rsc);	/* a render into it still recorded */
+	mbx_resource_wait(ctx->screen, rsc);
+	p = mbx_bo_map(rsc->bo);
+	if (!p)
+		return;
+	n = rsc->size / 4;
+	for (uint64_t i = 0; i < n; i++)
+		if (!(p[i] & 0x00ffffffu))
+			p[i] |= 1;
+	rsc->nudge_wver = rsc->wver;
+}
+
 /* The window system is about to use a resource (a swap): what was drawn into it is rendered first */
 static void mbx_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
 {

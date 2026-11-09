@@ -217,6 +217,7 @@ static struct mbx_resource *unit_texture(struct mbx_context *ctx, unsigned unit)
 	if (!view || !view->texture)
 		return NULL;
 	tr = mbx_resource(view->texture);
+	mbx_texture_nudge(ctx, tr);
 	if (ctx->fsi && ctx->fsi->swap_rb)
 		return mbx_texture_swapped(ctx, tr);
 	return tr;
@@ -652,8 +653,12 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 		(void *)ctx->vs, (void *)ctx->fs, (void *)ctx->velems, ctx->viewport.scale[0]);
 	if (!ctx->vs || !ctx->fs || !ctx->velems || !ctx->viewport.scale[0])
 		return;
-	if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture)
-		mbx_resource(ctx->fb.cbufs[0].texture)->wver++;	/* a texture rendered into: its swapped copy is stale */
+	if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture) {
+		struct mbx_resource *cr = mbx_resource(ctx->fb.cbufs[0].texture);
+
+		cr->wver++;		/* a texture rendered into: its swapped copy is stale */
+		cr->gpu_written = true;
+	}
 	for (unsigned u = 0; u < MBX_MAX_SAMPLERS; u++)
 		if (ctx->clear.pending && ctx->views[u] && ctx->views[u]->texture == &ctx->clear.rsc->base)
 			mbx_clear_settle(ctx);	/* sampling a texture whose clear is still pending */
