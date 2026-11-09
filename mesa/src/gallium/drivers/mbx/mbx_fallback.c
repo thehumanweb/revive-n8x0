@@ -578,7 +578,7 @@ static void twin_readback(struct mbx_context *ctx, struct mbx_resource *rsc, uns
 	unsigned bpp = util_format_get_blocksize(rsc->base.format), y;
 	uint8_t *dst = mbx_bo_map(rsc->bo), *src;
 
-	if (!dst || !rsc->tex)
+	if (!dst || (!rsc->tex && !rsc->cube))	/* a cube map does not have the flag (twin_texture reads it before it looks at the flag too) */
 		return;
 	src = sp->texture_map(sp, rsc->sp_twin, level, PIPE_MAP_READ, box, &xfer);
 	if (!src)
@@ -589,6 +589,8 @@ static void twin_readback(struct mbx_context *ctx, struct mbx_resource *rsc, uns
 		rsc->sp_dirty = false;
 		return;
 	}
+	if (rsc->cube)		/* the faces follow one another in a level (as twin_texture reads them) */
+		dst += (uint64_t)box->z * u_minify(rsc->base.height0, level) * rsc->level_stride[level];
 	for (y = 0; y < (unsigned)box->height; y++)
 		memcpy(dst + rsc->level_off[level] + (uint64_t)(box->y + y) * rsc->level_stride[level] + (uint64_t)box->x * bpp,
 		       src + (uint64_t)y * xfer->stride, (uint64_t)box->width * bpp);
@@ -612,7 +614,7 @@ bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *inf
 	mbx_resource_wait(ctx->screen, src);
 	mbx_resource_wait(ctx->screen, dst);
 	b.src.resource = twin_texture(ctx, src);
-	shared_dst = (dst->bind_rt && !dst->twiddled) || dst->scanout;
+	shared_dst = (dst->bind_rt && !dst->twiddled && !dst->cube) || dst->scanout;
 	b.dst.resource = shared_dst ? twin_shared(ctx, dst) : twin_texture(ctx, dst);
 	if (!b.src.resource || !b.dst.resource)
 		return false;
@@ -621,7 +623,8 @@ bool mbx_fallback_blit(struct mbx_context *ctx, const struct pipe_blit_info *inf
 	sp->blit(sp, &b);
 	sp->flush(sp, NULL, 0);
 	if (!shared_dst) {
-		struct pipe_box box = { .x = info->dst.box.x, .y = info->dst.box.y, .width = info->dst.box.width, .height = info->dst.box.height, .depth = 1 };
+		struct pipe_box box = { .x = info->dst.box.x, .y = info->dst.box.y, .z = dst->cube ? info->dst.box.z : 0,
+					.width = info->dst.box.width, .height = info->dst.box.height, .depth = 1 };
 
 		if (box.width < 0) {
 			box.x += box.width;
