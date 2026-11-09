@@ -935,3 +935,10 @@ Not done: the model still lacks the viewport behaviour (the sim passes the unwor
 
 - Sources: the unit's runs (dEQP-GLES2 texture groups, `gles2_feat tex_offset` and `tex_offset_probe`, `MBX_DEBUG=2` logs, kernel log), the host sim runs of the same, `mbx/README.md` assumptions 15 and 54, `mesa/src/gallium/drivers/mbx/mbx_compile.c`, `mbx_draw.c`, `mbx_program.h`.
 
+### 2026-11-09: dEQP fragment_ops 1875 of 1923: scissored depth and stencil clears cleared everything
+
+`fragment_ops` had 650 failures in clusters (`depth_stencil.stencil_ops` 512, `stencil_depth_funcs` 81, `random` 25, `stencil.*` about 20, `scissor.clear_stencil`) and every `depth_stencil.*` case failed. The simplest, `stencil.clear`, drew a solid blue picture where the reference has gradients: the passes that read the stencil back (draws with the stencil test EQUAL n) wrote nothing. The driver advertised `clear_scissored` (the clear takes the scissor rectangle) but honours it only for colour: `mbx_clear` clears the whole depth value (`next_clear_depth`) and the whole stencil plane (`mbx_fallback_clear_stencil`) whatever the rectangle. dEQP clears rectangles of the stencil buffer and tests them; the rest came out cleared too. With `clear_scissored = false` the state tracker draws a quad for a scissored clear (honouring the scissor, the write mask and the depth function). Results on the sim: `fragment_ops` 1273 to 1875 of 1923 (48 left: `stencil_depth_funcs` 28, `interaction.basic_shader` 8, `depth_stencil.random` 8, four `random.*`), `fbo` 523 to 551 of 711 (67 fail, 93 not supported), `color_clear` 19 of 19, `draw` 101, `buffer` 49, `vertex_arrays` 571, `default_vertex_attrib` 40, `gles2_feat` 66 of 66. A scissored colour clear is a quad draw now instead of a CPU fill of the rectangle: the cost on the unit was not measured (a full-target colour clear is still the pending clear of the next job, no scissor, no quad).
+Not done: the unit with this change (a flash), the 48 left in `fragment_ops`, `fbo`'s 67, `shaders`, the performance of scissored clears.
+
+- Sources: host sim dEQP runs, `mbx_clear` in `mesa/src/gallium/drivers/mbx/mbx_context.c`, `mbx_screen.c`.
+
