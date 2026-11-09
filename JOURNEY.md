@@ -1003,3 +1003,9 @@ Results on the sim (pbuffer, watchdog on): `shaders` 9493 of 10252 (707 fail, 52
 Found while doing this: `build-host.sh` does not copy edited driver sources into `build/mesa`; after an edit run `mesa/scripts/prepare-mesa.sh --sync` and `mesa/scripts/ninja-host.sh`, else run-deqp.sh tests a stale binary.
 
 - Sources: host sim dEQP runs, `MBX_DUMP_NIR`, `mesa/src/gallium/drivers/mbx/mbx_compile.c`, `mbx_program.c`. Not run on the unit.
+
+### dEQP shaders: the biggest clusters are the vertex clamp, measured
+
+With `MBX_SIM_NOCLAMP=1` (the model without the chip's clamp of o1/o2 to 0..1 in 8 bits) `indexing.matrix_subscript` passes 96 of 96 (43 fail with the clamp) and `operator.binary_operator` 1307 of 1318 (50 fail with it). The failing cases are simple affine shaders over varyings that go negative or above 1 (`res = v_in0.z + v_in1.x`); they match the fixed pipe and the chip's clamp of the varying is what differs from dEQP's reference. These are the chip's behaviour, not a driver bug; a workaround would need the vertex program to bias and scale the varyings (range unknown at compile time), not attempted.
+
+- Sources: host sim dEQP runs with and without `MBX_SIM_NOCLAMP`. Not run on the unit.
