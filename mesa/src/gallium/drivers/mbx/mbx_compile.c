@@ -1126,6 +1126,34 @@ static int fs_terms(struct fsp *p, nir_scalar s, struct fs_term *out)
 	return -1;
 }
 
+/* The varyings an expression reads (a node counted once for each time it is reached: a sum of two varyings reads two) */
+static int fs_nvars(const struct mbx_fs_info *i, int n)
+{
+	const struct mbx_fs_node *nd = &i->node[n];
+
+	switch (nd->op) {
+	case FSN_VAR:
+		return 1;
+	case FSN_CONST: case FSN_UNI:
+		return 0;
+	case FSN_NEG:
+		return fs_nvars(i, nd->a);
+	case FSN_ADD: case FSN_SUB: case FSN_MUL:
+		return fs_nvars(i, nd->a) + fs_nvars(i, nd->b);
+	case FSN_OP: {
+		unsigned nin = nir_op_infos[nd->loc].num_inputs;
+		const uint16_t ops[3] = { nd->a, nd->b, nd->c };
+		int c = 0;
+
+		for (unsigned k = 0; k < nin && k < 3; k++)
+			c += fs_nvars(i, ops[k]);
+		return c;
+	}
+	default:
+		return 0;
+	}
+}
+
 /* The degree in the varyings (the coefficient must be affine) and whether the expression subtracts */
 static int fs_degree(const struct mbx_fs_info *i, int n, bool *subtracts);
 /*
@@ -1393,6 +1421,8 @@ void mbx_fs_match(nir_shader *fs, struct mbx_fs_info *info)
 				return;	/* a step in the colour: the grid would blur it, the CPU draws it */
 			if (fs_degree(info, L->prim, &sub) > 1)
 				info->grid = true;	/* not affine in the varyings: evaluated on a fine grid, the hardware interpolates between its corners */
+			else if (!L->tex && !getenv("MBX_NO_GRID_SUMS") && fs_nvars(info, L->prim) >= 2)
+				info->grid = true;	/* a sum of varyings can leave 0..1, and the chip clamps a vertex's colour: a fine grid keeps the error to a cell */
 			if (L->tex && info->node[L->prim].op == FSN_CONST &&
 			    (info->node[L->prim].k > 1.0f || info->node[L->prim].k < 0.0f))
 				return;	/* the primary colour is clamped to 0..1 on the chip: it cannot scale a texel up */

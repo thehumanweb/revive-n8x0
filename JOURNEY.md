@@ -1055,3 +1055,13 @@ softpipe turns NIR into TGSI with `nir_lower_uniforms_to_ubo`, which sets the al
 Results on the sim (pbuffer, watchdog on): `shaders` 9679 of 10252 (521 fail, 52 not supported); `gles2_feat` 67 of 67. Left: `vector_swizzles` 51 (order-dependent CPU fallback), `matrix_subscript` 43, `binary_operator` 39, `matrix.add/sub` 24 each (vertex clamp), `matrix.mul` 36, `tmp_array` 32, loops about 58.
 
 - Sources: host sim dEQP runs, softpipe/NIR sources in build/mesa (`nir_lower_uniforms_to_ubo.c`, `nir_to_tgsi.c`). Not run on the unit.
+
+### dEQP shaders: sums of varyings on the grid (9786 of 10252)
+
+The chip clamps a vertex's colour to 0..1 before it interpolates, so a colour that leaves 0..1 inside a triangle (`res = v_in0.z + v_in1.x`, then `res * 0.5 + 0.5`) differs from dEQP's per-pixel clamp, by as much as the part of the triangle that is out of range. A fragment shader without a texel whose colour reads two or more varyings (an affine sum, which was a plain vertex-interpolated colour) now takes the grid mode (README assumption 48): the vertex program is evaluated at the corners of cells of about 8 pixels and the chip interpolates between them, so the error stays in the cells where the colour crosses 0 or 1. `indexing.matrix_subscript` 53 to 90 of 96; `shaders` 9679 to 9786 of 10252 (414 fail, 52 not supported); `gles2_feat` 67 of 67.
+
+The cost: those draws evaluate the vertex program on the CPU for every grid corner (bounded by `GRID_BUDGET`), where they used to be one chip pass. A texture shader, or a colour from one varying (Weston's), is not touched. `MBX_NO_GRID_SUMS=1` turns it off. Not measured on the unit (frame time of a draw like this, e.g. a Gouraud sum of a diffuse and a specular varying); that is the next check there.
+
+Left: `vector_swizzles` 41 (order-dependent CPU fallback), `binary_operator` 39, loops about 58, `struct.local` 17, `angle_and_trigonometry` 16, `matrix.add/sub` 12 each, `invariance.*` 36.
+
+- Sources: host sim dEQP runs with and without `MBX_NO_GRID_SUMS`; `mbx_compile.c`, `mbx_draw.c` (grid). Not run on the unit.
