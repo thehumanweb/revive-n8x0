@@ -206,11 +206,42 @@ const struct mbx_fs_info *mbx_fs_specialize(struct mbx_context *ctx, const struc
  * bits of 1.0 for an integer 1. The fallback's fragment shader gets its integer operations as float ones, with the
  * constant offsets of its loads kept integers (the pass converts those too).
  */
+/* A shift by a constant is a multiplication: the int-to-float pass makes `a << n` of it with exp2(n), which softpipe's is not exact for
+ * (dEQP functions.qualifiers.in_int: -1 << 1 was not -2) */
+static void mbx_shifts_to_mul(nir_shader *n)
+{
+	nir_function_impl *impl = nir_shader_get_entrypoint(n);
+	bool progress = false;
+
+	nir_foreach_block(block, impl) {
+		nir_foreach_instr_safe(instr, block) {
+			nir_alu_instr *alu;
+			nir_builder b;
+			nir_def *r;
+
+			if (instr->type != nir_instr_type_alu)
+				continue;
+			alu = nir_instr_as_alu(instr);
+			if (alu->op != nir_op_ishl || alu->def.bit_size != 32 || !nir_src_is_const(alu->src[1].src) || alu->def.num_components != 1)
+				continue;
+			if (nir_src_as_uint(alu->src[1].src) > 30)
+				continue;
+			b = nir_builder_at(nir_before_instr(instr));
+			r = nir_imul(&b, nir_mov_alu(&b, alu->src[0], 1), nir_imm_int(&b, 1 << nir_src_as_uint(alu->src[1].src)))	/* not nir_imul_imm: it makes a shift of it */;
+			nir_def_rewrite_uses(&alu->def, r);
+			nir_instr_remove(instr);
+			progress = true;
+		}
+	}
+	nir_progress(progress, impl, nir_metadata_none);
+}
+
 static void mbx_fallback_ints_to_float(nir_shader *n)
 {
 	nir_function_impl *impl = nir_shader_get_entrypoint(n);
 
 	/* 1-bit booleans are all ones when true: as a float that is a NaN, and feq of two of them is false (dEQP swizzles.*bvec*) */
+	mbx_shifts_to_mul(n);
 	nir_lower_int_to_float(n);	/* first: after the booleans became floats the integer compares are float ones and their constants stay integers */
 	nir_lower_bool_to_float(n, false);
 	nir_foreach_block(block, impl) {
@@ -337,6 +368,8 @@ static void mbx_lower_copysign_bits(nir_shader *n)
 		}
 	}
 	nir_progress(progress, impl, nir_metadata_none);
+	if (progress)
+		nir_opt_dce(n);	/* the bit operations left behind would still type their float inputs as integers (the int-to-float pass) */
 }
 
 

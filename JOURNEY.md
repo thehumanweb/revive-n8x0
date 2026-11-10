@@ -1075,3 +1075,11 @@ Results on the sim (pbuffer, watchdog on): `shaders` 10032 of 10252 (168 fail, 5
 Cost, not measured on the unit: a draw of up to 192 vertices pays one CPU pass of its vertex program (the grid mode, when taken, many more); a larger draw is not checked and keeps the chip's per-vertex clamp. The unit check is the next one: frame time of small coloured draws (a UI of many quads) with and without `MBX_NO_GRID_SUMS=1`.
 
 - Sources: host sim dEQP runs with and without `MBX_SIM_NOCLAMP` and `MBX_NO_GRID_SUMS`; `mbx_draw.c`, `mbx_cpuvs.c`, the model's `emu.h`. Not run on the unit.
+
+### dEQP shaders: two more CPU-fallback fixes (10054 of 10252)
+
+After the copysign rewrite the dead `iand` instructions were still in the shader, and the int-to-float pass types a constant by its uses: they made a float 1.0 (0x3f800000) an integer constant and turned it into 1.065e9 (`atan2` on the CPU failed again after the pass order changed). `nir_opt_dce` after the rewrite: `operator.angle_and_trigonometry` 168 of 168. A shift by a constant (`a << 1`) is left as a shift with a float constant by the int-to-float pass, which then used softpipe's `exp2` (not exact): `mbx_shifts_to_mul` makes it a multiplication first (with `nir_imul`: `nir_imul_imm` of a power of two makes a shift again). `functions.*` 269 of 271.
+
+Results on the sim (pbuffer, watchdog on): `shaders` 10054 of 10252 (146 fail, 52 not supported); `gles2_feat` 67 of 67. Left: `vector_swizzles` 43 (order-dependent CPU fallback), `invariance.*` 36 (`subexpression_precision_*` and `loop_4`: a vertex shader with `refract` has control flow the VGP cannot do, so both shaders run on softpipe and are not bit-equal), `random.*` about 40, `indexing.vector_subscript` 5.
+
+- Sources: host sim dEQP runs, `MBX_DUMP_NIR`. Not run on the unit.
