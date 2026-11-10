@@ -1023,3 +1023,11 @@ Mesa's GLSL `atan` ends in `ior(iand(a, 0x7fffffff), iand(b, 0x80000000))` (copy
 Results on the sim (pbuffer, watchdog on): `shaders` 9568 of 10252 (632 fail, 52 not supported); `gles2_feat` 67 of 67. Left: `binary_operator` 50 and `matrix_subscript` 43 (the vertex clamp), `vector_swizzles` 38 (order-dependent CPU fallback), `matrix.mul` 36, `tmp_array` 32, `vector_subscript` 26, `matrix.add/sub` 24 each, loops about 62, `struct.uniform` 19.
 
 - Sources: host sim dEQP runs, `MBX_DUMP_NIR_IN`. Not run on the unit.
+
+### dEQP shaders: integer constants of compares (constants.int_*, 81 of 81)
+
+A fragment shader that compares an integer constant with an integer uniform (`ieq(-321, uniform)`) was matched with the constant's bits read as a float (a NaN), while the uniform, which the screen stores as a float, held -321.0. `mbx_nir_prepare` now runs `nir_lower_int_to_float` on a fragment shader whose integer work is only compares (plus typeless mov/vec) and which indexes no array by a variable (`int_compares_only`). Running the pass on every fragment shader broke two `gles2_feat` tests (`tex_weston`, `weston_vs`) and crashed `indexing.uniform_array`, hence the restriction.
+
+Results on the sim: `shaders` 9566 of 10252 (634 fail, 52 not supported; `constants` 0 fail, the order-dependent swizzle failures vary by a few between runs); `gles2_feat` 67 of 67.
+
+- Sources: host sim dEQP runs, `MBX_DUMP_NIR_IN`. Not run on the unit.

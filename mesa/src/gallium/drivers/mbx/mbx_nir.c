@@ -72,8 +72,51 @@ static void optimize(struct nir_shader *s)
 	} while (progress);
 }
 
+/* Integer work in the shader is nothing but compares (of constants and uniforms), and no array is indexed by a variable */
+static bool int_compares_only(nir_shader *s)
+{
+	nir_function_impl *impl = nir_shader_get_entrypoint(s);
+	bool any = false;
+
+	nir_foreach_block(block, impl) {
+		nir_foreach_instr(instr, block) {
+			if (instr->type == nir_instr_type_deref) {
+				nir_deref_instr *d = nir_instr_as_deref(instr);
+
+				if (d->deref_type == nir_deref_type_array && !nir_src_is_const(d->arr.index))
+					return false;
+			} else if (instr->type == nir_instr_type_alu) {
+				nir_alu_instr *alu = nir_instr_as_alu(instr);
+				const nir_op_info *info = &nir_op_infos[alu->op];
+				bool ints = false;
+
+				for (unsigned k = 0; k < info->num_inputs; k++) {
+					nir_alu_type t = nir_alu_type_get_base_type(info->input_types[k]);
+
+					ints |= t == nir_type_int || t == nir_type_uint;
+				}
+				if (!ints)
+					continue;
+				switch (alu->op) {
+				case nir_op_ieq: case nir_op_ine: case nir_op_ilt: case nir_op_ige: case nir_op_ult: case nir_op_uge:
+					any = true;
+					break;
+				case nir_op_mov: case nir_op_vec2: case nir_op_vec3: case nir_op_vec4:	/* typeless */
+					break;
+				default:
+					return false;
+				}
+			}
+		}
+	}
+	return any;
+}
+
 void mbx_nir_prepare(struct nir_shader *s)
 {
+	/* the screen has no integers: a constant of an integer compare is its value as a float (dEQP constants.int_*: -321 was a NaN) */
+	if (s->info.stage == MESA_SHADER_FRAGMENT && int_compares_only(s))
+		NIR_PASS(_, s, nir_lower_int_to_float);
 	NIR_PASS(_, s, nir_lower_io, nir_var_shader_in | nir_var_shader_out | nir_var_uniform, type_size,
 		 (nir_lower_io_options)0);
 	NIR_PASS(_, s, nir_lower_load_const_to_scalar);
