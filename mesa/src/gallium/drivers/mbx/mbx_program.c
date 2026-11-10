@@ -211,8 +211,8 @@ static void mbx_fallback_ints_to_float(nir_shader *n)
 	nir_function_impl *impl = nir_shader_get_entrypoint(n);
 
 	/* 1-bit booleans are all ones when true: as a float that is a NaN, and feq of two of them is false (dEQP swizzles.*bvec*) */
+	nir_lower_int_to_float(n);	/* first: after the booleans became floats the integer compares are float ones and their constants stay integers */
 	nir_lower_bool_to_float(n, false);
-	nir_lower_int_to_float(n);
 	nir_foreach_block(block, impl) {
 		nir_foreach_instr(instr, block) {
 			nir_intrinsic_instr *in;

@@ -1031,3 +1031,11 @@ A fragment shader that compares an integer constant with an integer uniform (`ie
 Results on the sim: `shaders` 9566 of 10252 (634 fail, 52 not supported; `constants` 0 fail, the order-dependent swizzle failures vary by a few between runs); `gles2_feat` 67 of 67.
 
 - Sources: host sim dEQP runs, `MBX_DUMP_NIR_IN`. Not run on the unit.
+
+### dEQP shaders: integer constants in the CPU fallback (9621 of 10252)
+
+The fallback's fragment shader had its booleans made floats (`nir_lower_bool_to_float`) before its integers (`nir_lower_int_to_float`). After the first, `ilt(i, 2)` is already a float compare, and the second converts a constant only where its uses are integer: the 2 stayed raw integer bits (a denormal as a float) and a dynamic vector subscript (`tmp[i]`) read the wrong component. Integers first, booleans second: `indexing.vector_subscript` passes (indexing 564 of 568 without the vertex clamp).
+
+Results on the sim (pbuffer, watchdog on): `shaders` 9621 of 10252 (579 fail, 52 not supported); `gles2_feat` 67 of 67. Left, by group: `binary_operator` 50 and `matrix_subscript` 43 (the vertex clamp), `vector_swizzles` 40 (order-dependent CPU fallback), `matrix.mul` 36, `tmp_array` 32, `matrix.add/sub` 24 each (clamp), loops about 58, `struct.uniform` 19, `struct.local` 17, `operator.selection` 16.
+
+- Sources: host sim dEQP runs, `MBX_DUMP_NIR`, `MBX_DUMP_NIR_IN`, `nir_lower_int_to_float.c` of the Mesa tree in build/mesa. Not run on the unit.
