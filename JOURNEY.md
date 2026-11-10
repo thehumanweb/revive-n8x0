@@ -1047,3 +1047,11 @@ Results on the sim (pbuffer, watchdog on): `shaders` 9621 of 10252 (579 fail, 52
 Results on the sim (pbuffer, watchdog on): `shaders` 9668 of 10252 (532 fail, 52 not supported); `gles2_feat` 67 of 67. Left: `vector_swizzles` 48 (order-dependent CPU fallback; varies 29 to 48 between runs), `matrix_subscript` 43, `binary_operator` 39, `matrix.add/sub` 24 each (the vertex clamp), `matrix.mul` 36, `tmp_array` 32, loops about 58, `struct.uniform` 19.
 
 - Sources: host sim dEQP runs. Not run on the unit.
+
+### dEQP shaders: uniforms at slot offset 4 or more on the CPU (9679 of 10252)
+
+softpipe turns NIR into TGSI with `nir_lower_uniforms_to_ubo`, which sets the alignment of the UBO load it makes to `offset + base * 16` (the offset is not multiplied by 16). A `load_uniform` at a constant slot offset of 4 or more then went to component y of its slot (`CONST[7].yyyy` for `s[2].a` of a struct array): `struct.uniform.*dynamic_index*` and the nested and loop struct arrays failed on the CPU. `mbx_fold_uniform_offsets` (mbx_program.c) adds a constant offset to the load's base (offset 0) before softpipe gets the shader. Found by dumping the TGSI (`SOFTPIPE_DEBUG=fs`) and running the lowering by hand to print the alignments. Without the vertex clamp `struct.*` passes 93 of 102 (the three sampler cases and one dynamic loop are left).
+
+Results on the sim (pbuffer, watchdog on): `shaders` 9679 of 10252 (521 fail, 52 not supported); `gles2_feat` 67 of 67. Left: `vector_swizzles` 51 (order-dependent CPU fallback), `matrix_subscript` 43, `binary_operator` 39, `matrix.add/sub` 24 each (vertex clamp), `matrix.mul` 36, `tmp_array` 32, loops about 58.
+
+- Sources: host sim dEQP runs, softpipe/NIR sources in build/mesa (`nir_lower_uniforms_to_ubo.c`, `nir_to_tgsi.c`). Not run on the unit.

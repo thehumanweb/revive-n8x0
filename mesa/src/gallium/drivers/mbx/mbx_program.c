@@ -339,6 +339,38 @@ static void mbx_lower_copysign_bits(nir_shader *n)
 	nir_progress(progress, impl, nir_metadata_none);
 }
 
+
+/*
+ * A load_uniform at a constant offset becomes one at offset 0 with the offset added to the base. softpipe's NIR-to-TGSI lowers uniform
+ * loads to UBO ones and sets their alignment from `offset + base * 16` (the offset not scaled by 16), which puts a load at slot offset 4
+ * or more into the wrong component of its slot (dEQP struct.uniform.*dynamic_index*: s[2].a read from .y).
+ */
+static void mbx_fold_uniform_offsets(nir_shader *n)
+{
+	nir_function_impl *impl = nir_shader_get_entrypoint(n);
+	bool progress = false;
+
+	nir_foreach_block(block, impl) {
+		nir_foreach_instr(instr, block) {
+			nir_intrinsic_instr *in;
+
+			if (instr->type != nir_instr_type_intrinsic)
+				continue;
+			in = nir_instr_as_intrinsic(instr);
+			if (in->intrinsic != nir_intrinsic_load_uniform || !nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) == 0)
+				continue;
+			nir_intrinsic_set_base(in, nir_intrinsic_base(in) + nir_src_as_uint(in->src[0]));
+			{
+				nir_builder b = nir_builder_at(nir_before_instr(instr));
+
+				nir_src_rewrite(&in->src[0], nir_imm_int(&b, 0));
+			}
+			progress = true;
+		}
+	}
+	nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shader_state *templ)
 {
 	struct mbx_shader *so = CALLOC_STRUCT(mbx_shader);
@@ -365,6 +397,7 @@ static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shad
 
 			mark_int_slots(so, var->type, &slot);
 		}
+	mbx_fold_uniform_offsets(so->nir_orig);
 	so->nir = templ->ir.nir;	/* ours now */
 	so->stage = so->nir->info.stage;
 	mbx_nir_prepare(so->nir);
