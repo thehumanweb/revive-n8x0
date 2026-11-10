@@ -1095,3 +1095,9 @@ Results on the sim (pbuffer, watchdog on): `shaders` 10139 of 10252 (61 fail, 52
 The other groups that draw on the CPU, run again with the fresh-context fix (pbuffer): `fragment_ops` 1880 of 1923 (5 more than before), `polygon_offset` 5 of 14, `rasterization` 46 of 52, `depth_range` 25 of 28, `fbo` 620 of 711 (91 not supported, 0 fail). They are not the order bug; their failures are the chip's own behaviour already written down (depth precision, polygon offset units, rasterization rules).
 
 Of the 61 `shaders` failures left, 36 are `invariance.*`, two are Mesa's GLSL front end (it rejects a local that hides a parameter, and evaluates call arguments in another order than dEQP expects), and the rest are corner cases of numbers (`refract` of floats, `mat4 / mat4` with a divisor near zero, `gl_FragCoord.z`) and `struct.uniform.sampler*`.
+
+### On the unit: the colour-range check's cost (gles2_feat 67 of 67)
+
+Image with the softpipe-context change flashed (Weston stopped, the eMMC swap file back on: the flash had wiped the swap and the first `gles2_feat` run was killed by the OOM killer at test 52). `gles2_feat` 67 of 67. `gles2_fps -n 30` at 400 x 240: the per-draw colour-range check (`colour_out_of_range`, a CPU pass of the vertex program for draws of up to 192 vertices) cost the `fill` scene 0.7 ms a frame (3.7 against 3.0 ms with `MBX_NO_GRID_SUMS=1`); the other scenes were equal within noise (flat 3.0, tex 6.4, many 10.2, grid 13.3, depth 7.1, stencil 8.3). The cost was the set-up of each vertex's run (the program and 3 KB of constants copied per vertex): now set up once per draw (`mbx_cpuvs_oor_begin`, `mbx_cpuvs_oor_vertex`), the library copied onto the running unit: `fill` 3.1 against 3.0 ms (0.1 ms).
+
+- Sources: the unit's `gles2_feat` and `gles2_fps` runs, with and without `MBX_NO_GRID_SUMS=1`. The dEQP samples on the unit are in the next entry.

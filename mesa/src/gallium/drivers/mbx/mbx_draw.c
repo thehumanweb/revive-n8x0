@@ -613,6 +613,7 @@ static bool colour_out_of_range(struct mbx_context *ctx, const struct mbx_vgp_pr
 	if (prog->tex || prog->grid || !prog->gouraud || dr->count > OOR_MAX_VERTICES || getenv("MBX_NO_GRID_SUMS"))
 		return false;
 	cpu_constants(ctx, prog, k);
+	mbx_cpuvs_oor_begin(prog->code, prog->ninsn, (const float (*)[4])k, prog->nconst);
 	for (unsigned i = 0; i < dr->count; i++) {
 		unsigned ix = dr->start + i;
 
@@ -625,7 +626,7 @@ static bool colour_out_of_range(struct mbx_context *ctx, const struct mbx_vgp_pr
 		if (info->index_size)
 			ix += dr->index_bias;
 		fetch_vertex(ctx, comps, ix, info->start_instance, vb_ptr, va);
-		if (mbx_cpuvs_colour_oor(prog->code, prog->ninsn, (const float (*)[4])k, prog->nconst, (const float (*)[4])va))
+		if (mbx_cpuvs_oor_vertex(prog->ninsn, (const float (*)[4])va))
 			return true;
 	}
 	return false;
