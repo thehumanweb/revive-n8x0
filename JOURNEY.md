@@ -1039,3 +1039,11 @@ The fallback's fragment shader had its booleans made floats (`nir_lower_bool_to_
 Results on the sim (pbuffer, watchdog on): `shaders` 9621 of 10252 (579 fail, 52 not supported); `gles2_feat` 67 of 67. Left, by group: `binary_operator` 50 and `matrix_subscript` 43 (the vertex clamp), `vector_swizzles` 40 (order-dependent CPU fallback), `matrix.mul` 36, `tmp_array` 32, `matrix.add/sub` 24 each (clamp), loops about 58, `struct.uniform` 19, `struct.local` 17, `operator.selection` 16.
 
 - Sources: host sim dEQP runs, `MBX_DUMP_NIR`, `MBX_DUMP_NIR_IN`, `nir_lower_int_to_float.c` of the Mesa tree in build/mesa. Not run on the unit.
+
+### dEQP shaders: a `> 0` is a step (9668 of 10252)
+
+`fs_has_step` exempted every comparison with a constant, to let the vec-to-bvec conversions (`sne(varying, 0)` on a constant varying) through. That also let `cond ? a : b` with `cond = v.z > 0.0` through, and the grid mode drew it as a ramp (`operator.selection`, 16 failures). Only `seq` and `sne` against a constant are exempt now; `slt` and `sge` are steps and go to the CPU. `operator.selection` 56 of 56, `bool_compare` 30 of 30, `float_compare` 108 of 108, `conversions` 524 of 524.
+
+Results on the sim (pbuffer, watchdog on): `shaders` 9668 of 10252 (532 fail, 52 not supported); `gles2_feat` 67 of 67. Left: `vector_swizzles` 48 (order-dependent CPU fallback; varies 29 to 48 between runs), `matrix_subscript` 43, `binary_operator` 39, `matrix.add/sub` 24 each (the vertex clamp), `matrix.mul` 36, `tmp_array` 32, loops about 58, `struct.uniform` 19.
+
+- Sources: host sim dEQP runs. Not run on the unit.

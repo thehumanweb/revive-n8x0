@@ -1153,8 +1153,8 @@ static bool fs_has_step(const struct mbx_fs_info *i, int n)
 			if (fs_has_step(i, ops[k]))
 				return true;
 		}
-		/* a comparison with a constant is a conversion to bool (vec to bvec), the dEQP conversion and swizzle shaders feed it constant varyings */
-		bool vs_const = (nd->loc == nir_op_slt || nd->loc == nir_op_sge || nd->loc == nir_op_seq || nd->loc == nir_op_sne) &&
+		/* an equality with a constant is a conversion to bool (vec to bvec; a `> 0` is a step and is not exempt: dEQP operator.selection), the dEQP conversion and swizzle shaders feed it constant varyings */
+		bool vs_const = (nd->loc == nir_op_seq || nd->loc == nir_op_sne) &&
 				(i->node[nd->a].op == FSN_CONST || i->node[nd->b].op == FSN_CONST);
 		if (!vs_const && (nd->loc == nir_op_slt || nd->loc == nir_op_sge || nd->loc == nir_op_seq || nd->loc == nir_op_sne ||
 				  nd->loc == nir_op_ffract || nd->loc == nir_op_fcsel))
