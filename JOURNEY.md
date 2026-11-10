@@ -1091,3 +1091,7 @@ The order-dependent CPU-fallback failure is worked around. Drawing a case's shad
 Results on the sim (pbuffer, watchdog on): `shaders` 10139 of 10252 (61 fail, 52 not supported); `swizzles` 648 of 648; `gles2_feat` 67 of 67. Left: `invariance.*` 36 (a vertex shader with `refract` has control flow the VGP cannot do, so both shaders run on softpipe and are not bit-equal), `indexing.vector_subscript` 4, `struct.uniform` 3, `matrix.div` and `div_assign` 3 each, a few singles. The other groups that draw on the CPU (`fragment_ops`, `fbo`, `polygon_offset`, `rasterization`) may have had the same bug: to run again.
 
 - Sources: host sim dEQP runs, ASAN and pattern-initialised builds. Not run on the unit.
+
+The other groups that draw on the CPU, run again with the fresh-context fix (pbuffer): `fragment_ops` 1880 of 1923 (5 more than before), `polygon_offset` 5 of 14, `rasterization` 46 of 52, `depth_range` 25 of 28, `fbo` 620 of 711 (91 not supported, 0 fail). They are not the order bug; their failures are the chip's own behaviour already written down (depth precision, polygon offset units, rasterization rules).
+
+Of the 61 `shaders` failures left, 36 are `invariance.*`, two are Mesa's GLSL front end (it rejects a local that hides a parameter, and evaluates call arguments in another order than dEQP expects), and the rest are corner cases of numbers (`refract` of floats, `mat4 / mat4` with a divisor near zero, `gl_FragCoord.z`) and `struct.uniform.sampler*`.
