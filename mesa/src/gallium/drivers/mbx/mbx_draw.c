@@ -597,6 +597,40 @@ static void grid_triangle(struct mbx_context *ctx, const unsigned *comps, float 
 		}
 }
 
+/*
+ * The chip clamps a vertex's colour to 0..1 before it interpolates: where the colour leaves 0..1 inside a triangle the picture differs from
+ * the per-pixel clamp (dEQP: a sum of two varyings, which the linker may have moved into the vertex shader). A small draw's vertices are run on
+ * the CPU and the draw takes the grid mode if one of them has a colour out of range.
+ */
+#define OOR_MAX_VERTICES 192
+
+static bool colour_out_of_range(struct mbx_context *ctx, const struct mbx_vgp_program *prog, const struct pipe_draw_info *info,
+				const struct pipe_draw_start_count_bias *dr, const void *indices, const unsigned *comps, uint8_t **vb_ptr)
+{
+	static float k[MBX_MAX_CONSTS][4];
+	float va[MBX_MAX_ATTRS][4];
+
+	if (prog->tex || prog->grid || !prog->gouraud || dr->count > OOR_MAX_VERTICES || getenv("MBX_NO_GRID_SUMS"))
+		return false;
+	cpu_constants(ctx, prog, k);
+	for (unsigned i = 0; i < dr->count; i++) {
+		unsigned ix = dr->start + i;
+
+		if (info->index_size == 1)
+			ix = ((const uint8_t *)indices)[ix];
+		else if (info->index_size == 2)
+			ix = ((const uint16_t *)indices)[ix];
+		else if (info->index_size == 4)
+			ix = ((const uint32_t *)indices)[ix];
+		if (info->index_size)
+			ix += dr->index_bias;
+		fetch_vertex(ctx, comps, ix, info->start_instance, vb_ptr, va);
+		if (mbx_cpuvs_colour_oor(prog->code, prog->ninsn, (const float (*)[4])k, prog->nconst, (const float (*)[4])va))
+			return true;
+	}
+	return false;
+}
+
 static uint32_t hw_prim_word(unsigned mode)
 {
 	switch (mode) {
@@ -860,8 +894,8 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 		emit_header(ctx, prog, layout);
 		mbx_dbg("draw %u: program", d);
 		emit_program(ctx, prog);
-		if (prog->grid && (info->mode == MESA_PRIM_TRIANGLES || info->mode == MESA_PRIM_TRIANGLE_STRIP ||
-				   info->mode == MESA_PRIM_TRIANGLE_FAN) && draws[d].count >= 3) {
+		if ((info->mode == MESA_PRIM_TRIANGLES || info->mode == MESA_PRIM_TRIANGLE_STRIP || info->mode == MESA_PRIM_TRIANGLE_FAN) &&
+		    draws[d].count >= 3 && (prog->grid || colour_out_of_range(ctx, prog, info, &draws[d], indices, comps, vb_ptr))) {
 			static float k[MBX_MAX_CONSTS][4];
 			float va[MBX_MAX_ATTRS][4], vb[MBX_MAX_ATTRS][4], vc[MBX_MAX_ATTRS][4];
 			unsigned ntri = info->mode == MESA_PRIM_TRIANGLES ? draws[d].count / 3 : draws[d].count - 2, t, used = 0;

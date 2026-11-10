@@ -1065,3 +1065,13 @@ The cost: those draws evaluate the vertex program on the CPU for every grid corn
 Left: `vector_swizzles` 41 (order-dependent CPU fallback), `binary_operator` 39, loops about 58, `struct.local` 17, `angle_and_trigonometry` 16, `matrix.add/sub` 12 each, `invariance.*` 36.
 
 - Sources: host sim dEQP runs with and without `MBX_NO_GRID_SUMS`; `mbx_compile.c`, `mbx_draw.c` (grid). Not run on the unit.
+
+### dEQP shaders: the colour range checked per draw (10032 of 10252)
+
+The static rule above (two or more varyings in the fragment shader's colour) did not see the common case: Mesa's linker moves a sum into the vertex shader, so the fragment shader reads one varying that already holds `v_in0.z + v_in1.x`. It is replaced by a check at the draw: a small draw (at most 192 vertices, no texture, a Gouraud colour) runs its vertex program on the CPU (`mbx_cpuvs_colour_oor`, the model's `vgp_exec`) and takes the grid mode if o1 or o2 of any vertex leaves 0..1 (`colour_out_of_range` in mbx_draw.c); the chip clamps a vertex's colour before it interpolates, and the grid keeps the difference to the cells where the colour crosses the limit. `MBX_NO_GRID_SUMS=1` turns it off. `binary_operator.add` and `.sub` 120 of 120, `matrix.add` and `.sub` 108 of 108.
+
+Results on the sim (pbuffer, watchdog on): `shaders` 10032 of 10252 (168 fail, 52 not supported; with the model's clamp removed, `MBX_SIM_NOCLAMP=1`, it is 10036, so what is left is not the clamp); `gles2_feat` 67 of 67. Left: `vector_swizzles` 50 (the order-dependent CPU fallback), `invariance.*` 36, `angle_and_trigonometry` 8, `random.*` about 40, `functions.qualifiers` 5.
+
+Cost, not measured on the unit: a draw of up to 192 vertices pays one CPU pass of its vertex program (the grid mode, when taken, many more); a larger draw is not checked and keeps the chip's per-vertex clamp. The unit check is the next one: frame time of small coloured draws (a UI of many quads) with and without `MBX_NO_GRID_SUMS=1`.
+
+- Sources: host sim dEQP runs with and without `MBX_SIM_NOCLAMP` and `MBX_NO_GRID_SUMS`; `mbx_draw.c`, `mbx_cpuvs.c`, the model's `emu.h`. Not run on the unit.

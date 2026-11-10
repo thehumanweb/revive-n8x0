@@ -22,3 +22,20 @@ void mbx_cpuvs_run(const uint32_t code[][2], unsigned ninsn, const float k[][4],
 	vgp_exec(&g, &r, 0, (int)ninsn - 1, 0);
 	memcpy(pos, r.o[0], 4 * sizeof(float));
 }
+
+/* Whether the colour outputs of the vertex (o1, and o2 without its fog factor) leave 0..1: the chip clamps them a vertex */
+bool mbx_cpuvs_colour_oor(const uint32_t code[][2], unsigned ninsn, const float k[][4], unsigned nk, const float in[8][4])
+{
+	static struct vgp g;
+	struct vgp_regs r;
+
+	memset(&r, 0, sizeof(r));
+	memcpy(r.v, in, sizeof(r.v));
+	memcpy(g.code, code, ninsn * sizeof(g.code[0]));
+	memcpy(g.k, k, (nk > 192 ? 192 : nk) * sizeof(g.k[0]));
+	vgp_exec(&g, &r, 0, (int)ninsn - 1, 0);
+	for (unsigned c = 0; c < 4; c++)
+		if (r.o[1][c] < -0.002f || r.o[1][c] > 1.002f || (c < 3 && (r.o[2][c] < -0.002f || r.o[2][c] > 1.002f)))
+			return true;
+	return false;
+}
