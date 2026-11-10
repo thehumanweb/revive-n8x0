@@ -119,8 +119,10 @@ static struct pipe_context *fb_context(struct mbx_context *ctx)
 	if (!ctx->sp) {
 		struct pipe_screen *sps = fb_screen(ctx->screen);
 
-		if (sps)
+		if (sps) {
 			ctx->sp = sps->context_create(sps, NULL, 0);
+			ctx->sp_epoch++;
+		}
 	}
 	return ctx->sp;
 }
@@ -246,26 +248,32 @@ static void *fb_shader(struct mbx_context *ctx, struct mbx_shader *so)
 {
 	struct pipe_context *sp = ctx->sp;
 
+	if (so->sp_handle && so->sp_epoch != ctx->sp_epoch)
+		so->sp_handle = NULL;		/* made on a softpipe context that is gone with its shaders */
 	if (!so->sp_handle && so->nir_orig) {
 		struct pipe_shader_state s = { .type = PIPE_SHADER_IR_NIR };
 
 		s.ir.nir = nir_shader_clone(NULL, so->nir_orig);	/* softpipe takes it */
 		so->sp_handle = so->stage == MESA_SHADER_VERTEX ? sp->create_vs_state(sp, &s) : sp->create_fs_state(sp, &s);
+		so->sp_epoch = ctx->sp_epoch;
 	}
 	return so->sp_handle;
 }
 
 void mbx_fallback_shader_delete(struct mbx_context *ctx, struct mbx_shader *so)
 {
-	if (so->sp_handle && ctx->sp) {
-		/* softpipe keeps the shader it was last given bound: it is let go of before the shader is freed */
-		if (so->stage == MESA_SHADER_VERTEX) {
-			ctx->sp->bind_vs_state(ctx->sp, NULL);
-			ctx->sp->delete_vs_state(ctx->sp, so->sp_handle);
-		} else {
-			ctx->sp->bind_fs_state(ctx->sp, NULL);
-			ctx->sp->delete_fs_state(ctx->sp, so->sp_handle);
-		}
+	if (so->sp_handle && ctx->sp && so->sp_epoch == ctx->sp_epoch) {
+		/*
+		 * The softpipe context is made again: its draw module and tile caches keep something of the shaders that went before which a
+		 * shader made at the same addresses meets (dEQP swizzles.vector_swizzles: the second of two cases drawn in one process was
+		 * wrong, with the same inputs and the same TGSI, until the context was a fresh one; not found what it keeps). The shaders
+		 * still alive make their softpipe ones again at their next draw.
+		 */
+		ctx->sp->bind_vs_state(ctx->sp, NULL);
+		ctx->sp->bind_fs_state(ctx->sp, NULL);
+		ctx->sp->flush(ctx->sp, NULL, 0);
+		ctx->sp->destroy(ctx->sp);
+		ctx->sp = NULL;
 	}
 	if (so->nir_orig)
 		ralloc_free(so->nir_orig);

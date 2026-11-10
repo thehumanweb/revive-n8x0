@@ -30,6 +30,7 @@ struct mbx_shader {
 	uint64_t int_slots[2];		/* vertex shaders: the constant vec4s that hold integers or booleans (they are stored as floats; the CPU draw turns them
 					 * back, softpipe has integers: dEQP shaders.indexing ...dynamic_loop_read looped for ever on the bits of 4.0) */
 	void *sp_handle;		/* its softpipe shader, made at the first fallback draw */
+	unsigned sp_epoch;		/* the softpipe context it was made on (mbx_context.sp_epoch) */
 	/* fragment shaders the matcher rejects that read uniforms (Weston's channel swizzle on GLES2): matched again per draw with the
 	 * whole-number uniforms (indices, switches, 0 and 1) folded in as constants (mbx_fs_specialize) */
 	unsigned nuslot;
@@ -107,6 +108,7 @@ struct mbx_context {
 	const struct mbx_fs_info *fsi;		/* what the fragment shader bound is matched as for this draw (a variant, or fs->fs_info) */
 	const struct mbx_fs_variant *fsv;	/* the variant, NULL for the plain match */
 	struct pipe_context *sp;	/* the CPU fallback's softpipe context, made at the first use */
+	unsigned sp_epoch;		/* counts the softpipe contexts made: a shader's handle belongs to one */
 
 	struct mbx_vgp_program *programs;	/* linked pairs */
 	struct mbx_job job;

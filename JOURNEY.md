@@ -1083,3 +1083,11 @@ After the copysign rewrite the dead `iand` instructions were still in the shader
 Results on the sim (pbuffer, watchdog on): `shaders` 10054 of 10252 (146 fail, 52 not supported); `gles2_feat` 67 of 67. Left: `vector_swizzles` 43 (order-dependent CPU fallback), `invariance.*` 36 (`subexpression_precision_*` and `loop_4`: a vertex shader with `refract` has control flow the VGP cannot do, so both shaders run on softpipe and are not bit-equal), `random.*` about 40, `indexing.vector_subscript` 5.
 
 - Sources: host sim dEQP runs, `MBX_DUMP_NIR`. Not run on the unit.
+
+### dEQP shaders: a fresh softpipe context after a shader is deleted (10139 of 10252)
+
+The order-dependent CPU-fallback failure is worked around. Drawing a case's shaders, deleting them, and drawing the next case's gave a wrong picture with the same inputs and the same TGSI; a fresh softpipe context for each draw made it right (an experiment env var, removed), ASAN, `MALLOC_PERTURB_` and a build with `-ftrivial-auto-var-init=pattern` changed nothing, so it is state inside softpipe (or its draw module) that outlives the shaders: not found. `mbx_fallback_shader_delete` now destroys the softpipe context when a shader made on it is deleted; the next CPU draw makes a new one, and the shaders still alive (each carries an `sp_epoch`) make their softpipe shaders again at their next CPU draw. The cost is a recompile (NIR to TGSI) of the other CPU-drawn shaders after a shader is deleted: not measured on the unit; programs are seldom deleted in an application's frame loop.
+
+Results on the sim (pbuffer, watchdog on): `shaders` 10139 of 10252 (61 fail, 52 not supported); `swizzles` 648 of 648; `gles2_feat` 67 of 67. Left: `invariance.*` 36 (a vertex shader with `refract` has control flow the VGP cannot do, so both shaders run on softpipe and are not bit-equal), `indexing.vector_subscript` 4, `struct.uniform` 3, `matrix.div` and `div_assign` 3 each, a few singles. The other groups that draw on the CPU (`fragment_ops`, `fbo`, `polygon_offset`, `rasterization`) may have had the same bug: to run again.
+
+- Sources: host sim dEQP runs, ASAN and pattern-initialised builds. Not run on the unit.
