@@ -274,6 +274,71 @@ static void mark_int_slots(struct mbx_shader *so, const struct glsl_type *type, 
 	*slot += n;
 }
 
+
+/* The sign of a float copied by bit operations (GLSL atan: ior(iand(a, 0x7fffffff), iand(b, 0x80000000))): neither the VGP nor the
+ * fallback's int-to-float pass has bit operations on floats, so the pattern becomes float operations (found with dEQP
+ * operator.angle_and_trigonometry.atan*) */
+static bool copysign_src(nir_alu_instr *iand, uint32_t mask, nir_scalar *val)
+{
+	for (unsigned k = 0; k < 2; k++) {
+		nir_scalar c = nir_scalar_resolved(iand->src[1 - k].src.ssa, iand->src[1 - k].swizzle[0]);
+
+		if (nir_scalar_is_const(c) && nir_scalar_as_uint(c) == mask) {
+			*val = nir_scalar_resolved(iand->src[k].src.ssa, iand->src[k].swizzle[0]);
+			return true;
+		}
+	}
+	return false;
+}
+
+static void mbx_lower_copysign_bits(nir_shader *n)
+{
+	nir_function_impl *impl = nir_shader_get_entrypoint(n);
+	bool progress = false;
+
+	nir_foreach_block(block, impl) {
+		nir_foreach_instr_safe(instr, block) {
+			nir_alu_instr *alu, *m, *g;
+			nir_scalar mag, sgn;
+			bool found = false;
+			nir_builder b;
+
+			if (instr->type != nir_instr_type_alu)
+				continue;
+			alu = nir_instr_as_alu(instr);
+			if (alu->op != nir_op_ior || alu->def.bit_size != 32 || alu->def.num_components != 1)
+				continue;
+			for (unsigned k = 0; k < 2; k++) {
+				nir_instr *i0 = nir_def_instr(alu->src[k].src.ssa), *i1 = nir_def_instr(alu->src[1 - k].src.ssa);
+
+				if (i0->type != nir_instr_type_alu || i1->type != nir_instr_type_alu)
+					continue;
+				m = nir_instr_as_alu(i0);
+				g = nir_instr_as_alu(i1);
+				if (m->op != nir_op_iand || g->op != nir_op_iand)
+					continue;
+				if (copysign_src(m, 0x7fffffffu, &mag) && copysign_src(g, 0x80000000u, &sgn)) {
+					found = true;
+					break;
+				}
+			}
+			if (!found)
+				continue;
+			b = nir_builder_at(nir_before_instr(instr));
+			{
+				nir_def *a = nir_fabs(&b, nir_mov_scalar(&b, mag));
+				nir_def *neg = nir_flt(&b, nir_mov_scalar(&b, sgn), nir_imm_float(&b, 0.0f));
+				nir_def *r = nir_bcsel(&b, neg, nir_fneg(&b, a), a);
+
+				nir_def_rewrite_uses(&alu->def, r);
+				nir_instr_remove(instr);
+				progress = true;
+			}
+		}
+	}
+	nir_progress(progress, impl, nir_metadata_none);
+}
+
 static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shader_state *templ)
 {
 	struct mbx_shader *so = CALLOC_STRUCT(mbx_shader);
@@ -284,6 +349,9 @@ static void *mbx_shader_create(struct pipe_context *pctx, const struct pipe_shad
 		FREE(so);
 		return NULL;
 	}
+	mbx_lower_copysign_bits(templ->ir.nir);
+	if (getenv("MBX_DUMP_NIR_IN"))
+		nir_print_shader(templ->ir.nir, stderr);
 	so->nir_orig = nir_shader_clone(NULL, templ->ir.nir);	/* the fallback's, before our lowering */
 	if (templ->ir.nir->info.stage == MESA_SHADER_FRAGMENT)
 	{

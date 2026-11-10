@@ -1015,3 +1015,11 @@ With `MBX_SIM_NOCLAMP=1` (the model without the chip's clamp of o1/o2 to 0..1 in
 With `MBX_SIM_NOCLAMP=1` the whole shaders group passes 9853 of 10252 (347 fail, 52 not supported); the rest is not the vertex clamp. About 40 of them (`swizzles.vector_swizzles`, vec and bvec, vertex and fragment) pass when the case runs alone and fail after another case in the same process: `...mediump_vec2_yxy_vertex,...mediump_vec2_yxy_fragment` (deqp accepts a comma list in `--deqp-case`) fails the second. Found so far: the draw is on the CPU, its inputs (vertex buffers, elements, constants) and the vertex and fragment TGSI are identical to the passing run, the result is black (RES false), a second identical draw is wrong too; ASAN finds nothing, `MALLOC_PERTURB_` changes nothing, and under ASAN it reproduces only with `quarantine_size_mb=0` (`ASAN_EXTRA=:quarantine_size_mb=0` in run-deqp.sh); a debug print changes the heap layout and hides it. Not solved: something in softpipe or the fallback depends on heap addresses. `SOFTPIPE_DEBUG=fs` (now passed by run-deqp.sh) dumps the TGSI.
 
 - Sources: host sim dEQP runs (pairs of cases), ASAN builds, softpipe sources in build/mesa (`sp_state_shader.c`, `sp_tile_cache.c`, `sp_fs_exec.c`). Not run on the unit.
+
+### dEQP shaders: the sign of atan copied by bit operations (9568 of 10252)
+
+Mesa's GLSL `atan` ends in `ior(iand(a, 0x7fffffff), iand(b, 0x80000000))` (copysign). The VGP has no bit operations, and the fallback's int-to-float pass turned them into `fmul` by a NaN and `fmax`: image differences in the thousands. `mbx_lower_copysign_bits` (mbx_program.c, before the fallback copy is cloned) rewrites the pattern to `bcsel(b < 0, -|a|, |a|)` on the scalar channels; `atan` and `atan2`, 32 of 32 (vertex and fragment). `MBX_DUMP_NIR_IN=1` prints the NIR as it arrives.
+
+Results on the sim (pbuffer, watchdog on): `shaders` 9568 of 10252 (632 fail, 52 not supported); `gles2_feat` 67 of 67. Left: `binary_operator` 50 and `matrix_subscript` 43 (the vertex clamp), `vector_swizzles` 38 (order-dependent CPU fallback), `matrix.mul` 36, `tmp_array` 32, `vector_subscript` 26, `matrix.add/sub` 24 each, loops about 62, `struct.uniform` 19.
+
+- Sources: host sim dEQP runs, `MBX_DUMP_NIR_IN`. Not run on the unit.
