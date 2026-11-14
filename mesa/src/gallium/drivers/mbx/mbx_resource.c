@@ -470,6 +470,17 @@ static void tex_fill_padding(struct mbx_resource *rsc, struct pipe_transfer *t)
 			       (uint64_t)pw * bpp);
 }
 
+/*
+ * A 1x1 ARGB8888 texture whose one texel is opaque black (the texture Mesa samples for an incomplete texture: dEQP texture.completeness
+ * expects exactly black) is not nudged: with a single texel there is no filtering to protect, and the alpha the chip returns for it (0) is
+ * made 1 by the combiner (the L8 and XRGB path) instead of a 1/255 blue.
+ */
+static bool is_opaque_black_1x1(const struct mbx_resource *rsc, unsigned level, const uint8_t *t)
+{
+	return rsc->base.format == PIPE_FORMAT_B8G8R8A8_UNORM && rsc->base.width0 == 1 && rsc->base.height0 == 1 && level == 0 && !t[0] && !t[1] &&
+	       !t[2] && t[3] == 0xff;
+}
+
 static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
 {
 	struct mbx_resource *rsc = mbx_resource(ptrans->resource);
@@ -478,7 +489,9 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 
 	if (mt->staging) {
 		if (ptrans->usage & PIPE_MAP_WRITE) {
-			nudge_black(rsc->base.format, mt->staging, ptrans->stride, ptrans->box.width, ptrans->box.height);
+			rsc->alpha_one = is_opaque_black_1x1(rsc, ptrans->level, mt->staging);
+			if (!rsc->alpha_one)
+				nudge_black(rsc->base.format, mt->staging, ptrans->stride, ptrans->box.width, ptrans->box.height);
 			mbx_tex_twiddle(rsc, ptrans->level, &ptrans->box, mt->staging, ptrans->stride, true);
 		}
 		free(mt->staging);
@@ -490,11 +503,15 @@ static void mbx_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *
 	if (rsc->tex && !rsc->twiddled && (ptrans->usage & PIPE_MAP_WRITE)) {
 		uint8_t *bp = mbx_bo_map(rsc->bo);
 
-		if (bp)
+		if (bp && is_opaque_black_1x1(rsc, ptrans->level, bp + rsc->level_off[ptrans->level])) {
+			rsc->alpha_one = true;
+		} else if (bp) {
+			rsc->alpha_one = false;
 			nudge_black(rsc->base.format, bp + rsc->level_off[ptrans->level] +
 				    (uint64_t)ptrans->box.y * rsc->level_stride[ptrans->level] +
 				    (uint64_t)ptrans->box.x * util_format_get_blocksize(rsc->base.format),
 				    rsc->level_stride[ptrans->level], ptrans->box.width, ptrans->box.height);
+		}
 		tex_fill_padding(rsc, ptrans);
 	}
 	pipe_resource_reference(&ptrans->resource, NULL);

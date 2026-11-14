@@ -344,7 +344,8 @@ static void emit_header(struct mbx_context *ctx, const struct mbx_vgp_program *p
 
 		/* L8 and XRGB: the texel's alpha is 1, where the chip returns the byte (the X byte of a texture that was rendered or cleared
 		 * holds the alpha written there) */
-		if (vw && vw->texture && (vw->texture->format == PIPE_FORMAT_L8_UNORM || vw->texture->format == PIPE_FORMAT_B8G8R8X8_UNORM))
+		if (vw && vw->texture && (vw->texture->format == PIPE_FORMAT_L8_UNORM || vw->texture->format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+					  mbx_resource(vw->texture)->alpha_one))
 			l8 |= 1u << u;
 	}
 	if (l8)

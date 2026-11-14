@@ -38,6 +38,7 @@ struct mbx_resource {
 	bool imported;				/* a buffer another process or device made (dmabuf import): written behind our back, so no copies of it are kept */
 	bool bind_rt;				/* made with a render target bind (softpipe then shares its memory) */
 	bool gpu_written;			/* a draw or a clear of the chip went into it (not only the CPU: uploads do not count) */
+	bool alpha_one;				/* a 1x1 opaque black ARGB8888 texture (Mesa's incomplete-texture fallback): not nudged, its alpha forced to 1 by the combiner */
 	uint32_t nudge_wver;			/* the version whose black texels were last given a blue of 1 (mbx_texture_nudge) */
 	uint32_t wver, swap_wver;		/* CPU writes counted; the version the red-blue swapped copy was made from */
 	struct pipe_resource *swap;		/* the texture with red and blue exchanged, for shaders that swizzle them (mbx_texture_swapped) */

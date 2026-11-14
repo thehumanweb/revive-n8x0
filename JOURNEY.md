@@ -1129,3 +1129,11 @@ The chip has one filter bit a texture unit (word B bit 31) and, for a twiddled c
 On the sim: `texture.filtering` 200 pass, 0 fail, 48 not supported (50 failures before); `texture.mipmap` 100 of 112 (the 12 projected ones fail, as before); `gles2_feat` 68 of 68. A first version read the coordinates as zero (the scale constants were not set in the CPU copy) and called every draw magnified: `mip_chip` and `trilinear` failed and `filtering` went from 150 to 132 passes, which is how it was found.
 
 - Sources: the sim's dEQP `texture.filtering` and `texture.mipmap` runs and `gles2_feat`; the unit is not run yet.
+
+### Incomplete textures sample exactly black (texture.completeness 39 of 40)
+
+Mesa samples a 1x1 opaque black texture for an incomplete texture (a missing level, a mismatched format, NPOT with mipmaps, an empty object); dEQP `texture.completeness` expects exactly black, and the driver's black nudge (a blue of 1 on every black texel of an ARGB8888 upload, so the chip filters next to it: README assumption 39) made it (0, 0, 1): 12 failures. A 1x1 texture has nothing to filter, so `is_opaque_black_1x1` (mbx_resource.c) keeps its texel at zero and marks the resource `alpha_one`; the chip returns alpha 0 for an opaque black texel (assumption 55), which the combiner now forces to 1 with the path L8 and XRGB textures already take (`emit_header` in mbx_draw.c). On the sim: `texture.completeness` 39 pass, 1 fail (28 before); `fbo` 620 of 711 and `texture.mipmap` 100 of 112 as before; `gles2_feat` 68 of 68. The last failure, `cube.missing_level_3_neg_y`, ends in `GL_INVALID_VALUE` from the test's own texture setup. Not run on the unit (it rebooted on its own during the next run, see below).
+
+The unit rebooted by itself during `texture.filtering` (the fourth reboot, uptime 3 h 36 min, the log on tmpfs, swap on): so it is not the flash log. `dsme` (Nokia's device state manager, running on the unit) took over the Retu watchdog at boot (`retu-watchdog: userspace took over the watchdog`); a dEQP process of about 210 MB swapping on 123 MB of RAM may starve it so that it misses its kick. Not tested: `renice` of `dsme`, dEQP at `nice 19`.
+
+- Sources: the sim's dEQP runs (`texture.completeness`, `fbo`, `texture.mipmap`), `gles2_feat`; the unit's kernel log and process list. The watchdog cause is a hypothesis.
