@@ -299,7 +299,11 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 		clamp_s = smp->wrap_s != PIPE_TEX_WRAP_REPEAT && smp->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT;
 		clamp_t = smp->wrap_t != PIPE_TEX_WRAP_REPEAT && smp->wrap_t != PIPE_TEX_WRAP_MIRROR_REPEAT;
 		mirror = tex_mirror_bits(tr, smp);
-		bilinear = mip ? smp->min_img_filter == PIPE_TEX_FILTER_LINEAR : smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
+		if (ctx->tex_mag[unit] == 1) {		/* magnified: level 0 with the magnification filter */
+			mip = false;
+			trilinear = false;
+		}
+		bilinear = (mip || ctx->tex_mag[unit] == 0) ? smp->min_img_filter == PIPE_TEX_FILTER_LINEAR : smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
 		*a = (clamp_s ? 1u << 31 : 0) | (clamp_t ? 1u << 29 : 0) | (uint32_t)(tr->tex_lw - 3) << 24 |
 		     (uint32_t)(tr->tex_lh - 3) << 20 | fmt << 14 |
 		     (trilinear ? 0xbu << 9 : mip ? (uint32_t)tr->base.last_level << 9 : 0);	/* trilinear: the whole chain (0xb) */
@@ -312,7 +316,7 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 	clamp_s = smp->wrap_s != PIPE_TEX_WRAP_REPEAT && smp->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT;
 	clamp_t = smp->wrap_t != PIPE_TEX_WRAP_REPEAT && smp->wrap_t != PIPE_TEX_WRAP_MIRROR_REPEAT;
 	mirror = tex_mirror_bits(tr, smp);
-	bilinear = smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
+	bilinear = (ctx->tex_mag[unit] == 0 ? smp->min_img_filter : smp->mag_img_filter) == PIPE_TEX_FILTER_LINEAR;
 	*a = (clamp_s ? 1u << 31 : 0) | (clamp_t ? 1u << 29 : 0) | (uint32_t)(tr->tex_lw - 3) << 24 |
 	     (uint32_t)(tr->tex_lh - 3) << 20 | fmt << 14 | ((stride_px / 8) & 1);
 	/* 0x0e000000 as the background object has it; the stride in 16 texels at bit 18, the address / 128 */
@@ -664,6 +668,96 @@ static bool colour_out_of_range(struct mbx_context *ctx, const struct mbx_vgp_pr
 	return false;
 }
 
+/*
+ * The chip has one filter bit a texture unit, GL has a minification and a magnification filter (and mipmaps for the first only): which one a
+ * draw wants depends on how many texels a pixel covers (rho). The first triangle of the draw is run through the vertex program on the CPU for its
+ * screen positions and texture coordinates; rho <= 1 magnifies. Not known (-1): behind the eye, degenerate, or no coordinates in the outputs.
+ */
+static void estimate_magnification(struct mbx_context *ctx, const struct mbx_vgp_program *prog, const struct pipe_draw_info *info,
+				   const struct pipe_draw_start_count_bias *dr, const void *indices, const unsigned *comps, uint8_t **vb_ptr)
+{
+	static float k[MBX_MAX_CONSTS][4];
+	float va[3][MBX_MAX_ATTRS][4], o[3][8][4];
+	unsigned ix[3];
+	bool done = false;
+
+	for (unsigned u = 0; u < MBX_MAX_TEX; u++)
+		ctx->tex_mag[u] = -1;
+	if (!prog->ntex || dr->count < 3 || (info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_TRIANGLE_STRIP &&
+					      info->mode != MESA_PRIM_TRIANGLE_FAN))
+		return;
+	for (unsigned u = 0; u < prog->ntex && u < MBX_MAX_TEX; u++) {
+		const struct pipe_sampler_state *smp = ctx->samplers[u];
+		const struct mbx_resource *tr;
+		float x[3], y[3], uu[3], vv[3], dx1, dy1, dx2, dy2, det, dudx, dudy, dvdx, dvdy, rho;
+		bool ok = true;
+
+		if (!(prog->units >> u & 1) || !smp || !ctx->views[u] || !ctx->views[u]->texture || !mbx_resource(ctx->views[u]->texture)->tex)
+			continue;
+		if (smp->min_img_filter == smp->mag_img_filter && smp->min_mip_filter == PIPE_TEX_MIPFILTER_NONE)
+			continue;
+		tr = mbx_resource(ctx->views[u]->texture);
+		if (!done) {
+			cpu_constants(ctx, prog, k);
+			for (unsigned t = 0; t < MBX_MAX_TEX; t++) {		/* the textures' scale constants are made at the emit */
+				int sl = prog->tex_scale_slot[t];
+
+				if (sl > 0 && (unsigned)sl < prog->nconst && ctx->views[t] && ctx->views[t]->texture) {
+					const struct mbx_resource *r2 = mbx_resource(ctx->views[t]->texture);
+
+					k[sl][0] = (float)r2->base.width0 / (float)(1u << r2->tex_lw);
+					k[sl][1] = (float)r2->base.height0 / (float)(1u << r2->tex_lh);
+					k[sl][2] = k[sl][3] = 0.0f;
+				}
+			}
+			for (unsigned q = 0; q < 3; q++) {
+				unsigned s = info->mode == MESA_PRIM_TRIANGLES ? q : info->mode == MESA_PRIM_TRIANGLE_STRIP ? q : (q == 0 ? 0 : q);
+
+				ix[q] = dr->start + s;
+				if (info->index_size == 1)
+					ix[q] = ((const uint8_t *)indices)[ix[q]];
+				else if (info->index_size == 2)
+					ix[q] = ((const uint16_t *)indices)[ix[q]];
+				else if (info->index_size == 4)
+					ix[q] = ((const uint32_t *)indices)[ix[q]];
+				if (info->index_size)
+					ix[q] += dr->index_bias;
+				fetch_vertex(ctx, comps, ix[q], info->start_instance, vb_ptr, va[q]);
+				mbx_cpuvs_outputs(prog->code, prog->ninsn, (const float (*)[4])k, prog->nconst, (const float (*)[4])va[q], o[q]);
+			}
+			done = true;
+		}
+		for (unsigned q = 0; q < 3; q++) {
+			float w = o[q][0][3];
+
+			if (!(w > 1e-4f)) {
+				ok = false;
+				break;
+			}
+			x[q] = o[q][0][0] / w * ctx->viewport.scale[0];
+			y[q] = o[q][0][1] / w * ctx->viewport.scale[1];
+			uu[q] = o[q][3 + u][0] * (float)(1u << tr->tex_lw);
+			vv[q] = o[q][3 + u][1] * (float)(1u << tr->tex_lh);
+		}
+		if (!ok)
+			continue;
+		dx1 = x[1] - x[0];
+		dy1 = y[1] - y[0];
+		dx2 = x[2] - x[0];
+		dy2 = y[2] - y[0];
+		det = dx1 * dy2 - dx2 * dy1;
+		if (fabsf(det) < 1e-3f)
+			continue;
+		dudx = ((uu[1] - uu[0]) * dy2 - (uu[2] - uu[0]) * dy1) / det;
+		dudy = (dx1 * (uu[2] - uu[0]) - dx2 * (uu[1] - uu[0])) / det;
+		dvdx = ((vv[1] - vv[0]) * dy2 - (vv[2] - vv[0]) * dy1) / det;
+		dvdy = (dx1 * (vv[2] - vv[0]) - dx2 * (vv[1] - vv[0])) / det;
+		rho = MAX2(hypotf(dudx, dvdx), hypotf(dudy, dvdy));
+		ctx->tex_mag[u] = rho <= 1.0f;
+		mbx_dbg("texture unit %u: %g texels a pixel: %s", u, rho, rho <= 1.0f ? "magnified" : "minified");
+	}
+}
+
 static uint32_t hw_prim_word(unsigned mode)
 {
 	switch (mode) {
@@ -882,6 +976,8 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 	for (d = 0; d < num_draws; d++) {
 		unsigned i;
 		bool per_point = prim >> 28 == 0xe && prog->psize_kind == MBX_PSIZE_INPUT;
+
+		estimate_magnification(ctx, prog, info, &draws[d], indices, comps, vb_ptr);
 
 		if (per_point) {
 			/* gl_PointSize from a vertex attribute: the chip takes one size per object, so each point is an object */

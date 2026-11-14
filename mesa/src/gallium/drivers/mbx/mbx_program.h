@@ -110,6 +110,7 @@ void mbx_nir_prepare(struct nir_shader *s);
 /* The vertex program on the CPU (mbx_cpuvs.c): the clip position of one vertex */
 void mbx_cpuvs_run(const uint32_t code[][2], unsigned ninsn, const float k[][4], unsigned nk, const float in[8][4],
 		   float pos[4]);
+void mbx_cpuvs_outputs(const uint32_t code[][2], unsigned ninsn, const float k[][4], unsigned nk, const float in[8][4], float o[8][4]);
 void mbx_cpuvs_oor_begin(const uint32_t code[][2], unsigned ninsn, const float k[][4], unsigned nk);
 bool mbx_cpuvs_oor_vertex(unsigned ninsn, const float in[8][4]);
 void mbx_fs_match(struct nir_shader *fs, struct mbx_fs_info *info);

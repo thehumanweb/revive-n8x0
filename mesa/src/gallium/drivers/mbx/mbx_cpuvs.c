@@ -47,3 +47,17 @@ bool mbx_cpuvs_oor_vertex(unsigned ninsn, const float in[8][4])
 			return true;
 	return false;
 }
+
+/* The vertex program's outputs (o0 the position, o1 and o2 the colours, o3 and o4 the texture coordinates of units 0 and 1) for one vertex */
+void mbx_cpuvs_outputs(const uint32_t code[][2], unsigned ninsn, const float k[][4], unsigned nk, const float in[8][4], float o[8][4])
+{
+	static struct vgp g;
+	struct vgp_regs r;
+
+	memset(&r, 0, sizeof(r));
+	memcpy(r.v, in, sizeof(r.v));
+	memcpy(g.code, code, ninsn * sizeof(g.code[0]));
+	memcpy(g.k, k, (nk > 192 ? 192 : nk) * sizeof(g.k[0]));
+	vgp_exec(&g, &r, 0, (int)ninsn - 1, 0);
+	memcpy(o, r.o, sizeof(r.o));
+}

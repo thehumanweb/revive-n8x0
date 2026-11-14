@@ -109,6 +109,7 @@ struct mbx_context {
 	const struct mbx_fs_variant *fsv;	/* the variant, NULL for the plain match */
 	struct pipe_context *sp;	/* the CPU fallback's softpipe context, made at the first use */
 	unsigned sp_epoch;		/* counts the softpipe contexts made: a shader's handle belongs to one */
+	int tex_mag[MBX_MAX_TEX];	/* this draw's texture units: 1 magnified, 0 minified, -1 not known (the chip has one filter bit: min or mag) */
 
 	struct mbx_vgp_program *programs;	/* linked pairs */
 	struct mbx_job job;
