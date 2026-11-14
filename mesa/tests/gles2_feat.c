@@ -1956,6 +1956,69 @@ static int t_tex_offset_probe(char *why)
 	return 1;
 }
 
+/* a probe, not a check: GL_REPEAT and GL_MIRRORED_REPEAT in s and in t on a 64 x 64 texture (R = 4 * texel x, G = 4 * texel y), a quad whose
+ * coordinate runs 0 to 2: the eight samples across (or down) the target with the value each wrap mode should give. MBX_TEX_A_OR=hex on the
+ * driver ORs bits into the texture's word A (mirror flip bits are looked for that way) */
+static int t_wrap_probe(char *why)
+{
+	static const GLenum modes[] = { GL_REPEAT, GL_MIRRORED_REPEAT, GL_CLAMP_TO_EDGE };
+	static const char *names[] = { "repeat", "mirror", "clamp" };
+	unsigned char px[64 * 64 * 4];
+
+	for (int j = 0; j < 64; j++)
+		for (int i = 0; i < 64; i++) {
+			unsigned char *p = px + (j * 64 + i) * 4;
+
+			p[0] = (unsigned char)(i * 4);
+			p[1] = (unsigned char)(j * 4);
+			p[2] = 0;
+			p[3] = 255;
+		}
+	glUseProgram(prog_tex);
+	glUniform1i(glGetUniformLocation(prog_tex, "tex"), 0);
+	for (int lin = 0; lin < 2; lin++)
+		for (int axis = 0; axis < 2; axis++)
+			for (int m = 0; m < 3; m++) {
+				GLuint t = make_tex(64, 64, GL_RGBA, GL_UNSIGNED_BYTE, px, lin ? GL_LINEAR : GL_NEAREST, GL_CLAMP_TO_EDGE);
+				int got[8], want[8];
+
+				glTexParameteri(GL_TEXTURE_2D, axis ? GL_TEXTURE_WRAP_T : GL_TEXTURE_WRAP_S, (GLint)modes[m]);
+				begin();
+				/* the coordinate runs 0.01 to 2.01 (a pixel centre then never falls on a texel edge) */
+				if (axis)
+					quad(0, 0.01f, 1, 2.01f, 1, 1, 1);
+				else
+					quad(0.01f, 0, 2.01f, 1, 1, 1, 1);
+				for (int k = 0; k < 8; k++) {
+					struct px a = axis ? probe(W / 2, 4 + 8 * k) : probe(4 + 8 * k, H / 2);
+					float c = 0.01f + (4.5f + 8 * k) / 32.0f, f = c - floorf(c);
+
+					if (m == 1 && ((int)floorf(c) & 1))
+						f = 1.0f - f;
+					if (m == 2 && c > 1.0f)
+						f = 63.5f / 64.0f;
+					got[k] = a.c[axis ? 1 : 0];
+					if (lin) {
+						float r = 4.0f * (f * 64.0f - 0.5f);
+
+						want[k] = (int)(r < 0 ? 0 : r > 252 ? 252 : r);
+					} else {
+						want[k] = (int)(f * 64.0f) * 4;
+					}
+				}
+				printf("wrap %s %c %-6s got", lin ? "linear " : "nearest", axis ? 't' : 's', names[m]);
+				for (int k = 0; k < 8; k++)
+					printf(" %3d", got[k]);
+				printf("  want");
+				for (int k = 0; k < 8; k++)
+					printf(" %3d", want[k]);
+				printf("\n");
+				glDeleteTextures(1, &t);
+			}
+	(void)why;
+	return 1;
+}
+
 /* a probe, not a check: the alpha that comes back from an opaque black RGBA texture made three ways (uploaded, cleared in a framebuffer, drawn into
  * as a black quad), sampled with NEAREST and LINEAR onto the main target; and a non-black texel for comparison (want alpha 255 everywhere) */
 static int t_black_alpha_probe(char *why)
@@ -2317,6 +2380,7 @@ static const struct { const char *name; int (*fn)(char *); } tests[] = {
 	{ "big_target", t_big_target },
 	{ "tex_offset", t_tex_offset },
 	{ "tex_offset_probe", t_tex_offset_probe },
+	{ "wrap_probe", t_wrap_probe },
 	{ "black_alpha_probe", t_black_alpha_probe },
 	{ "vs_scalar_colour", t_vs_scalar_colour },
 	{ "mip_chip", t_mip_chip },

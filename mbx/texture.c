@@ -40,6 +40,8 @@ void tex_decode(struct texunit *t, const uint32_t w[3])
 	t->fmt = t->a >> 14 & 7;
 	t->clamp_s = t->a >> 31 & 1;
 	t->clamp_t = t->a >> 29 & 1;
+	t->flip_s = t->a >> 30 & 1;	/* mirrored repeat (found during device testing: the unit's probe of the unexplored bits) */
+	t->flip_t = t->a >> 28 & 1;
 	t->dot3 = t->a >> 13 & 1;
 	t->maxlev = (int)(t->a >> 9 & 0xf);
 	t->pvrtc = (int)(t->a >> 17 & 1);
@@ -310,10 +312,16 @@ void tex_fetch(struct mbxemu *e, const struct texunit *t, int level, int x, int 
 	}
 }
 
-static int wrap(int x, int n, int clamp)
+static int wrap(int x, int n, int clamp, int flip)
 {
 	if (clamp)
 		return x < 0 ? 0 : x >= n ? n - 1 : x;
+	if (flip) {		/* mirrored: the texels run 0 .. n-1, n-1 .. 0 */
+		x %= 2 * n;
+		if (x < 0)
+			x += 2 * n;
+		return x >= n ? 2 * n - 1 - x : x;
+	}
 	x %= n;
 	return x < 0 ? x + n : x;
 }
@@ -335,10 +343,10 @@ static void sample_level(struct mbxemu *e, const struct texunit *t, int level, f
 
 		ax = (int)((fx - x0) * 32);
 		ay = (int)((fy - y0) * 32);
-		tex_fetch(e, t, level, wrap(x0, w, t->clamp_s), wrap(y0, h, t->clamp_t), c[0]);
-		tex_fetch(e, t, level, wrap(x0 + 1, w, t->clamp_s), wrap(y0, h, t->clamp_t), c[1]);
-		tex_fetch(e, t, level, wrap(x0, w, t->clamp_s), wrap(y0 + 1, h, t->clamp_t), c[2]);
-		tex_fetch(e, t, level, wrap(x0 + 1, w, t->clamp_s), wrap(y0 + 1, h, t->clamp_t), c[3]);
+		tex_fetch(e, t, level, wrap(x0, w, t->clamp_s, t->flip_s), wrap(y0, h, t->clamp_t, t->flip_t), c[0]);
+		tex_fetch(e, t, level, wrap(x0 + 1, w, t->clamp_s, t->flip_s), wrap(y0, h, t->clamp_t, t->flip_t), c[1]);
+		tex_fetch(e, t, level, wrap(x0, w, t->clamp_s, t->flip_s), wrap(y0 + 1, h, t->clamp_t, t->flip_t), c[2]);
+		tex_fetch(e, t, level, wrap(x0 + 1, w, t->clamp_s, t->flip_s), wrap(y0 + 1, h, t->clamp_t, t->flip_t), c[3]);
 		/* found during device testing: when one of the four texels has no colour at all (R, G and B zero,
 		 * whatever its alpha), the chip does not filter: the sample is the first texel (u, v floored) */
 		for (k = 0; k < 4; k++)
@@ -354,8 +362,8 @@ static void sample_level(struct mbxemu *e, const struct texunit *t, int level, f
 			out[k] = (float)s / 255;
 		}
 	} else {
-		tex_fetch(e, t, level, wrap((int)floorf(u * w), w, t->clamp_s),
-			  wrap((int)floorf(v * h), h, t->clamp_t), out);
+		tex_fetch(e, t, level, wrap((int)floorf(u * w), w, t->clamp_s, t->flip_s),
+			  wrap((int)floorf(v * h), h, t->clamp_t, t->flip_t), out);
 	}
 }
 

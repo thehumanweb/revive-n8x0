@@ -223,6 +223,33 @@ static struct mbx_resource *unit_texture(struct mbx_context *ctx, unsigned unit)
 	return tr;
 }
 
+/*
+ * Mirrored repeat: texture word A bit 30 mirrors s, bit 28 mirrors t, the clamp bits clear (found during device testing with the
+ * MBX_TEX_A_OR probe: gles2_feat wrap_probe, nearest and linear equal GL's picture). Only a texture whose storage is its size (a power of
+ * two) can mirror: an NPOT one is read with the coordinates scaled into padded storage, and a mirror would fold at the padding.
+ */
+static uint32_t tex_mirror_bits(const struct mbx_resource *tr, const struct pipe_sampler_state *smp)
+{
+	bool pot = util_is_power_of_two_or_zero(tr->base.width0) && util_is_power_of_two_or_zero(tr->base.height0);
+
+	return pot ? (smp->wrap_s == PIPE_TEX_WRAP_MIRROR_REPEAT ? 1u << 30 : 0) | (smp->wrap_t == PIPE_TEX_WRAP_MIRROR_REPEAT ? 1u << 28 : 0) : 0;
+}
+
+/* An experiment: bits ORed into the texture word A (MBX_TEX_A_OR, hex), to find the chip's mirror bits (the unexplored bits 30 and 28) */
+static uint32_t tex_a_or(void)
+{
+	static int init;
+	static uint32_t v;
+
+	if (!init) {
+		const char *e = getenv("MBX_TEX_A_OR");
+
+		v = e ? (uint32_t)strtoul(e, NULL, 16) : 0;
+		init = 1;
+	}
+	return v;
+}
+
 static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, uint32_t *a, uint32_t *b)
 {
 	struct pipe_sampler_view *view = ctx->views[unit];
@@ -230,6 +257,7 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 	struct mbx_resource *tr;
 	unsigned stride_px, fmt;
 	bool clamp_s, clamp_t, bilinear;
+	uint32_t mirror;
 
 	if (mbx_debug_level())
 		mbx_dbg("tex_words unit %u: view %p smp %p texture %p tex %d imported %d", unit, (void *)view, (const void *)smp,
@@ -270,22 +298,26 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 
 		clamp_s = smp->wrap_s != PIPE_TEX_WRAP_REPEAT && smp->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT;
 		clamp_t = smp->wrap_t != PIPE_TEX_WRAP_REPEAT && smp->wrap_t != PIPE_TEX_WRAP_MIRROR_REPEAT;
+		mirror = tex_mirror_bits(tr, smp);
 		bilinear = mip ? smp->min_img_filter == PIPE_TEX_FILTER_LINEAR : smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
 		*a = (clamp_s ? 1u << 31 : 0) | (clamp_t ? 1u << 29 : 0) | (uint32_t)(tr->tex_lw - 3) << 24 |
 		     (uint32_t)(tr->tex_lh - 3) << 20 | fmt << 14 |
 		     (trilinear ? 0xbu << 9 : mip ? (uint32_t)tr->base.last_level << 9 : 0);	/* trilinear: the whole chain (0xb) */
 		*b = (trilinear ? 0x4e000000u : mip ? 0x32000000u : 0x0e000000u) | (bilinear ? 1u << 31 : 0) | tr->bo->va >> 7;
+		*a |= mirror | tex_a_or();
 		return true;
 	}
 	stride_px = tr->level_stride[0] / util_format_get_blocksize(tr->base.format);
 	/* NPOT textures are read with the coordinates scaled (the VGP does it), so only clamping them is right */
 	clamp_s = smp->wrap_s != PIPE_TEX_WRAP_REPEAT && smp->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT;
 	clamp_t = smp->wrap_t != PIPE_TEX_WRAP_REPEAT && smp->wrap_t != PIPE_TEX_WRAP_MIRROR_REPEAT;
+	mirror = tex_mirror_bits(tr, smp);
 	bilinear = smp->mag_img_filter == PIPE_TEX_FILTER_LINEAR;
 	*a = (clamp_s ? 1u << 31 : 0) | (clamp_t ? 1u << 29 : 0) | (uint32_t)(tr->tex_lw - 3) << 24 |
 	     (uint32_t)(tr->tex_lh - 3) << 20 | fmt << 14 | ((stride_px / 8) & 1);
 	/* 0x0e000000 as the background object has it; the stride in 16 texels at bit 18, the address / 128 */
 	*b = 0x0e000000 | (bilinear ? 1u << 31 : 0) | (uint32_t)((stride_px / 8) >> 1) << 18 | tr->bo->va >> 7;
+	*a |= mirror | tex_a_or();
 	return true;
 }
 

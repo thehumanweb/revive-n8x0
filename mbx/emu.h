@@ -389,7 +389,7 @@ struct texunit {
 	uint32_t a, b, c;
 	uint32_t addr, fmt, stride;	/* stride: texels a row, 0 twiddled */
 	int lw, lh;
-	int clamp_s, clamp_t, bilinear, mip, trilinear, dot3;
+	int clamp_s, clamp_t, flip_s, flip_t, bilinear, mip, trilinear, dot3;
 	int maxlev;		/* word A bits 9-12: the last mip level taken */
 	int pvrtc;		/* word A bit 17: PVRTC, 2 bpp (format 0) or 4 bpp (format 6) */
 	float half;			/* the texel centre offset: 0.5, or 0 (0x61c bit 2 clear) */
