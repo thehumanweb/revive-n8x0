@@ -1117,3 +1117,7 @@ The unit rebooted by itself twice during the first long runs (the first at the f
 On the sim: `texture.wrap` 38 pass, 0 fail, 20 not supported (16 failures before); `texture.filtering` 150 pass, 50 fail, 48 not supported (62 failures before); `gles2_feat` 68 of 68 (the probe is not a check and always passes). Not done: the dEQP wrap cases on the unit (shader cases take a minute each there, texture cases less: sample them), the twiddled mipmapped path, trilinear at the seam, NPOT mirror.
 
 - Sources: the unit's `wrap_probe` runs with `MBX_TEX_A_OR` 0x40000000, 0x10000000 and 0x50000000 (found during device testing), the sim's dEQP `texture.wrap` and `texture.filtering` runs. The unit's dEQP wrap cases are not run yet.
+
+On the unit with the driver that sets the mirror bits itself (no `MBX_TEX_A_OR`; the library copied onto the running unit, swap on, Weston stopped, log on tmpfs): `gles2_feat wrap_probe` equals GL in repeat, mirror and clamp (s and t, nearest and linear), and dEQP `texture.wrap` gives 38 pass, 0 fail, 20 not supported: the sim's counts exactly. README assumption 56 says so.
+
+- Sources: the unit's `wrap_probe` and dEQP `texture.wrap` runs (this session).
