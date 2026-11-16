@@ -236,12 +236,41 @@ static void mbx_shifts_to_mul(nir_shader *n)
 	nir_progress(progress, impl, nir_metadata_none);
 }
 
+/* The CPU's select is `cond * a + (1 - cond) * b`: a NaN in the branch not taken (the root of a negative: refract's k) spoils it. The chip's RSQ takes
+ * the absolute value; the fallback's roots do too (dEQP operator.geometric.refract.*_float_float) */
+static void mbx_roots_of_abs(nir_shader *n)
+{
+	nir_function_impl *impl = nir_shader_get_entrypoint(n);
+	bool progress = false;
+
+	nir_foreach_block(block, impl) {
+		nir_foreach_instr_safe(instr, block) {
+			nir_alu_instr *alu;
+			nir_builder b;
+			nir_def *r;
+
+			if (instr->type != nir_instr_type_alu)
+				continue;
+			alu = nir_instr_as_alu(instr);
+			if ((alu->op != nir_op_frsq && alu->op != nir_op_fsqrt) || alu->def.bit_size != 32 || alu->def.num_components != 1)
+				continue;
+			b = nir_builder_at(nir_before_instr(instr));
+			r = nir_build_alu1(&b, alu->op, nir_fabs(&b, nir_mov_alu(&b, alu->src[0], 1)));
+			nir_def_rewrite_uses(&alu->def, r);
+			nir_instr_remove(instr);
+			progress = true;
+		}
+	}
+	nir_progress(progress, impl, nir_metadata_none);
+}
+
 static void mbx_fallback_ints_to_float(nir_shader *n)
 {
 	nir_function_impl *impl = nir_shader_get_entrypoint(n);
 
 	/* 1-bit booleans are all ones when true: as a float that is a NaN, and feq of two of them is false (dEQP swizzles.*bvec*) */
 	mbx_shifts_to_mul(n);
+	mbx_roots_of_abs(n);
 	nir_lower_int_to_float(n);	/* first: after the booleans became floats the integer compares are float ones and their constants stay integers */
 	nir_lower_bool_to_float(n, false);
 	nir_foreach_block(block, impl) {
