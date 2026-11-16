@@ -1167,3 +1167,11 @@ The `matrix.div.dynamic_*_mat4_mat4` and `div_assign` cases (6: three division a
 On the sim: `operator.geometric` 116 of 116; the whole shaders group 10145 of 10252 (10143 before), 55 fail, 52 not supported. Not run on the unit.
 
 - Sources: the sim's dEQP shaders runs (group and whole), decoded result and reference images of `matrix.div.dynamic_mediump_mat4_mat4`, softpipe's TGSI dump. The grid cause of the mat4 case is read from the picture, not tested with a finer grid.
+
+### struct.uniform.sampler, sampler_nested, sampler_array (3 failures): Mesa's linker counts the struct's sampler in the vertex stage
+
+The fragment shader declares `uniform S s;` with a `sampler2D` member and uses it; the vertex shader declares nothing of the kind. The link fails with `Too many vertex shader texture samplers`: a temporary print in Mesa's `gl_nir_link_uniforms.c` (removed) showed the linker visiting the variable `s` in stage 0 (vertex) as well as stage 4 (fragment), and the screen has no vertex texture units (the vertex limit is 0, as GLES2 allows), so the one sampler counts as too many. A plain `uniform sampler2D` is not in the vertex stage and links. Two ways out, neither taken: a patch to Mesa's uniform linker (a core change carried in mesa/patches and into the image build, for three cases), or advertising a vertex texture unit the chip does not have (it would turn the dEQP vertex-texture cases, now not supported, into failures). So the three stay failing as a limit; real programs rarely put a sampler in a struct uniform.
+
+On the sim: `struct.uniform` 30 pass, 3 fail, 5 not supported (unchanged); nothing in the driver changed in this step.
+
+- Sources: the sim's dEQP `struct.uniform.sampler*` runs and their info logs, Mesa 26.1.8 `gl_nir_link_uniforms.c` (read, and instrumented temporarily). Not tested: whether the vertex stage's copy of `s` comes from the GLSL front end or from the NIR linker; not run on the unit.
