@@ -89,6 +89,8 @@ struct mbx_vgp_program {
 					 * viewport (whose x translate is its scale) maps it: the chip bends the texture coordinates when the x translate
 					 * differs from the x scale (found with a 64 x 64 texture on viewports of several widths and offsets: README
 					 * assumption 54) */
+	bool pos_invariant;		/* gl_Position is computed by exact operations (declared invariant): its rounding must not depend on the draw's colours, so no
+					 * grid for colours out of range (the colour clamps like the hardware's) */
 	int fc_slot;			/* gl_FragCoord in the colour: two constants (x scale, x translate, y scale, y translate) and (z scale, z translate), -1 if unused */
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* fragment uniform vec4s the program carries as constants */
 	int fsu_base;			/* their first constant slot */

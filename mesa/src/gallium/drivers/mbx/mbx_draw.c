@@ -115,8 +115,9 @@ static bool state_needs_fallback(struct mbx_context *ctx)
 	if (ctx->dsa && ctx->dsa->alpha_enabled)
 		return true;
 	for (unsigned u = 0; u < MBX_MAX_SAMPLERS; u++)
-		if (ctx->views[u] && ctx->views[u]->texture && ctx->views[u]->texture->target == PIPE_TEXTURE_CUBE)
-			return true;		/* cube maps: softpipe samples them */
+		if (ctx->views[u] && ctx->views[u]->texture && ctx->views[u]->texture->target == PIPE_TEXTURE_CUBE &&
+		    (!(ctx->fsi && (*ctx->fsi).kind == MBX_FS_MATCHED) || ((*ctx->fsi).mc >> u & 1)))
+			return true;		/* cube maps: softpipe samples them (a cube view left bound that the shader does not sample does not count) */
 	if (ctx->fb.nr_cbufs && ctx->fb.cbufs[0].texture && mbx_resource(ctx->fb.cbufs[0].texture)->twiddled)
 		return true;			/* a mipmapped texture is twiddled: the chip cannot render into it */
 	if (ctx->fsi && (*ctx->fsi).kind == MBX_FS_MATCHED)
@@ -1037,7 +1038,7 @@ static void mbx_draw_vbo_impl(struct pipe_context *pctx, const struct pipe_draw_
 		mbx_dbg("draw %u: program", d);
 		emit_program(ctx, prog);
 		if ((info->mode == MESA_PRIM_TRIANGLES || info->mode == MESA_PRIM_TRIANGLE_STRIP || info->mode == MESA_PRIM_TRIANGLE_FAN) &&
-		    draws[d].count >= 3 && (prog->grid || colour_out_of_range(ctx, prog, info, &draws[d], indices, comps, vb_ptr))) {
+		    draws[d].count >= 3 && (prog->grid || (!prog->pos_invariant && colour_out_of_range(ctx, prog, info, &draws[d], indices, comps, vb_ptr)))) {
 			static float k[MBX_MAX_CONSTS][4];
 			float va[MBX_MAX_ATTRS][4], vb[MBX_MAX_ATTRS][4], vc[MBX_MAX_ATTRS][4];
 			unsigned ntri = info->mode == MESA_PRIM_TRIANGLES ? draws[d].count / 3 : draws[d].count - 2, t, used = 0;

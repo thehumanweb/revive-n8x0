@@ -247,6 +247,34 @@ static struct vsrc const_val(struct cc *c, nir_load_const_instr *lc, unsigned co
 	return imm(lc->value[comp].f32);
 }
 
+/* Is a value computed by operations the GLSL front end marked exact (a position declared invariant)? A vector counts when its
+ * non-constant parts are. */
+static bool def_is_exact(nir_def *d, unsigned depth)
+{
+	nir_instr *instr = nir_def_instr(d);
+	nir_alu_instr *alu;
+	bool any = false;
+
+	if (instr->type != nir_instr_type_alu)
+		return false;
+	alu = nir_instr_as_alu(instr);
+	if (alu->op == nir_op_vec2 || alu->op == nir_op_vec3 || alu->op == nir_op_vec4 || alu->op == nir_op_mov) {
+		if (depth > 2)
+			return false;
+		for (unsigned k = 0; k < nir_op_infos[alu->op].num_inputs; k++) {
+			nir_instr *si = nir_def_instr(alu->src[k].src.ssa);
+
+			if (si->type == nir_instr_type_load_const)
+				continue;
+			if (!def_is_exact(alu->src[k].src.ssa, depth + 1))
+				return false;
+			any = true;
+		}
+		return any;
+	}
+	return nir_alu_instr_is_exact(alu);
+}
+
 static bool lower_intrinsic(struct cc *c, nir_intrinsic_instr *intr)
 {
 	unsigned k, n, comp, base = intr->def.index * 4;
@@ -292,6 +320,8 @@ static bool lower_intrinsic(struct cc *c, nir_intrinsic_instr *intr)
 		for (k = 0; k < n; k++)
 			if (wm >> k & 1)
 				c->outs[loc][comp + k] = c->val[intr->src[0].ssa->index * 4 + k];
+		if (loc == VARYING_SLOT_POS && def_is_exact(intr->src[0].ssa, 0))
+			c->prog->pos_invariant = true;
 		return true;
 	}
 	default:
