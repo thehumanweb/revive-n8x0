@@ -1190,3 +1190,13 @@ On the unit (kernel `#8`, Weston stopped, the `mbx` module reloaded before every
 The sim ignores both (the model reads block 6 as a word and does nothing with it); the bit-31 failure is not modelled, and was not run on the sim. The unit was left with the module reloaded, the baseline drawing 1144 pixels, and Weston started again (pids seen).
 
 - Sources: the unit's `mbxtri-drm` runs (about 25 jobs; module reload between the failing cases), `mbx/ta.c` (`hdr_block`, the presence-mask bits), `mbx/README.md` (the captured stock state word `22220e80`), gordol/n810-revival `graphics/mbx` and `pocket/graphics/driver/mbx/common` (`mbx_packets.c`, `mbx_gl_state.c`; read through the GitHub API). Not checked: block 6 with a textured, blended or multi-triangle object; what bit 31 selects; whether bit 21 matters for fog, offset or stencil-like draws.
+
+### builtin_variable.fragcoord_xyz and fragcoord_w: gl_FragCoord is the window coordinate, not the clip position
+
+Both failed with `Image comparison failed` (max difference 255, 255, 128): the colour was `gl_FragCoord.xyz * u_scale`, and the output was red 0, green 255, blue a ramp of the wrong slope. The fragment parser (`mbx_compile.c`) takes every `load_input` as a varying by its slot, and `gl_FragCoord` is slot `VARYING_SLOT_POS`, so the colour program read the vertex shader's clip-space `gl_Position` (x and y in -1..1 times 1/width is about 0).
+
+`fs_eval` now computes the window coordinate for that slot: x, y and z are `(clip / w) * viewport scale + viewport translate` and w is `1 / w`, with the six viewport numbers in two constants the draw fills in (`prog->fc_slot`; `mbx_draw.c` `fragcoord_const`, for the chip's constants and for the CPU path's). The chip interpolates the result in screen space, where window x, y, z and 1/w are linear; `1.0/gl_FragCoord.w - 1.0` is not, and takes the existing grid path.
+
+On the sim: both cases pass at once (the y direction and the half-pixel centre needed no adjustment); the whole shaders group is 10147 of 10252 (10145 before), 53 fail, 52 not supported, and the failure lists differ by exactly these two cases. Not run on the unit. Not tested: gl_FragCoord inside a texture-coordinate expression, or in a draw that runs on the CPU vertex path (its constants are filled, never exercised), or with a viewport that does not start at 0.
+
+- Sources: the sim's dEQP `builtin_variable.*` and whole shaders runs, the decoded result and reference images of `fragcoord_xyz`, `mbx_compile.c` (`fs_eval`, the fragment parser), `mbx_draw.c`.

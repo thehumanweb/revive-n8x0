@@ -362,6 +362,32 @@ static struct vsrc fs_eval(struct cc *c, int n)
 	case FSN_CONST:
 		return imm(nd->k);
 	case FSN_VAR:
+		if (nd->loc == VARYING_SLOT_POS) {
+			/* gl_FragCoord: the window coordinates of the vertex, (x, y, z) / w times the viewport's scale plus its translate (two
+			 * constants the draw fills in, c->prog->fc_slot) and 1 / w; the chip interpolates them in screen space, where they
+			 * are linear */
+			struct vsrc w = c->outs[VARYING_SLOT_POS][3], v = c->outs[VARYING_SLOT_POS][nd->comp < 3 ? nd->comp : 0], rw;
+
+			if (w.kind == V_NONE)
+				w = imm(1.0f);
+			if (v.kind == V_NONE)
+				v = imm(0.0f);
+			rw = eval_nir_op(c, nir_op_frcp, w, w, w);
+			if (nd->comp == 3)
+				return rw;
+			if (c->prog->fc_slot < 0) {
+				c->prog->fc_slot = c->max_uniform + 1;
+				c->max_uniform = c->prog->fc_slot + 1;
+			}
+			{
+				int slot = c->prog->fc_slot + (nd->comp == 2), lane = nd->comp == 2 ? 0 : (int)nd->comp * 2;
+				struct vsrc sc = { .kind = V_CONST, .idx = slot, .lane = lane }, tr = { .kind = V_CONST, .idx = slot, .lane = lane + 1 };
+
+				r = op2(c, MBX_VGP_MUL, v, rw);
+				r = op2(c, MBX_VGP_MUL, r, sc);
+				return op2(c, MBX_VGP_ADD, r, tr);
+			}
+		}
 		r = c->outs[nd->loc][nd->comp];
 		if (r.kind == V_NONE) {
 			fail(c, "the vertex shader does not write a varying the fragment shader reads");

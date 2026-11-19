@@ -326,6 +326,14 @@ static bool tex_words(struct mbx_context *ctx, unsigned unit, bool trilinear, ui
 }
 
 /* The shift of the position's x (in clip units of w) that makes up for the header's x offset being its x scale */
+/* The constants a program that reads gl_FragCoord carries: (x scale, x translate, y scale, y translate), then (z scale, z translate, 0, 0) */
+static float fragcoord_const(const struct pipe_viewport_state *vp, int reg, unsigned lane)
+{
+	if (reg == 0)
+		return lane == 0 ? vp->scale[0] : lane == 1 ? vp->translate[0] : lane == 2 ? vp->scale[1] : vp->translate[1];
+	return lane == 0 ? vp->scale[2] : lane == 1 ? vp->translate[2] : 0.0f;
+}
+
 static float vp_dx(const struct pipe_viewport_state *vp)
 {
 	return vp->scale[0] != 0.0f ? (vp->translate[0] - vp->scale[0]) / vp->scale[0] : 0.0f;
@@ -421,6 +429,8 @@ static void emit_program(struct mbx_context *ctx, const struct mbx_vgp_program *
 			for (unsigned c = 0; c < 4; c++) {
 				if ((int)i == prog->vp_slot) {
 					mbx_emit_f(ctx, MBX_CH_TA, c == 0 ? vp_dx(&ctx->viewport) : 0.0f);
+				} else if (prog->fc_slot >= 0 && ((int)i == prog->fc_slot || (int)i == prog->fc_slot + 1)) {
+					mbx_emit_f(ctx, MBX_CH_TA, fragcoord_const(&ctx->viewport, (int)i - prog->fc_slot, c));
 				} else if (prog->scissor && (int)i >= prog->scissor_slot && (int)i < prog->scissor_slot + 4) {
 					/* plane k of the window-space rectangle: a * clip x (or y) + b * clip w >= 0, with
 					 * x_win = x / w * scale + translate (the viewport the header sends) */
@@ -569,6 +579,8 @@ static void cpu_constants(struct mbx_context *ctx, const struct mbx_vgp_program 
 		for (unsigned c = 0; c < 4; c++) {
 			if ((int)i == prog->vp_slot)
 				k[i][c] = c == 0 ? vp_dx(&ctx->viewport) : 0.0f;
+			else if (prog->fc_slot >= 0 && ((int)i == prog->fc_slot || (int)i == prog->fc_slot + 1))
+				k[i][c] = fragcoord_const(&ctx->viewport, (int)i - prog->fc_slot, c);
 			else if (prog->nfsu && (int)i >= prog->fsu_base && (int)i < prog->fsu_base + (int)prog->nfsu)
 				k[i][c] = fs_uniforms ? fs_uniforms[prog->fsu_vec[i - prog->fsu_base] * 4 + c] : 0.0f;
 			else if (i < prog->nuniform)

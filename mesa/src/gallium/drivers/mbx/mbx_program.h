@@ -89,6 +89,7 @@ struct mbx_vgp_program {
 					 * viewport (whose x translate is its scale) maps it: the chip bends the texture coordinates when the x translate
 					 * differs from the x scale (found with a 64 x 64 texture on viewports of several widths and offsets: README
 					 * assumption 54) */
+	int fc_slot;			/* gl_FragCoord in the colour: two constants (x scale, x translate, y scale, y translate) and (z scale, z translate), -1 if unused */
 	unsigned nfsu, fsu_vec[MBX_MAX_FSU];	/* fragment uniform vec4s the program carries as constants */
 	int fsu_base;			/* their first constant slot */
 	bool tex;			/* a texture is sampled */
