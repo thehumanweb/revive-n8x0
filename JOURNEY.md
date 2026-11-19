@@ -1175,3 +1175,18 @@ The fragment shader declares `uniform S s;` with a `sampler2D` member and uses i
 On the sim: `struct.uniform` 30 pass, 3 fail, 5 not supported (unchanged); nothing in the driver changed in this step.
 
 - Sources: the sim's dEQP `struct.uniform.sampler*` runs and their info logs, Mesa 26.1.8 `gl_nir_link_uniforms.c` (read, and instrumented temporarily). Not tested: whether the vertex stage's copy of `s` comes from the GLSL front end or from the NIR linker; not run on the unit.
+
+### 2026-11-19: probing two words a public project's driver sets and ours doesn't (object-header block 6, state bit 21)
+
+Another N810 MBX project (gordol/n810-revival on GitHub, read through the GitHub API; its code was only read, none copied) sets two things that our driver leaves out: the object header's block 6 (a one-word block, header bit `0x40`, value 0) and bit 21 of the state word (`0x22200000` as its base, as in our README's captured stock word `22220e80`). `mbxtri-drm` gained `-6 word` (the header block 6 in the triangle's object header; bit 21 needs no code, `-S` sets the whole state word).
+
+On the unit (kernel `#8`, Weston stopped, the `mbx` module reloaded before every case that failed; the same 64x64 Gouraud triangle, 1144 of 4096 pixels, md5 `969f6c25` of the PPM as the baseline):
+
+- Bit 21 added to the state word (`-S 0x22600200`): the same pixels as the baseline in the plain, textured (`-N 2`) and blended (`-j 128,128,128`, source alpha / one minus source alpha) cases. No effect found; what it means is still unknown.
+- Block 6 with `0`, `1`, `4`, `0x3f800000` and `0x7ffffffb` (every bit but 2 and 31 of the others at once): the same pixels as the baseline. The block is read (the object has one more word) and these values change nothing here.
+- Block 6 with bit 31 (`0x80000000`): the job fails (the tool exits 1, nothing drawn) and the next job, with no reload, draws 4096 of 4096 pixels (a poisoned state); after a module reload the baseline is back. `0xffffffff` draws 507 of 1144 pixels and the next job fails the same way. dmesg showed nothing in either case.
+- A first sweep of single bits 2 to 31 without reloads was confounded: the failure at `0x80000000` left the module in the bad state, so its later results (every bit "fails" or "draws everything") were the state, not the bits. Only the runs after a reload are used above. Single bits 3 to 30 were therefore tested together (`0x7ffffffb`), not one at a time.
+
+The sim ignores both (the model reads block 6 as a word and does nothing with it); the bit-31 failure is not modelled, and was not run on the sim. The unit was left with the module reloaded, the baseline drawing 1144 pixels, and Weston started again (pids seen).
+
+- Sources: the unit's `mbxtri-drm` runs (about 25 jobs; module reload between the failing cases), `mbx/ta.c` (`hdr_block`, the presence-mask bits), `mbx/README.md` (the captured stock state word `22220e80`), gordol/n810-revival `graphics/mbx` and `pocket/graphics/driver/mbx/common` (`mbx_packets.c`, `mbx_gl_state.c`; read through the GitHub API). Not checked: block 6 with a textured, blended or multi-triangle object; what bit 31 selects; whether bit 21 matters for fog, offset or stencil-like draws.

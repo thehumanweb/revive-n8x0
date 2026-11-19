@@ -123,8 +123,9 @@ int main(int argc, char **argv)
 	uint32_t r_ctl = 0x30000, r_samp = 0x00020007;
 	FILE *f;
 
-	while ((o = getopt(argc, argv, "a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:j:q:g:k:w:eT:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
-		if (o == 'a') deg = (float)atof(optarg);
+	while ((o = getopt(argc, argv, "6:a:d:o:DP:EGC:M:S:R:X:W:F:ZK:A:B:j:q:g:k:w:eT:N:Y:H:J:Q:V:U:u:L:m:y:z:Of:")) != -1) {
+		if (o == '6') { tri_w6_on = 1; tri_w6 = (uint32_t)strtoul(optarg, NULL, 0); }
+		else if (o == 'a') deg = (float)atof(optarg);
 		else if (o == 'd') dev = optarg;
 		else if (o == 'o') out = optarg;
 		else if (o == 'D') dump = 1;

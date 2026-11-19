@@ -43,6 +43,8 @@ static inline void tri_ta(struct tri_sw *s, uint32_t v) { tri_put(s, CH_TA, v); 
 static inline void tri_taf(struct tri_sw *s, float f) { uint32_t u; memcpy(&u, &f, 4); tri_ta(s, u); }
 
 /* The ISP/TSP state word of the triangle's object (Gouraud, depth test LESS); mbxtri-drm -S overrides it */
+static int tri_w6_on;						/* -6 word: header block 6 (one word) in the triangle's object header */
+static uint32_t tri_w6;
 static uint32_t tri_state_word = 1u << 29 | 1u << 25 | 1u << 22 | 1u << 9;	/* source ONE, destination ZERO, bit 25 with the alpha function ALWAYS: the colour is exact */
 static uint32_t tri_clear_state = 0xe00 | 0x100;	/* the depth-only clear's state word (mbxtri-drm -K overrides it) */
 static uint32_t tri_va[3] = { 255, 255, 255 };			/* the vertices' alpha (-j a0,a1,a2) */
@@ -169,7 +171,7 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 
 	if (tri_with_triangle) {
 		/* the object header: state, alpha test, layout, viewport, depth */
-		tri_ta(&s, 0x10000000 | 0x1 | 0x2 | (tri_tex ? 0x4 : 0) | (tri_tex2 ? 0x8 : 0) | 0x20 | 0x80 | 0x100);
+		tri_ta(&s, 0x10000000 | 0x1 | 0x2 | (tri_tex ? 0x4 : 0) | (tri_tex2 ? 0x8 : 0) | 0x20 | (tri_w6_on ? 0x40 : 0) | 0x80 | 0x100);
 		tri_ta(&s, tri_state_word | (tri_tex ? tri_tex_mode << 16 : 0) | (tri_offset ? 1u << 23 : 0));	/* Gouraud, depth test LESS (by default) */
 		tri_ta(&s, tri_alpha_word);		/* alpha test word */
 		if (tri_tex) {
@@ -183,6 +185,8 @@ static inline uint32_t tri_stream_sections(uint32_t *out, float deg, uint32_t se
 			tri_ta(&s, tri_tex2_c);
 		}
 		tri_ta(&s, tri_tex ? 0x253 : 0x53);	/* v0: three floats, v1: four bytes packed, v2: two floats (the texture coordinate) */
+		if (tri_w6_on)
+			tri_ta(&s, tri_w6);
 		tri_taf(&s, TRI_W / 2.0f); tri_taf(&s, TRI_W / 2.0f);
 		tri_taf(&s, TRI_H / 2.0f); tri_taf(&s, -TRI_H / 2.0f);	/* x scale, x off, y off, y scale */
 		tri_taf(&s, 0.5f); tri_taf(&s, 0.5f); tri_taf(&s, 1e-5f);	/* depth: z * 0.5 + 0.5 */
