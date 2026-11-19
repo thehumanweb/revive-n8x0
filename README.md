@@ -152,6 +152,8 @@ the MBX device, `mbx.ko` loads at boot and the demo programs (`gles2_tri`, `gles
 
 ## Install on a Nokia N810
 
+`docs/BUILD-AND-FLASH.md` is a shorter guide from a clean checkout to the flashable image and the flash, with a check after each step.
+
 This is experimental (see the warning at the top: tested only on an N810 with an AC-8E charger); flashing can leave a unit
 unbootable. **Back up the unit first** (at least the CAL and the
 rootfs partition; `0xFFFF` can read partitions, see its manual). The scripts here only write the **rootfs partition**:
