@@ -67,7 +67,7 @@ JIG_HOST=user@jig-host rootfs/scripts/fetch-device-kernel.sh      # -> rootfs/bu
 ```
 
 This needs the unit up and the helper `~/n810/n810-net.sh` on the jig host (the README shows a working one). The
-script's built-in default for `JIG_HOST` is the maintainer's machine, so **always set it**.
+scripts need `JIG_HOST` and stop if it is not set.
 
 Without a unit to copy from, `cp kernel/out/zImage-6.18 rootfs/build/device-zImage.old` lets the build go on, but
 then the fallback is the same kernel as the main one: no fallback at all.

@@ -218,6 +218,10 @@ there whenever you reboot into NOLO), or restore the backup you took.
 
 ## Licences
 
+The project's own files are MIT (`LICENSE`), with no warranty. This is an independent hobby project, not affiliated with or endorsed by
+Nokia, Imagination Technologies or any other company; Nokia, N800, N810, PowerVR and MBX are names of their owners, used here only to say
+which hardware this is for. To the authors' knowledge it contains no Nokia firmware and no code copied from closed software (`mbx/kmod` is Imagination's GPL release).
+
 The emulator (`mbx/`, except `mbx/kmod/`) and the scripts are MIT (SPDX
 headers). `mbx/kmod/` is Imagination Technologies' MBX kernel driver
 source, GPL-2.0 (see `mbx/kmod/COPYING`; each file keeps its own notice).
