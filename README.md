@@ -84,6 +84,40 @@ dEQP cases above.
 | Camera, GPS, FM radio, accelerometer | | **no support** here |
 | N800 | its own kernel and device tree | built, never run on an N800 |
 
+## How this came about
+
+The N810 has a 2007 PowerVR MBX1, and no open driver ever existed for it: Nokia shipped a closed OpenGL ES 1.1 stack, and
+mainline Linux has no MBX support. The plan was to give the unit a current software stack, with a real GPU driver as
+the hard part, and to get there without bricking the one device. Roughly in the order it happened (the dated log with
+sources is `JOURNEY.md`):
+
+1. **A machine to test on.** The kernel work (Linux 6.18 on the N810: device tree, display, input, power and the
+   Maemo-specific parts) and a patched QEMU 9.1 `n810` came first, so a kernel could be tried without risking the unit.
+2. **A model of the chip.** With no public documentation, `mbxemu` was written as a functional model of the MBX (the
+   tile accelerator, the vertex processor, the 3D core, the parameter buffer), starting from the Imagination DDK's GPL
+   kernel source and from what could be observed. It runs on the host and inside QEMU as a device.
+3. **A driver on the model.** A from-scratch DRM render node and a Mesa Gallium driver (`mbx`) were built against the
+   model: first a triangle without Mesa, then a GLES2 triangle on the host simulator, then an animated one on the QEMU
+   panel.
+4. **The real chip disagreed.** The first run on a unit probed fine and then drew noise. It took a long series of
+   probes (the parameter buffer's placement, the contexts before every job, the MMU handshake, the tile
+   buffers, an alpha word that was ANDing the colour) and facts the owner found during device testing to learn what
+   the chip really needs, and the model was corrected each time. The first real triangle came after that.
+5. **From a triangle to Weston.** Points, lines, textures, blending, depth, stencil, a CPU fallback for what the
+   chip cannot do, partial updates for the panel, and then Weston with its GL renderer on the unit.
+6. **Making ES 2.0 out of an ES 1.1 chip.** Fragment shaders are matched onto the fixed pipeline, grid-drawn or
+   sent to the CPU, and the result is measured against Khronos's dEQP suite on the simulator (the numbers are above and
+   in `JOURNEY.md`). Where the chip's behaviour was found by sweeping a state on the unit, the entry says so.
+7. **A flashable image.** The Buildroot root filesystem, the kexec loader and the flash flow, so a unit can run all
+   of it from its own flash.
+
+It was built as a long working session between the owner, who has the hardware, decided what to build and supplied
+what could only be seen on the device, and an AI coding assistant (Claude), which wrote most of the code and the log.
+That is why `JOURNEY.md` marks, for every claim, whether it came from the repository, from a run, or from the owner,
+and why the model's assumptions are listed with a note on which were confirmed on the unit (`mbx/README.md`). Another
+public project, `gordol/n810-revival`, reached an MBX driver by a different route (a softpipe backend over the stock
+kernel module); `JOURNEY.md` records what we cross-checked against it, with its code only read.
+
 ## Requirements
 
 Everything is built inside Ubuntu 24.04 containers (Dockerfiles in this repository), so the host only needs
