@@ -14,6 +14,23 @@ device. The build and install instructions are below; `JOURNEY.md` is the log of
 sources), `TODO.md` what is open, and `mesa/COVERAGE.md` what the GLES2 driver does on the chip and what falls back to
 the CPU.
 
+- `kernel/`: Linux 6.18.58 for the N800 and N810: 65 patches, configs, build scripts, a kexec loader and the build of
+  the MBX DRM driver (`mbx/drm`); see `kernel/README.md`. It builds **two kernels from one source**: `zImage-6.18`
+  (the N810's device tree appended) and `zImage-6.18-n800` (the N800's). The N800 kernel is built and staged on the
+  device image, which the loader picks by NOLO's product tag, but this repository has no record of it being run on an
+  N800.
+- `mbx/`: mbxemu, a functional model of the PowerVR MBX1 (TA, VGP, 3D core, 2D core, parameter buffer), see
+  `mbx/README.md`; its QEMU device is in `qemu/device/`. Checked against the N810 frame by frame and word by word.
+  The kernel DRM driver for the chip is `mbx/drm`.
+- `mesa/`: the `mbx` Gallium driver for Mesa 26.1.8 (GLES2, EGL, GBM), its tests and the piglit and dEQP scripts.
+- `rootfs/`: the Buildroot root filesystem (Mesa with the driver, Weston, the test programs) and the device image.
+- `qemu/patches/`: 21 patches to QEMU 9.1.3's `n800`/`n810` machines, 9.1 being the last release with them (QEMU
+  removed them in 9.2): UART, PRCM, DSS/RFBI, DMA, I2C, watchdog, McSPI, MIPI display, TUSB6010/MUSB host and gadget,
+  LM8323 keyboard, RNG, sensors, MMC, switches, the real partition table. Enough for Linux 6.18 to boot to a shell
+  with the RFBI panel, keyboard, touchscreen, eMMC and USB networking.
+- `qemu/docker/Dockerfile.9.1`: the `n810-qemu:9.1` image (QEMU 9.1.3 with the patches, without the MBX; it keeps the
+  build tools for MBX trees).
+
 ## Yes, it is an MBX, and this is its OpenGL ES 2.0
 
 The N810's PowerVR MBX1 was built for OpenGL ES 1.1: fixed-function pixel pipeline, a small vertex processor (the VGP),
@@ -38,22 +55,34 @@ caveats**:
 If you need ES 2.0 as a desktop GPU gives it, this is not that. It is enough for Weston, simple clients and the
 dEQP cases above.
 
-- `kernel/`: Linux 6.18.58 for the N800 and N810: 65 patches, configs, build scripts, a kexec loader and the build of
-  the MBX DRM driver (`mbx/drm`); see `kernel/README.md`. It builds **two kernels from one source**: `zImage-6.18`
-  (the N810's device tree appended) and `zImage-6.18-n800` (the N800's). The N800 kernel is built and staged on the
-  device image, which the loader picks by NOLO's product tag, but this repository has no record of it being run on an
-  N800.
-- `mbx/`: mbxemu, a functional model of the PowerVR MBX1 (TA, VGP, 3D core, 2D core, parameter buffer), see
-  `mbx/README.md`; its QEMU device is in `qemu/device/`. Checked against the N810 frame by frame and word by word.
-  The kernel DRM driver for the chip is `mbx/drm`.
-- `mesa/`: the `mbx` Gallium driver for Mesa 26.1.8 (GLES2, EGL, GBM), its tests and the piglit and dEQP scripts.
-- `rootfs/`: the Buildroot root filesystem (Mesa with the driver, Weston, the test programs) and the device image.
-- `qemu/patches/`: 21 patches to QEMU 9.1.3's `n800`/`n810` machines, 9.1 being the last release with them (QEMU
-  removed them in 9.2): UART, PRCM, DSS/RFBI, DMA, I2C, watchdog, McSPI, MIPI display, TUSB6010/MUSB host and gadget,
-  LM8323 keyboard, RNG, sensors, MMC, switches, the real partition table. Enough for Linux 6.18 to boot to a shell
-  with the RFBI panel, keyboard, touchscreen, eMMC and USB networking.
-- `qemu/docker/Dockerfile.9.1`: the `n810-qemu:9.1` image (QEMU 9.1.3 with the patches, without the MBX; it keeps the
-  build tools for MBX trees).
+## Hardware support: what should work
+
+"Should work" means the kernel is configured for it and carries the patches for it (`kernel/patches/6.18/`,
+`kernel/config/`). Only the rows marked **checked** have been seen working on a unit in this repository's own testing
+(an N810); the rest is in the kernel but this repository holds no record of testing it, so treat it as untested.
+
+| Hardware | In the kernel | Status |
+|---|---|---|
+| CPU, RAM, timers, serial console | OMAP2420 board support, device tree | **checked** (boots, runs) |
+| CPU frequency scaling | cpufreq (`performance` default, `ondemand` and `userspace` available) | in the kernel, not checked here |
+| Display (800x480 panel on the S1D1374x through RFBI) and partial updates | omapdrm patches, panel driver, tearing-effect and damage-clip handling | **checked**: Weston draws on the panel; about 40 frames a second for a small update |
+| GPU (PowerVR MBX1) | `mbx` DRM render node and the Mesa driver | **checked**: OpenGL ES 2.0 with the caveats above, Weston with the GL renderer |
+| Touchscreen | TSC2005 (N810) / TSC2301 (N800) | **checked**: touch input works in Weston |
+| Backlight (Tahvo) | Tahvo backlight driver | in the kernel, not checked here |
+| Keyboard (slide-out QWERTY) | LM8323 (N810), TSC2301 (N800) | in the kernel, not checked here |
+| USB device mode and networking | MUSB with the TUSB6010 | **checked**: USB networking on `192.168.2.15` (the device image) |
+| USB host (OTG) | MUSB, mode-switch patches | in the kernel, not checked here |
+| Flash storage (OneNAND, JFFS2 root) | OneNAND, OTP split, Nokia's JFFS2 options | **checked**: the image boots from it |
+| eMMC / SD / MMC slots | OMAP MMC with the cover-switch patch | **checked**: the eMMC works as swap on the unit; the card slots are not checked here |
+| Watchdog, real-time clock, power button | Retu | in the kernel, not checked here (the unit has rebooted by itself in long runs; the cause is open, see `JOURNEY.md`) |
+| Battery charging, charger detection | Retu with Maemo's charger-off and user interface patches | in the kernel; **not checked here, and risky**: flash with the charger unplugged |
+| Wi-Fi (STLC4560, p54spi) | p54spi converted to a device tree, DTIM and workqueue fixes | in the kernel, not checked here; the image carries no Wi-Fi tools |
+| Bluetooth (BC4) | HCI Nokia over the UART | in the kernel, not checked here; the image carries no Bluetooth tools |
+| Audio (TLV320AIC33 codec, speakers, headset) | ASoC N810 machine driver | in the kernel, not checked here; the image carries no sound tools |
+| Temperature sensor, light sensor, LP5521 LEDs | TMP105, TSL2563, LP5521 | in the kernel, not checked here |
+| Suspend and the sleep states | `pm24xx` and omap-device patches | not checked here; display updates stall when the CPU idles (the `omapdrm.idle_poll` workaround, `TODO.md`) |
+| Camera, GPS, FM radio, accelerometer | | **no support** here |
+| N800 | its own kernel and device tree | built, never run on an N800 |
 
 ## Requirements
 
