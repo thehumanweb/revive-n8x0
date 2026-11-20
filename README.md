@@ -52,6 +52,37 @@ caveats**:
   passes 10166 of 10252 cases (34 fail, 52 not supported), with the other groups in `JOURNEY.md`; only a part of this has
   been run on the unit. Numbers from the simulator are the model's, which is checked against the chip but is not the chip.
 
+**What the chip does for us, and what the driver does to use it** (per-feature detail in `mesa/COVERAGE.md`; reasons in
+`JOURNEY.md`):
+
+- **Vertex work and smooth colour on the VGP.** Vertex shaders are compiled to the VGP. A fragment colour that is
+  affine in its varyings (lighting, gradients, fog-like terms) is folded into the vertex program, and the chip's Gouraud
+  interpolation produces it per pixel for free. A lit texture runs on the chip too: the texture unit takes the texel, the
+  vertex program the light, and the combiner multiplies them.
+- **Combiners for the rest of the common cases.** Sums of products of up to two texels, varyings, uniforms and constants
+  (modulate, `mix` with a constant weight, an offset colour) map onto the texture combiners. Shaders are re-matched with
+  their whole-number uniforms folded in, so one shader with a few uniform values still stays on the chip.
+- **Clears that cost nothing.** A full-target colour clear is not a CPU fill: the tile pass paints it from the background
+  object. A depth-only clear is a draw.
+- **The tiler works for us.** The chip draws 16x16 tiles and only the tiles that have a list. A scissor becomes four
+  hardware clip planes (pixel-exact). Partial renders (`EGL_KHR_partial_update`, buffer age) redo only the damaged tiles,
+  and the damaged rectangle is reported to the panel so omapdrm sends only that.
+- **Blending, alpha test and depth in the hardware.** Any source and destination factor pair, depth test and write with
+  all eight functions, culling, points and lines with a size or width, and `if (a < k) discard;` as the chip's alpha test.
+- **Textures as the chip likes them.** Twiddled storage with mipmaps and trilinear filtering, mirrored and clamped wrap,
+  16-bit formats. A Wayland client's dma-buf is sampled directly with its own stride, with no copy, which is how Weston
+  runs. The driver works around two chip quirks (bilinear next to black, the shifted 16-bit expansion).
+- **Depth carries between chip and CPU draws** (an external Z buffer), and a stencil test with no stencil writes runs on
+  the chip with the test baked into that Z buffer, so mixed scenes stay right and only the stencil writes go to the CPU.
+- **Kept cheap on the CPU side:** the CPU fallback is a last resort (about 4.5 microseconds a pixel), so the driver
+  checks per draw whether the colour range or a non-affine term needs the grid, and skips it when the position is
+  invariant or the sums stay in range.
+
+Measured on the unit with an offscreen target (`mesa/tests/gles2_fps.c`): a full-screen 800x480 quad about 9 ms (110
+frames a second), 400 small triangles about 29 ms, a bilinear textured full-screen quad about 25 ms, a smooth non-affine
+shader in grid mode about 15 ms; the same quad with its shader on the CPU about 2.5 seconds. These are from 2026-11-07,
+before later changes; Weston reaches about 40 frames a second for a small window, bounded by the panel.
+
 If you need ES 2.0 as a desktop GPU gives it, this is not that. It is enough for Weston, simple clients and the
 dEQP cases above.
 
