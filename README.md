@@ -14,6 +14,30 @@ device. The build and install instructions are below; `JOURNEY.md` is the log of
 sources), `TODO.md` what is open, and `mesa/COVERAGE.md` what the GLES2 driver does on the chip and what falls back to
 the CPU.
 
+## Yes, it is an MBX, and this is its OpenGL ES 2.0
+
+The N810's PowerVR MBX1 was built for OpenGL ES 1.1: fixed-function pixel pipeline, a small vertex processor (the VGP),
+no programmable fragment hardware. The OpenGL ES 2.0 this repository gives it is **made in the driver, within these
+caveats**:
+
+- **Fragment shaders are mapped, not run.** A shader whose colour is affine in its varyings is compiled into the
+  vertex program; a smooth non-affine one is drawn on a fine grid of vertices; the texture combiners cover the rest
+  (up to two texels per pass). What the chip cannot do goes to Mesa's softpipe on the ARM core, which works and is slow
+  (a full-screen 800x480 shader on the CPU is about 0.4 frames a second).
+- **The vertex colour is clamped to 0..1 in 8 bits**, so colours that leave that range are cut into a grid, or fall
+  back, with a cost in speed.
+- **No stencil buffer, no vertex textures, no integer shader maths on the chip.** Stencil is emulated with depth and the
+  CPU; integer-only shaders are handled as floats where they can be.
+- **Cube maps are sampled on the CPU**; texture sizes are capped (1024 for 2D, 256 for cube maps).
+- **Fixed limits of the chip** (colour mask all-or-nothing, polygon offset, fog) are documented in `mesa/COVERAGE.md`
+  (parts of it predate later work).
+- **Not conformant.** The driver has never been submitted to Khronos. On the host simulator, dEQP-GLES2's shader group
+  passes 10166 of 10252 cases (34 fail, 52 not supported), with the other groups in `JOURNEY.md`; only a part of this has
+  been run on the unit. Numbers from the simulator are the model's, which is checked against the chip but is not the chip.
+
+If you need ES 2.0 as a desktop GPU gives it, this is not that. It is enough for Weston, simple clients and the
+dEQP cases above.
+
 - `kernel/`: Linux 6.18.58 for the N800 and N810: 65 patches, configs, build scripts, a kexec loader and the build of
   the MBX DRM driver (`mbx/drm`); see `kernel/README.md`. It builds **two kernels from one source**: `zImage-6.18`
   (the N810's device tree appended) and `zImage-6.18-n800` (the N800's). The N800 kernel is built and staged on the
