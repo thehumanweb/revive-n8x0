@@ -40,7 +40,6 @@ static int read_sources(const struct vgp *g, const struct vgp_regs *r, uint32_t 
 {
 	int k, in_idx = -1, c_low = -1, black = 0;
 
-	memset(s, 0, 3 * sizeof(s[0]));
 	for (k = 0; k < n; k++) {
 		int file = lo >> (16 + 2 * k) & 3, idx = lo >> (4 * k) & 0xf, j;
 		uint32_t swz = hi >> (8 + 8 * k) & 0xff;
@@ -75,6 +74,19 @@ static int read_sources(const struct vgp *g, const struct vgp_regs *r, uint32_t 
 			 * the position); 0 here */
 			src = raw;
 			break;
+		}
+		/* Straight copies and scalar broadcasts are common in vertex programs. */
+		if (!(hi & (1u << (5 + k)))) {
+			if (swz == 0xe4) {
+				memcpy(s[k], src, sizeof(s[k]));
+				continue;
+			}
+			if (swz == (swz & 3) * 0x55) {
+				float x = src[swz & 3];
+
+				s[k][0] = s[k][1] = s[k][2] = s[k][3] = x;
+				continue;
+			}
 		}
 		for (j = 0; j < 4; j++) {
 			float x = src[swz >> (2 * j) & 3];
